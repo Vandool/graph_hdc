@@ -645,8 +645,10 @@ class HyperNet(AbstractHyperNet):
         
         data = Data()
         for key in node_keys:
-            tens = torch.tensor([self.node_encoder_map[key].normalize(node[key])
-                                 for node in index_node_map.values()])
+            tens = torch.from_numpy(np.stack([
+                self.node_encoder_map[key].normalize(node[key])
+                for node in index_node_map.values()
+            ]))
             setattr(data, key, tens)
         
         data.edge_index = torch.tensor(list(edge_indices), dtype=torch.long).t()

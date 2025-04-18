@@ -16,7 +16,7 @@ from graph_hdc.special.colors import graph_dict_from_color_nx
 from graph_hdc.special.colors import make_color_node_encoder_map
 from graph_hdc.models import HyperNet
 from graph_hdc.graph import data_list_from_graph_dicts
-from .utils import ARTIFACTS_PATH
+from tests.utils import ARTIFACTS_PATH
 
 
 class TestColorGraphs:

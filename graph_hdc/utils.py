@@ -176,7 +176,7 @@ class CategoricalIntegerEncoder(AbstractEncoder):
         ).astype(np.float32))
     
     def encode(self, value: Any) -> torch.Tensor:
-        return self.embeddings[int(value)]
+        return self.embeddings[int(value if np.isscalar(value) else value.item())]
     
     def decode(self, 
                hv: torch.Tensor, 
