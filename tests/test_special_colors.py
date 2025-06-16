@@ -123,6 +123,7 @@ class TestColorGraphs:
         
         # Initial embedding
         data = next(iter(DataLoader(data_list_from_graph_dicts([graph]), batch_size=1)))
+
         result = hyper_net.forward(data)
         emb_original = result['graph_embedding'].detach()
         

@@ -1,0 +1,77 @@
+# Python target
+target-version = "py313"
+
+# Line length & indent
+line-length = 120
+indent-width = 4
+
+# Which rules to run / ignore
+lint.select = ["ALL"]
+
+lint.ignore = [
+    "ANN001", # missing type for self
+    "ANN003", # Missing type annotation for `**kwargs
+    "ANN201", # missing return annotation
+    "ANN206", # missing return for classmethod
+    "ANN204", # Missing return type annotation for special method
+    "ANN401", # dynamically typed
+    "B008", # function call in defaults (FastAPI)
+    "COM812", # missing-trailing-comma
+    # Black‐compatible
+    "E203",
+    # Production‐grade style/type ignores
+    "E501", # line too long (we allow up to 120)
+    "ERA001", # Found commented-out code
+    "N805", # invalid first arg name
+    "N806", # Uppercase variable name
+    "N802", # Lower case function name
+    "UP007", # prefer X|Y types
+    "PLE1205", # logging format args count
+    "RUF003", # Ambigious charachter in comment
+    "FBT003", # boolean positional
+    "W291", # trailing whitespace
+    "PLR0913", # too-many-arguments
+]
+
+lint.extend-ignore = [
+    # Research‐friendly
+    "F401", # unused imports
+    "F841", # unused variables
+    "C901", # complexity
+
+    # Other plugin ignores
+    "TCH", # flake8‐type‐checkin
+    "FA", # flake8‐future‐annotations
+    "D", # pydocstyle
+    "S", # flake8‐bandit
+    "DTZ", # flake8‐datetimez
+    "EXE", # flake8‐executable
+]
+
+# ------------------------
+# Exclusions
+# ------------------------
+lint.exclude = [
+    ".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg",
+    ".ipynb_checkpoints", ".mypy_cache", ".nox", ".pants.d", ".pyenv",
+    ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox",
+    ".venv", ".vscode", "__pypackages__", "_build", "build", "dist",
+    "node_modules", "site-packages", "venv", "docs", "sandbox",
+    "notebooks", "scripts", "data", "src/tests", "datasets", "*.toml"
+]
+
+# ------------------------
+# Formatter options
+# ------------------------
+[format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# ------------------------
+# Per-file overrides
+# ------------------------≤
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*.py" = ["F401", "F841"]
+"**/*.ipynb" = ["F401", "F841"]
