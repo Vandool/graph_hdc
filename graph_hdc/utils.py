@@ -176,7 +176,7 @@ class CategoricalIntegerEncoder(AbstractEncoder):
         ).astype(np.float32))
     
     def encode(self, value: Any) -> torch.Tensor:
-        return self.embeddings[int(value)]
+        return self.embeddings[int(value if np.isscalar(value) else value.item())]
     
     def decode(self, 
                hv: torch.Tensor, 
@@ -224,18 +224,18 @@ class HypervectorCombinations:
             # value: (num_dicts, dim)
             value: torch.Tensor = torch_pairwise_reduce(hvs, func=self.bind_fn)
             value = value.squeeze()
-            
+
             comb_key = tuple(sorted(comb))
             self.combinations[comb_key] = value
 
     def get(self, query: dict) -> torch.Tensor:
         comb_key = tuple(sorted(query.items()))
         return self.combinations[comb_key]
-    
+
     def __iter__(self):
         self.__generator__ = self.__generate__()
         return self.__generator__
-            
+
     def __generate__(self):
         for comb_key, value in self.combinations.items():
             comb_dict = {name: key for (name, key) in comb_key}

@@ -6,8 +6,7 @@ import matplotlib.colors as mcolors
 import networkx as nx
 
 from graph_hdc.models import AbstractEncoder
-from graph_hdc.models import CategoricalOneHotEncoder
-from graph_hdc.models import CategoricalIntegerEncoder
+from graph_hdc.utils import CategoricalIntegerEncoder
 
 
 def generate_random_color_nx(num_nodes: int,
@@ -26,6 +25,43 @@ def generate_random_color_nx(num_nodes: int,
     
     return graph
 
+class NominalColorEncoder(AbstractEncoder):
+    def __init__(self,
+                 dim: int,
+                 colors: List[Union[str, tuple]],
+                 color_to_idx=None,
+                 seed: Optional[int] = None,
+                 ) -> None:
+        AbstractEncoder.__init__(self, dim, seed)
+        if color_to_idx is None:
+            color_to_idx = {'red': 0, 'green': 1, 'blue': 2, 'white': 3, 'gray': 4}
+        self.color_to_idx = {k:v for k, v in color_to_idx.items() if k in colors}
+        self.idx_to_color = {v:k for k, v in color_to_idx.items()}
+        self.num_categories = len(colors)
+        random = np.random.default_rng(seed)
+        self.embeddings: torch.Tensor = torch.tensor(random.normal(
+            # This scaling is important to have normalized base vectors
+            loc=0.0,
+            scale=(1.0 / np.sqrt(dim)),
+            size=(self.num_categories, dim)
+        ).astype(np.float32))
+
+    def normalize(self, value: Any) -> np.ndarray:
+        if isinstance(value, str):
+            v = self.color_to_idx[value]
+            return np.array(v, dtype=np.float32)
+        return np.array(value, dtype=np.float32)
+
+    def encode(self, value: Any) -> torch.Tensor:
+        return self.embeddings[int(value)]
+
+    def decode(self, hv: torch.Tensor) -> Any:
+        distances = [torch.norm(hv - embedding) for embedding in self.embeddings]
+        closest_embedding_index = int(torch.argmin(torch.tensor(distances)))
+        return self.idx_to_color[closest_embedding_index]
+
+    def get_encoder_hv_dict(self):
+        return dict(zip(sorted(self.color_to_idx.keys(), key=lambda x: self.color_to_idx[x]), self.embeddings))
 
 
 class ColorEncoder(AbstractEncoder):
@@ -62,11 +98,11 @@ class ColorEncoder(AbstractEncoder):
         ).astype(np.float32))
         
     def normalize(self, value: Any) -> np.ndarray:
-        
+
         if isinstance(value, str):
             value_rgb = np.array(mcolors.to_rgb(value))
             return value_rgb
-        
+
         return value
         
     def encode(self, value: Any) -> torch.Tensor:

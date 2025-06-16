@@ -1,4 +1,8 @@
 *slurm-*.out
 *__pycache__*
-tests/artifacts/*
+tests_new/artifacts/*
 .vscode
+.venv/
+/datasets/
+.benchmarks
+

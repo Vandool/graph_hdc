@@ -424,6 +424,9 @@ class TestHyperNet:
             embedding=embedding,
             constraints_order_zero=constraints_order_zero,
         )
+        index_node_mape, edge_indices = hyper_net.possible_graph_from_constraints(constraints_order_zero, constraints_order_one)
+        pprint(index_node_mape)
+        pprint(edge_indices)
         pprint(constraints_order_one)
         assert isinstance(constraints_order_one, list)
         assert len(constraints_order_one) > 0

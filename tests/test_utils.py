@@ -1,18 +1,21 @@
 import os
-import pytest
 from itertools import product
 
-import torch
 import jsonpickle
 import networkx as nx
+import pytest
+import torch
 from rich.pretty import pprint
 
 from graph_hdc.binding import circular_convolution_fft
-from graph_hdc.utils import get_version
-from graph_hdc.utils import render_latex
-from graph_hdc.utils import torch_pairwise_reduce
-from graph_hdc.utils import nx_random_uniform_edge_weight
-from graph_hdc.utils import HypervectorCombinations
+from graph_hdc.utils import (
+    HypervectorCombinations,
+    get_version,
+    nx_random_uniform_edge_weight,
+    render_latex,
+    torch_pairwise_reduce,
+)
+
 from .utils import ASSETS_PATH
 
 

@@ -16,7 +16,7 @@ from graph_hdc.special.colors import graph_dict_from_color_nx
 from graph_hdc.special.colors import make_color_node_encoder_map
 from graph_hdc.models import HyperNet
 from graph_hdc.graph import data_list_from_graph_dicts
-from .utils import ARTIFACTS_PATH
+from tests.utils import ARTIFACTS_PATH
 
 
 class TestColorGraphs:
@@ -123,6 +123,7 @@ class TestColorGraphs:
         
         # Initial embedding
         data = next(iter(DataLoader(data_list_from_graph_dicts([graph]), batch_size=1)))
+
         result = hyper_net.forward(data)
         emb_original = result['graph_embedding'].detach()
         
