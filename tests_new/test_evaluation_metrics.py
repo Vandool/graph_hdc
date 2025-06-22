@@ -6,7 +6,6 @@ from torch_geometric.data import Data
 
 from src import evaluation_metrics
 from src.datasets import ColorGraphDataset
-from src.utils.utils import DataTransformer
 from tests.utils import ASSETS_PATH
 
 

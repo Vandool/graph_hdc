@@ -7,7 +7,7 @@ from torch_geometric.datasets import QM9, ZINC
 from src.datasets import AddNodeDegree
 from src.encoding.configs_and_constants import SupportedDataset, VSAModel
 from src.encoding.feature_encoders import AbstractFeatureEncoder, CategoricalIntegerEncoder
-from tests.utils import DATASET_TEST_PATH
+from src.utils.utils import DATASET_TEST_PATH
 
 
 @pytest.fixture(

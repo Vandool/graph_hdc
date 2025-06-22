@@ -2,6 +2,7 @@ import itertools
 import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Literal, Union
 
 import torch
@@ -14,6 +15,14 @@ from torchhd.tensors.hrr import HRRTensor
 from torchhd.tensors.map import MAPTensor
 
 from src.encoding.types import VSAModel
+
+# ========= Paths =========
+PATH = Path(__file__).parent.parent.absolute()
+ARTIFACTS_PATH = PATH / "artifacts"
+ASSETS_PATH = ARTIFACTS_PATH / "assets"
+DATASET_TEST_PATH = ARTIFACTS_PATH / "datasets"
+
+
 
 # ========= Torchhd Utils =========
 

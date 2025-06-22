@@ -5,4 +5,17 @@ tests_new/artifacts/*
 .venv/
 /datasets/
 .benchmarks
+assets/
+artifacts/
+datasests/
 
+# VS Code
+.idea/
+.pytest_cache
+results/
+
+
+# pixi environments
+.pixi
+*.egg-info
+.gitattributes
