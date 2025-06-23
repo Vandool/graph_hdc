@@ -8,7 +8,7 @@ import pandas as pd
 from pycomex.functional.experiment import Experiment
 from pycomex.util import file_namespace, folder_path
 from torch_geometric import loader
-from torch_geometric.data import Dataset
+from torch_geometric.data import Dataset, Data
 from torch_geometric.datasets import QM9, ZINC
 
 from src import evaluation_metrics
@@ -126,10 +126,13 @@ def experiment(e: Experiment):
     ## Apply configs
     ds = SupportedDataset(e.DATASET)
     ds.default_cfg.vsa = VSAModel(e.VSA)
+    ds.default_cfg.hv_dim = e.HV_DIM
+    ds.default_cfg.device = device
+    ds.default_cfg.seed = e.SEED
     # Disable edge and graph features
     ds.default_cfg.edge_feature_configs = {}
     ds.default_cfg.graph_feature_configs = {}
-    ds.default_cfg.hv_dim = e.HV_DIM
+
     batch_size = e.DATA_BATCH_SIZE
     e.log(f"{batch_size=}")
     e.log(f"{type(batch_size)=}")
@@ -156,7 +159,11 @@ def experiment(e: Experiment):
     all_metrics = []
 
     ## Run the Experiment and
-    for batch in dataloader:
+    for i, batch in enumerate(dataloader):
+        if i >= e.MAX_MAIN_LOOP:
+            break
+
+        batch: Data
         encoded_data = hypernet.forward(data=batch)
 
         ## Get ready to evaluate
@@ -236,13 +243,20 @@ def experiment(e: Experiment):
 
         ### Save metrics
         run_metrics = {
-            "dataset": ds.value,
+            "seed": hypernet.seed,
             "n_samples": batch_size,
             "vsa": hypernet.vsa.value,
             "hv_dim": hypernet.hv_dim,
             "depth": hypernet.depth,
             "normalize": True,
             "separate_levels": True,
+            "rec_num_iterations": e.REC_NUM_ITER,
+            "rec_lr": e.REC_LEARNING_RATE,
+            "rec_batch_size": e.REC_BATCH_SIZE,
+            "rec_low": e.REC_LOW,
+            "rec_high": e.REC_HIGH,
+            "rec_alpha": e.REC_ALPHA,
+            "rec_lambda": e.REC_LAMBDA_L1,
             "avg_reconstruct_time": reconstruct_time / batch_size,
             "avg_P_order_zero": sum(p_nodes) / batch_size,
             "avg_F1_order_zero": sum(f1_nodes) / batch_size,
