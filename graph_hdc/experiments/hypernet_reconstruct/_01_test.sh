@@ -13,6 +13,7 @@ EXPERIMENTS_PATH="${PROJECT_DIR}/graph_hdc/experiments/hypernet_reconstruct"
 
 
 DATASET="ZINC_ND_COMB"
+SEED="42"
 DATA_BATCH_SIZE="32"
 VSA="HRR"
 HV_DIM="6400"
@@ -31,6 +32,7 @@ module load devel/cuda/11.8
 
 pixi run python "${EXPERIMENTS_PATH}/01_test.py" \
                           --PROJECT_DIR="\"${PROJECT_DIR}\"" \
+                          --SEED="\"${SEED}\"" \
                           --DATASET="\"${DATASET}\"" \
                           --DATA_BATCH_SIZE="\"${DATA_BATCH_SIZE}\"" \
                           --VSA="\"${VSA}\"" \

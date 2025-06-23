@@ -15,12 +15,17 @@ from src.datasets import AddNodeDegree
 from src.encoding.configs_and_constants import SupportedDataset
 from src.encoding.graph_encoders import HyperNet
 from src.encoding.types import VSAModel
-from src.utils.utils import DataTransformer
+from src.utils.utils import DataTransformer, set_seed
 
 ### === PARAMETERS
 # :param PROJECT_DIR:
 #       String a path of the project directory
 PROJECT_DIR: str = "/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
+
+
+# :param SEED:
+#       int the seed!
+SEED: int = 40
 
 
 # :param DATASET:
@@ -84,6 +89,8 @@ experiment = Experiment(base_path=folder_path(__file__), namespace=file_namespac
 @experiment.hook("get_dataset", replace=False, default=True)
 def get_dataset(e: Experiment, dataset: str | SupportedDataset, root: Path) -> Dataset:
     ds = dataset if isinstance(dataset, SupportedDataset) else SupportedDataset(dataset)
+    e.log("Loading dataset ...")
+    e.log(f"{dataset=}")
     if ds == SupportedDataset.ZINC:
         return ZINC(root=str(root))
     if ds in {SupportedDataset.ZINC_NODE_DEGREE, SupportedDataset.ZINC_NODE_DEGREE_COMB}:
@@ -111,7 +118,7 @@ def get_device(e: Experiment) -> Any:
 @experiment
 def experiment(e: Experiment):
     e.log(f"{e.path=}")
-    e.log(pformat({k: (v, type(v)) for k, v in e.parameters}, indent=2))
+    e.log(pformat({k: (v, type(v)) for k, v in e.parameters.items()}, indent=2))
     device = e.apply_hook("get_device")
     e.log(f"{device=}")
 
@@ -123,6 +130,11 @@ def experiment(e: Experiment):
     ds.default_cfg.graph_feature_configs = {}
     ds.default_cfg.hv_dim = e.HV_DIM
     batch_size = e.DATA_BATCH_SIZE
+    e.log(f"{batch_size=}")
+    e.log(f"{type(batch_size)=}")
+
+    e.log(f"setting global seed: {e.SEED=}")
+    set_seed(e.SEED)
 
     ## Create Paths
     dataset_root = Path(e.PROJECT_DIR) / "datasets" / ds.value
