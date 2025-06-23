@@ -239,46 +239,55 @@ def test_hypernet_decode_order_one_is_good_enough_counter(
     metrics_df.to_csv(csv_path, index=False)
 
 
-@pytest.mark.parametrize("separate_levels", [
+@pytest.mark.parametrize(
+    "separate_levels",
+    [
         True,
         # False
     ],
 )
-@pytest.mark.parametrize("normalize", [True,
-                                       False
-                                       ])
+@pytest.mark.parametrize(
+    "normalize",
+    [
+        # True,
+        False
+    ],
+)
 @pytest.mark.parametrize(
     "depth",
     [
         # 1,
-        2,
-        3
+        # 2,
+        3,
     ],
 )
 @pytest.mark.parametrize(
     "dataset",
     [
         SupportedDataset.ZINC_NODE_DEGREE_COMB,
-        SupportedDataset.ZINC_NODE_DEGREE,
+        # SupportedDataset.ZINC_NODE_DEGREE,
     ],
 )
-@pytest.mark.parametrize("vsa", [VSAModel.HRR,
-                                 VSAModel.MAP
-                                 ])
+@pytest.mark.parametrize("vsa", [VSAModel.HRR, VSAModel.MAP])
 @pytest.mark.parametrize(
     "hv_dim",
     [
-        96 * 96,
+        # 96 * 96,
         80 * 80,
     ],
 )
-@pytest.mark.parametrize("use_explain_away", [True,],)
+@pytest.mark.parametrize(
+    "use_explain_away",
+    [
+        True,
+    ],
+)
 @pytest.mark.parametrize(
     "use_node_degrees",
     [
         True,
-     False
-     ],
+        # False
+    ],
 )
 def test_hypernet_reconstruct_works(
     batch_data,
@@ -327,7 +336,7 @@ def test_hypernet_reconstruct_works(
         node_terms = encoded_data["node_terms"][b]
         edge_terms = encoded_data["edge_terms"][b]
         data_dec, node_counter_dec, edge_counter_dec = hypernet.reconstruct(
-            graph_embedding, node_terms, edge_terms, use_node_degree=use_node_degrees
+            graph_embedding, node_terms, edge_terms, use_node_degree=use_node_degrees, is_undirected=True
         )
 
         ## Nodes
@@ -340,7 +349,7 @@ def test_hypernet_reconstruct_works(
         actual_edge_counter = DataTransformer.get_edge_existence_counter(
             batch=b, data=data, indexer=hypernet.nodes_indexer
         )
-        edge_existence_counter = {k: 1 for k, _ in actual_edge_counter.items()}
+        edge_existence_counter = Counter({k: 1 for k, _ in actual_edge_counter.items()})
         p_1, _, f1_edge = evaluation_metrics.calculate_p_a_f1(pred=edge_counter_dec[0], true=edge_existence_counter)
         p_edges.append(p_1)
         f1_edges.append(f1_edge)
@@ -349,7 +358,7 @@ def test_hypernet_reconstruct_works(
         actual_edge_counter = DataTransformer.get_edge_counter(batch=b, data=data)
         ## Calculate predicted edges
         x_list = data_dec.x.int().tolist()
-        edges = list(zip(data_dec.edge_index[0], data_dec.edge_index[1]))
+        edges = list(zip(data_dec.edge_index[0], data_dec.edge_index[1], strict=False))
         edges_as_ints = [(a.item(), b.item()) for a, b in edges]
         pred_edges = []
         for u, v in edges_as_ints:
@@ -361,9 +370,6 @@ def test_hypernet_reconstruct_works(
         print("-----")
         print(f"{pred_edge_counter=}")
 
-
-
-
         ## Testing injecting the opposite edge
         edges_test = list({e for u, v in edges_as_ints for e in [(v, u), (u, v)]})
         pred_edges = []
@@ -371,7 +377,9 @@ def test_hypernet_reconstruct_works(
             pred_edges.append((tuple(x_list[u]), tuple(x_list[v])))
         pred_edge_counter_test = Counter(pred_edges)
 
-        p_g_test, _, f1_graph_test = evaluation_metrics.calculate_p_a_f1(pred=pred_edge_counter_test, true=actual_edge_counter)
+        p_g_test, _, f1_graph_test = evaluation_metrics.calculate_p_a_f1(
+            pred=pred_edge_counter_test, true=actual_edge_counter
+        )
         print(f"{pred_edge_counter_test=}")
         print(f"{actual_edge_counter=}")
         print(f"{f1_graph=}")
@@ -415,7 +423,7 @@ def test_hypernet_reconstruct_works(
     logger.info(run_metrics)
     # === save to CSV in your assets folder ===
     # --- at the end of the test, write out to your assets folder ---
-    asset_dir = ARTIFACTS_PATH / "reconstruction" / "run2"
+    asset_dir = ARTIFACTS_PATH / "reconstruction" / "run3"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "res.parquet"

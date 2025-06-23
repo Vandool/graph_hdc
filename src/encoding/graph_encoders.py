@@ -241,7 +241,7 @@ class HyperNet(AbstractGraphEncoder):
         config: DatasetConfig,
         hidden_dim: int = 100,
         depth: int = 3,
-        use_explain_away: bool = False,
+        use_explain_away: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
         self.use_explain_away = use_explain_away
@@ -375,6 +375,8 @@ class HyperNet(AbstractGraphEncoder):
         Performs a forward pass on the given PyG ``data`` object which represents a batch of graphs. Primarily
         this method will encode the graphs into high-dimensional graph embedding vectors.
 
+        :param separate_levels:
+        :param normalize:
         :param bidirectional: a flag indicating whether to use bidirectional encoding or not.
         :param data: The PyG Data object that represents the batch of graphs.
 
@@ -1037,8 +1039,11 @@ class HyperNet(AbstractGraphEncoder):
         batch_size: int = 10,
         low: float = 0.0,
         high: float = 1.0,
+        alpha: float = 1.0,
+        lambda_l1: float = 0.0,
         *,
         use_node_degree: bool = False,
+        is_undirected: bool = True,
     ) -> dict:
         """
         Reconstructs a graph dict representation from the given graph hypervector by first decoding
@@ -1087,28 +1092,41 @@ class HyperNet(AbstractGraphEncoder):
         data.x = __x__
         # data = self.encode_properties(data)
 
-        data_list: list[Data] = []
-        for _ in range(batch_size):
-            data = data.clone()
-            # edge_weight should have the same dtype as the hypervectors
-            data.edge_weight = torch.tensor(
-                np.random.uniform(low=low, high=high, size=(data.edge_index.size(1), 1)), dtype=torch.float32
-            )
-            data_list.append(data)
-
+        # Create batch of identical templates
+        data_list = [data.clone() for _ in range(batch_size)]
         batch = Batch.from_data_list(data_list)
-        batch.edge_weight.requires_grad = True
 
+        # CHANGED: initialize trainable raw_weights for unique edges per candidate
+        edges_per_graph = data.edge_index.size(1)
+        if is_undirected:
+            assert edges_per_graph % 2 == 0, "Expected each undirected edge twice"
+            num_unique = edges_per_graph // 2
+            raw_weights = torch.nn.Parameter(
+                torch.empty(batch_size * num_unique, 1, device=self.device).uniform_(low, high)
+            )
+        else:
+            raw_weights = torch.nn.Parameter(
+                torch.empty(batch_size * edges_per_graph, 1, device=self.device).uniform_(low, high)
+            )
+        optimizer = torch.optim.Adam([raw_weights], lr=learning_rate)
+
+        # Precompute constants
         num_nodes = __x__.shape[0] * batch_size
-
-        optimizer = torch.optim.Adam([batch.edge_weight], lr=learning_rate)
-
         node_keys = [x.value for x in self.node_encoder_map]
+
         # Optimization loop over candidate batch
         for it in range(num_iterations):
             optimizer.zero_grad()
+            # CHANGED: expand raw_weights into full per-edge logits, tying for undirected
+            if is_undirected:
+                full_logits = raw_weights.repeat_interleave(2, dim=0)
+            else:
+                full_logits = raw_weights
+            batch.edge_weight = full_logits
+
             result = self.forward(batch)
             embedding = result["graph_embedding"]  # shape (candidate_batch_size, hidden_dim)
+
             # Compute mean squared error loss for each candidate (compare each to graph_hv)
             losses = torch.square(embedding - graph_hv.expand_as(embedding)).mean(dim=1)
             loss_embed = losses.mean()  # loss should have grad_fn, it works only when the grad_fn is not None
@@ -1117,7 +1135,7 @@ class HyperNet(AbstractGraphEncoder):
                 _, (start, end) = self.node_encoder_map[Features.NODE_DEGREE]
                 true_degree = batch.x[:, start:end]
 
-                _edge_weight = torch.sigmoid(2 * batch.edge_weight)
+                _edge_weight = torch.sigmoid(2 * full_logits)
                 _edges_src = scatter(
                     torch.ones_like(_edge_weight), batch.edge_index[0], dim_size=num_nodes, reduce="sum"
                 )
@@ -1134,14 +1152,14 @@ class HyperNet(AbstractGraphEncoder):
                 pred_degree = scatter_src + scatter_dst  # shape [batch_size * num_nodes]
                 # CHANGED: add L2 degree‐matching loss
                 loss_degree = (pred_degree - true_degree.view_as(pred_degree)).pow(2).mean()  # CHANGED
-                alpha = 1.0  # CHANGED: tradeoff weight
+                alpha = alpha  # CHANGED: tradeoff weight
             else:
                 loss_degree = 0.0  # CHANGED
                 alpha = 0.0  # CHANGED
 
             # # 6) Sparsity (L1 on the raw logits)
             sparsity = torch.abs(batch.edge_weight).sum()  # CHANGED
-            lambda_l1 = 0.01  # CHANGED: tradeoff for sparsity
+            lambda_l1 = lambda_l1  # CHANGED: tradeoff for sparsity
 
             # 7) Total loss
             loss = loss_embed + alpha * loss_degree + lambda_l1 * sparsity  # CHANGED
@@ -1150,51 +1168,62 @@ class HyperNet(AbstractGraphEncoder):
             optimizer.step()
 
             if log:
-                print(loss.item())
+                print(f"Iter {it}: loss={loss.item()}")
 
-        # discretizing the still continuous edge weights and constructing a new "edge_index"
-        # connectivity structure based only on the edges that have a weight > 0.5
-        # batch.edge_weight = (batch.edge_weight >= 0).float()
-        result = self.forward(batch)
-        embedding = result["graph_embedding"]  # shape (candidate_batch_size, hidden_dim)
-        losses = torch.square(embedding - graph_hv.expand_as(embedding)).mean(dim=1)
+        # After optimization, assemble final logits
+        if is_undirected:
+            final_logits = raw_weights.repeat_interleave(2, dim=0).detach()
+        else:
+            final_logits = raw_weights.detach()
 
-        # We get the index of the best candidate according to the loss of the final epoch
-        losses = losses.detach().cpu().numpy()
-        index_best = np.argmin(losses)
-        data_best = batch.to_data_list()[index_best]
-        num_nodes = data_best.edge_index.max().item() + 1
-        scatter_src = scatter(data_best.edge_weight, data_best.edge_index[0], dim_size=num_nodes, reduce="sum")
-        scatter_dst = scatter(data_best.edge_weight, data_best.edge_index[1], dim_size=num_nodes, reduce="sum")
+        # Assemble final logits
+        if is_undirected:
+            full_logits = raw_weights.repeat_interleave(2, dim=0).detach()
+        else:
+            full_logits = raw_weights.detach()
+        edges = edges_per_graph
+        final_logits = full_logits.view(batch_size, edges, 1)
 
-        # select the edges that have a weight > 0.5
-        edge_weight = data_best.edge_weight
-        edge_index = data_best.edge_index[:, edge_weight.flatten() > 0.5]
+        # Recompute embeddings to pick best candidate
+        batch.edge_weight = final_logits.view(batch_size * edges, 1)
+        out = self.forward(batch)
+        emb = out["graph_embedding"]
+        losses = torch.square(emb - graph_hv.expand_as(emb)).mean(dim=1)
+        best_idx = int(torch.argmin(losses).item())
 
-        # Make it symmetric (undirected edge)
-        # edge_index = sorted(list{(v, u) for u, v in edge_index})
+        # Extract best logits and build final Data
+        best_logits = final_logits[best_idx]  # (edges,1)
+        # select edges above threshold
+        mask = torch.sigmoid(best_logits) > 0.0
+        kept_edges = data.edge_index[:, mask.flatten()]
+
+        # Build best Data and attach edge_weight
+        best_data = Data(x=__x__, edge_index=kept_edges)
+        best_data.edge_weight = best_logits[mask]
+
+        # Compute final degree sums for logs
+        num_nodes_final = __x__.shape[0]
+        if best_data.edge_index.numel() > 0:
+            scatter_src = scatter(
+                best_data.edge_weight, best_data.edge_index[0], dim_size=num_nodes_final, reduce="sum"
+            )
+            scatter_dst = scatter(
+                best_data.edge_weight, best_data.edge_index[1], dim_size=num_nodes_final, reduce="sum"
+            )
+            final_degrees = scatter_src + scatter_dst
+        else:
+            # No edges: degrees are zero for all nodes
+            final_degrees = torch.zeros(num_nodes_final, device=self.device)
 
         if log:
-            print(f"{batch.edge_weight=}")
-            print(f"{losses=}")
-            print(f"{losses[index_best]=}")
-            print("final edge weight", data_best.edge_weight)
-            print("final degrees", scatter_src + scatter_dst)
-            print("edge index", edge_index.detach().cpu().numpy().T)
+            print(f"Final batch.edge_weight (flattened): {batch.edge_weight.flatten()}")
+            print(f"Final losses per candidate: {losses.detach().cpu().numpy()}")
+            print(f"Chosen index: {best_idx}, loss: {losses[best_idx].item():.4f}")
+            print(f"Final edge weights: {best_data.edge_weight.flatten().cpu().numpy()}")
+            print(f"Final degrees: {(scatter_src + scatter_dst).cpu().numpy()}")
+            print(f"Final edge index: {kept_edges.detach().cpu().numpy().T}")
 
-        return Data(x=__x__, edge_index=edge_index), node_counters, edge_counters
-
-        # # Prepare final graph dict representation using best candidate's discrete edge weights
-        # graph_dict = {
-        #     "node_indices": np.array(list(index_node_map.keys()), dtype=int),
-        #     "node_attributes": data_best.x.detach().cpu().numpy(),  # placeholder attributes
-        #     "edge_indices": edge_index.detach().cpu().numpy().T,
-        #     "edge_attributes": edge_weight,
-        # }
-        # for key in node_keys:
-        #     graph_dict[key] = [node[key] for node in index_node_map.values()]
-        #
-        # return graph_dict
+        return best_data, node_counters, edge_counters
 
     def use_edge_features(self) -> bool:
         return len(self.edge_encoder_map) > 0

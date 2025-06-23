@@ -22,6 +22,16 @@ ARTIFACTS_PATH = PATH / "artifacts"
 ASSETS_PATH = ARTIFACTS_PATH / "assets"
 DATASET_TEST_PATH = ARTIFACTS_PATH / "datasets"
 
+# ========= Utils =========
+def set_seed(seed: int) -> None:
+    import random, numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # ========= Torchhd Utils =========
@@ -296,7 +306,7 @@ class DataTransformer:
         return list(map(tuple, edge_index.T.tolist()))
 
     @staticmethod
-    def get_edge_existence_counter(batch: int, data: Data, indexer: TupleIndexer) -> list[tuple[int, ...]]:
+    def get_edge_existence_counter(batch: int, data: Data, indexer: TupleIndexer) -> Counter:
         """
         Returns a Counter of existing edges for a single graph in the batch,
         mapping (src_idx, dst_idx) to count.  It converts global node indices
@@ -338,7 +348,7 @@ class DataTransformer:
 
 
     @staticmethod
-    def get_edge_counter(data: Data, batch) -> list[tuple[int, ...]]:
+    def get_edge_counter(data: Data, batch) -> Counter[tuple[int, ...]]:
         """
         Returns a Counter of existing edges for a single graph in the batch,
         mapping (src_idx, dst_idx) to count.  It converts global node indices
