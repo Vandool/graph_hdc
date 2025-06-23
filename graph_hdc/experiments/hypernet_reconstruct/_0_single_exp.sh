@@ -16,21 +16,21 @@ DATASET="ZINC_ND_COMB"
 SEED="42"
 DATA_BATCH_SIZE="32"
 VSA="HRR"
-HV_DIM="6400"
+HV_DIM="9216"
 HYPERNET_DEPTH="3"
-MAX_MAIN_LOOP="1"
+MAX_MAIN_LOOP="3"
 REC_NUM_ITER="10"
 REC_LEARNING_RATE="1"
 REC_BATCH_SIZE="1"
 REC_LOW="10"
 REC_HIGH="10"
-REC_ALPHA="0"
-REC_LAMBDA_L1="0"
+REC_ALPHA="0.1"
+REC_LAMBDA_L1="0.01"
 
 
 module load devel/cuda/11.8
 
-pixi run python "${EXPERIMENTS_PATH}/01_test.py" \
+pixi run python "${EXPERIMENTS_PATH}/01_hypernet_reconstruct_single_exp.py" \
                           --PROJECT_DIR="\"${PROJECT_DIR}\"" \
                           --SEED="${SEED}" \
                           --DATASET="\"${DATASET}\"" \

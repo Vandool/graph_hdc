@@ -193,7 +193,7 @@ def experiment(e: Experiment):
                 low=e.REC_LOW,
                 high=e.REC_HIGH,
                 alpha=e.REC_ALPHA,
-                lambda_l1=e.REC_LABDA_L1,
+                lambda_l1=e.REC_LAMBDA_L1,
                 use_node_degree=bool(e.REC_ALPHA) # Alpha = 0, zeroes the node_degree loss
             )
 
