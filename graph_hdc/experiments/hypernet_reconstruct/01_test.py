@@ -151,7 +151,7 @@ def experiment(e: Experiment):
     dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
 
     ### Initialize Hypernet and evals
-    hypernet = HyperNet(config=ds.default_cfg, hidden_dim=ds.default_cfg.hv_dim, depth=e.DEPTH)
+    hypernet = HyperNet(config=ds.default_cfg, hidden_dim=ds.default_cfg.hv_dim, depth=e.HYPERNET_DEPTH)
     all_metrics = []
 
     ## Run the Experiment and
