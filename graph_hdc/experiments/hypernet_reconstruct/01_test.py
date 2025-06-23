@@ -84,14 +84,11 @@ experiment = Experiment(base_path=folder_path(__file__), namespace=file_namespac
 @experiment.hook("get_dataset", replace=False, default=True)
 def get_dataset(e: Experiment, dataset: str | SupportedDataset, root: Path) -> Dataset:
     ds = dataset if isinstance(dataset, SupportedDataset) else SupportedDataset(dataset)
-    root.mkdir(parents=True)
-    root = root / ds.value
-
     if ds == SupportedDataset.ZINC:
-        return ZINC(root=root)
+        return ZINC(root=str(root))
     if ds in {SupportedDataset.ZINC_NODE_DEGREE, SupportedDataset.ZINC_NODE_DEGREE_COMB}:
-        return ZINC(root=root, pre_transform=AddNodeDegree())
-    return QM9(root=root)
+        return ZINC(root=str(root), pre_transform=AddNodeDegree())
+    return QM9(root=str(root))
 
 
 @experiment.hook("print_cuda")
