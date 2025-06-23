@@ -91,7 +91,7 @@ def get_dataset(e: Experiment, dataset: str | SupportedDataset, root: Path) -> D
     return QM9(root=str(root))
 
 
-@experiment.hook("print_cuda")
+@experiment.hook("get_device", replace=False, default=True)
 def get_device(e: Experiment) -> Any:
     try:
         import torch
@@ -111,7 +111,7 @@ def get_device(e: Experiment) -> Any:
 @experiment
 def experiment(e: Experiment):
     e.log(f"{e.path=}")
-    e.log(f"{e.parameters=}")
+    e.log(pformat({k: (v, type(v)) for k, v in e.parameters}, indent=2))
     device = e.apply_hook("get_device")
     e.log(f"{device=}")
 
