@@ -7,7 +7,8 @@ from typing import Any
 import pandas as pd
 from pycomex.functional.experiment import Experiment
 from pycomex.util import file_namespace, folder_path
-from torch_geometric.data import DataLoader, Dataset
+from torch_geometric import loader
+from torch_geometric.data import Dataset
 from torch_geometric.datasets import QM9, ZINC
 
 from src import evaluation_metrics
@@ -148,7 +149,7 @@ def experiment(e: Experiment):
     dataset = e.apply_hook("get_dataset", dataset=e.DATASET, root=dataset_root)
     e.log(f"Dataset has been loaded. {dataset=!r}")
 
-    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
+    dataloader = loader.DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
 
     ### Initialize Hypernet and evals
     hypernet = HyperNet(config=ds.default_cfg, hidden_dim=ds.default_cfg.hv_dim, depth=e.HYPERNET_DEPTH)
