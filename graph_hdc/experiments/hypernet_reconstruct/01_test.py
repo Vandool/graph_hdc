@@ -178,7 +178,7 @@ def experiment(e: Experiment):
             node_terms = encoded_data["node_terms"][b]
             edge_terms = encoded_data["edge_terms"][b]
             data_dec, node_counter_dec, edge_counter_dec = hypernet.reconstruct(
-                graph_embedding, node_terms, edge_terms, use_node_degree=e.USE_NODE_DEGREES
+                graph_embedding, node_terms, edge_terms, use_node_degree=bool(e.ALPHA)
             )
 
             ## Nodes
