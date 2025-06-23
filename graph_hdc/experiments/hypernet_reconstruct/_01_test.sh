@@ -32,17 +32,17 @@ module load devel/cuda/11.8
 
 pixi run python "${EXPERIMENTS_PATH}/01_test.py" \
                           --PROJECT_DIR="\"${PROJECT_DIR}\"" \
-                          --SEED="\"${SEED}\"" \
+                          --SEED="${SEED}" \
                           --DATASET="\"${DATASET}\"" \
-                          --DATA_BATCH_SIZE="\"${DATA_BATCH_SIZE}\"" \
+                          --DATA_BATCH_SIZE="${DATA_BATCH_SIZE}" \
                           --VSA="\"${VSA}\"" \
-                          --HV_DIM="\"${HV_DIM}\"" \
-                          --HYPERNET_DEPTH="\"${HYPERNET_DEPTH}\"" \
-                          --MAX_MAIN_LOOP="\"${MAX_MAIN_LOOP}\"" \
-                          --REC_NUM_ITER="\"${REC_NUM_ITER}\"" \
-                          --REC_LEARNING_RATE="\"${REC_LEARNING_RATE}\"" \
-                          --REC_BATCH_SIZE="\"${REC_BATCH_SIZE}\"" \
-                          --REC_LOW="\"${REC_LOW}\"" \
-                          --REC_HIGH="\"${REC_HIGH}\"" \
-                          --REC_ALPHA="\"${REC_ALPHA}\"" \
-                          --REC_LAMBDA_L1="\"${REC_LAMBDA_L1}\""
+                          --HV_DIM="${HV_DIM}" \
+                          --HYPERNET_DEPTH="${HYPERNET_DEPTH}" \
+                          --MAX_MAIN_LOOP="${MAX_MAIN_LOOP}" \
+                          --REC_NUM_ITER="${REC_NUM_ITER}" \
+                          --REC_LEARNING_RATE="${REC_LEARNING_RATE}" \
+                          --REC_BATCH_SIZE="${REC_BATCH_SIZE}" \
+                          --REC_LOW="${REC_LOW}" \
+                          --REC_HIGH="${REC_HIGH}" \
+                          --REC_ALPHA="${REC_ALPHA}" \
+                          --REC_LAMBDA_L1="${REC_LAMBDA_L1}"
