@@ -185,7 +185,16 @@ def experiment(e: Experiment):
             node_terms = encoded_data["node_terms"][b]
             edge_terms = encoded_data["edge_terms"][b]
             data_dec, node_counter_dec, edge_counter_dec = hypernet.reconstruct(
-                graph_embedding, node_terms, edge_terms, use_node_degree=bool(e.ALPHA)
+                graph_hv=graph_embedding,
+                node_terms=node_terms,
+                edge_terms=edge_terms,
+                learning_rate=e.REC_LEARNING_RATE,
+                batch_size=e.REC_BATCH_SIZE,
+                low=e.REC_LOW,
+                high=e.REC_HIGH,
+                alpha=e.REC_ALPHA,
+                lambda_l1=e.REC_LABDA_L1,
+                use_node_degree=bool(e.REC_ALPHA) # Alpha = 0, zeroes the node_degree loss
             )
 
             ## Nodes
