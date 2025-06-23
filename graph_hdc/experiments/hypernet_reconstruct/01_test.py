@@ -1,11 +1,10 @@
 import time
-import pandas as pd
-
+from collections import Counter
 from pathlib import Path
 from pprint import pformat
 from typing import Any
-from collections import Counter
 
+import pandas as pd
 from pycomex.functional.experiment import Experiment
 from pycomex.util import file_namespace, folder_path
 from torch_geometric.data import DataLoader, Dataset
@@ -119,8 +118,17 @@ def experiment(e: Experiment):
     device = e.apply_hook("get_device")
     e.log(f"{device=}")
 
+    ## Apply configs
+    ds = SupportedDataset(e.DATASET)
+    ds.default_cfg.vsa = VSAModel(e.VSA)
+    # Disable edge and graph features
+    ds.default_cfg.edge_feature_configs = {}
+    ds.default_cfg.graph_feature_configs = {}
+    ds.default_cfg.hv_dim = e.HV_DIM
+    batch_size = e.DATA_BATCH_SIZE
+
     ## Create Paths
-    dataset_root = Path(e.PROJECT_DIR) / "datasets" / e.DATASET.value
+    dataset_root = Path(e.PROJECT_DIR) / "datasets" / ds.value
     dataset_root.mkdir(parents=True, exist_ok=True)
 
     eval_root = Path(e.path) / "evaluations"
@@ -131,18 +139,11 @@ def experiment(e: Experiment):
     dataset = e.apply_hook("get_dataset", dataset=e.DATASET, root=dataset_root)
     e.log(f"Dataset has been loaded. {dataset=!r}")
 
-    dataloader = DataLoader(dataset=dataset, batch_size=e.DATA_BATCH_SIZE, shuffle=False)
+    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
 
-    ## Apply configs
-    ds = e.DATASET
-    ds.default_cfg.vsa = e.VSA
-    # Disable edge and graph features
-    ds.default_cfg.edge_feature_configs = {}
-    ds.default_cfg.graph_feature_configs = {}
-    ds.default_cfg.hv_dim = e.HV_DIM
-
-    ### Initialize Hypernet
+    ### Initialize Hypernet and evals
     hypernet = HyperNet(config=ds.default_cfg, hidden_dim=ds.default_cfg.hv_dim, depth=e.DEPTH)
+    all_metrics = []
 
     ## Run the Experiment and
     for batch in dataloader:
@@ -162,7 +163,7 @@ def experiment(e: Experiment):
 
         ## Time the whole reconstruction + eval
         start_time = time.perf_counter()
-        for b in range(e.DATA_BATCH_SIZE):
+        for b in range(batch_size):
             graph_embedding = encoded_data["graph_embedding"][b]
             node_terms = encoded_data["node_terms"][b]
             edge_terms = encoded_data["edge_terms"][b]
@@ -189,7 +190,7 @@ def experiment(e: Experiment):
             actual_edge_counter = DataTransformer.get_edge_counter(batch=b, data=batch)
             ## Calculate predicted edges
             x_list = data_dec.x.int().tolist()
-            edges = list(zip(data_dec.edge_index[0], data_dec.edge_index[1]))
+            edges = list(zip(data_dec.edge_index[0], data_dec.edge_index[1], strict=False))
             edges_as_ints = [(a.item(), b.item()) for a, b in edges]
             pred_edges = []
             for u, v in edges_as_ints:
@@ -226,40 +227,37 @@ def experiment(e: Experiment):
         ### Save metrics
         run_metrics = {
             "dataset": ds.value,
-            "n_samples": e.DATA_BATCH_SIZE,
-            "vsa": e.VSA.value,
-            "hv_dim": e.HV_DIM,
-            "depth": e.HYPERNET_DEPTH,
+            "n_samples": batch_size,
+            "vsa": hypernet.vsa.value,
+            "hv_dim": hypernet.hv_dim,
+            "depth": hypernet.depth,
             "normalize": True,
             "separate_levels": True,
-            "avg_reconstruct_time": reconstruct_time / e.DATA_BATCH_SIZE,
-            "avg_P_order_zero": sum(p_nodes) / e.DATA_BATCH_SIZE,
-            "avg_F1_order_zero": sum(f1_nodes) / e.DATA_BATCH_SIZE,
-            "avg_P_order_one": sum(p_edges) / e.DATA_BATCH_SIZE,
-            "avg_F1_order_one": sum(f1_edges) / e.DATA_BATCH_SIZE,
-            "avg_P_recons": sum(p_graphs) / e.DATA_BATCH_SIZE,
-            "avg_F1_recons": sum(f1_graphs) / e.DATA_BATCH_SIZE,
-            "avg_node_edit_dist": sum(node_edit_distances) / e.DATA_BATCH_SIZE,
-            "avg_edge_edit_dist": sum(edge_edit_distances) / e.DATA_BATCH_SIZE,
+            "avg_reconstruct_time": reconstruct_time / batch_size,
+            "avg_P_order_zero": sum(p_nodes) / batch_size,
+            "avg_F1_order_zero": sum(f1_nodes) / batch_size,
+            "avg_P_order_one": sum(p_edges) / batch_size,
+            "avg_F1_order_one": sum(f1_edges) / batch_size,
+            "avg_P_recons": sum(p_graphs) / batch_size,
+            "avg_F1_recons": sum(f1_graphs) / batch_size,
+            "avg_node_edit_dist": sum(node_edit_distances) / batch_size,
+            "avg_edge_edit_dist": sum(edge_edit_distances) / batch_size,
             "total_edges": batch.edge_index.shape[1],
         }
 
+        all_metrics.append(run_metrics)
         e.log(pformat(run_metrics, indent=2))
 
-        parquet_path = eval_root / "res.parquet"
-        csv_path = eval_root / "res.csv"
+    # Persist the evals
+    metrics_df = pd.DataFrame(all_metrics)
 
-        metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
+    parquet_path = eval_root / "res.parquet"
+    csv_path = eval_root / "res.csv"
 
-        # append current row
-        new_row = pd.DataFrame([run_metrics])
-        metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+    metrics_df.to_parquet(parquet_path, index=False)
+    metrics_df.to_csv(csv_path, index=False)
 
-        # write back out
-        metrics_df.to_parquet(parquet_path, index=False)
-        metrics_df.to_csv(csv_path, index=False)
-
-    ## Done
+    e.log(f"Saved {len(metrics_df)} rows to:\n  {parquet_path}\n  {csv_path}")
     e.log("DONE")
 
 
