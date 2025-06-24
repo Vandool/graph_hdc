@@ -22,8 +22,8 @@ graph_hdc = 'graph_hdc.cli:cli'
 
 [tool.poetry.dependencies]
 python = ">=3.10.0,<4.0"
-#pycomex = {path = "/Users/arvandkaveh/Projects/kit/pycomex", develop = true}
-pycomex = ">=0.9.2"
+pycomex = {path = "/Users/arvandkaveh/Projects/kit/pycomex", develop = true}
+#pycomex = ">=0.9.2"
 click = ">=7.1.2"
 jinja2 = ">=3.0.3"
 matplotlib = ">=3.5.3"
@@ -37,6 +37,7 @@ torch_geometric = "==2.6.1"
 pytorch_lightning = "==2.4.0"
 torch_hd = "*"
 orjson = "^3.10.18"
+normflows = "^1.7.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

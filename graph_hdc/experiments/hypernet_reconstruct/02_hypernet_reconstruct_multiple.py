@@ -120,6 +120,8 @@ def experiment(e: Experiment):
 
     eval_root = Path(e.path) / "evaluations"
     eval_root.mkdir(parents=True, exist_ok=True)
+    parquet_path = eval_root / "res.parquet"
+    csv_path    = eval_root / "res.csv"
 
     e.log(f"setting global seed: {e.SEED=}")
     set_seed(e.SEED)
@@ -127,12 +129,14 @@ def experiment(e: Experiment):
     batch_size = e.DATA_BATCH_SIZE
 
     # GRID SEARCH
-    all_metrics = []
     for exp_nr, (num_iters, lr, alpha, lambda_l1, (low, high, rec_batch_size)) in enumerate(GRIDS):
         e.log(
             f"-------\nNew grid: {exp_nr=}, {num_iters=}, {lr=}, {alpha=}, {lambda_l1=}, {low=}, {high=}, {rec_batch_size=}"
         )
         e.log(pformat({k: (v, type(v)) for k, v in e.parameters.items()}, indent=2))
+
+        # To store evals of the exp
+        grid_metrics: list[dict] = []
 
         ## Get the Dataset
         e.log(f"{e.DATASET}")
@@ -271,19 +275,26 @@ def experiment(e: Experiment):
                 "total_edges": batch.edge_index.shape[1],
             }
 
-            all_metrics.append(run_metrics)
+            grid_metrics.append(run_metrics)
             e.log(pformat(run_metrics, indent=2))
 
-    # Persist the evals
-    metrics_df = pd.DataFrame(all_metrics)
+        # after this grid completes, append to disk:
+        df_grid = pd.DataFrame(grid_metrics)
+        if parquet_path.exists():
+            df_all = pd.read_parquet(parquet_path)
+            df_all = pd.concat([df_all, df_grid], ignore_index=True)
+        else:
+            df_all = df_grid
+        df_all.to_parquet(parquet_path, index=False)
 
-    parquet_path = eval_root / "res.parquet"
-    csv_path = eval_root / "res.csv"
+        # likewise for CSV if you want
+        if csv_path.exists():
+            df_all.to_csv(csv_path, index=False)
+        else:
+            df_grid.to_csv(csv_path, index=False)
 
-    metrics_df.to_parquet(parquet_path, index=False)
-    metrics_df.to_csv(csv_path, index=False)
-
-    e.log(f"Saved {len(metrics_df)} rows to:\n  {parquet_path}\n  {csv_path}")
+        e.log(f"Saved grid {exp_nr} → {len(grid_metrics)} rows; "
+              f"total so far {len(df_all)} rows")
 
 
 experiment.run_if_main()
