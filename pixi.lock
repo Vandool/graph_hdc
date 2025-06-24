@@ -158,6 +158,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/20/22/2ebae7ae43cd8f2debc35c631172ddf14e2a87ffcc04cf43ff9df9fff0d3/msgpack-1.1.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/e6/2b/5dcf173be15e42f330110875a2668ddfc208afc4229097312212dc9c1236/multidict-6.4.4-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/eb/8d/776adee7bbf76365fdd7f2552710282c79a4ead5d2a46408c9043a2b70ba/networkx-3.5-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/c5/68/3148519079d49392e411bdae3e1e6d3eecd2d284e9b3c90861d70c646157/normflows-1.7.3.tar.gz
       - pypi: https://files.pythonhosted.org/packages/1c/12/734dce1087eed1875f2297f687e671cfe53a091b6f2f55f0c7241aad041b/numpy-2.3.0-cp313-cp313-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/ae/71/1c91302526c45ab494c23f61c7a84aa568b8c1f9d196efa5993957faf906/nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/67/42/f4f60238e8194a3106d06a058d494b18e006c10bb2b915655bd9f6ea4cb1/nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl
@@ -1107,12 +1108,13 @@ packages:
 - pypi: ./
   name: graph-hdc
   version: 0.1.0
-  sha256: 32a59e4921b416c09f3bcc2c2576950c241f612d22de405b7ec59aeaa589225c
+  sha256: 5b92b2c28652bc39b5d24f9203ad1e6a31612934134451de1cf71ab012a79fd1
   requires_dist:
   - click>=7.1.2
   - jinja2>=3.0.3
   - jsonpickle>=4.0.1,<=5.0.0
   - matplotlib>=3.5.3
+  - normflows>=1.7.3,<2.0.0
   - numpy>=1.23.2
   - orjson>=3.10.18,<4.0.0
   - poetry-bumpversion>=0.3.0
@@ -2208,6 +2210,16 @@ packages:
   purls: []
   size: 135906
   timestamp: 1744445169928
+- pypi: https://files.pythonhosted.org/packages/c5/68/3148519079d49392e411bdae3e1e6d3eecd2d284e9b3c90861d70c646157/normflows-1.7.3.tar.gz
+  name: normflows
+  version: 1.7.3
+  sha256: 0cc539869c9970d28041edb4d7a28006c1cec6241d9d0d553975b5b1155c2071
+  requires_dist:
+  - numpy
+  - torch
+  - mkdocs ; extra == 'docs'
+  - mkdocstrings[python] ; extra == 'docs'
+  - mkdocs-jupyter ; extra == 'docs'
 - pypi: https://files.pythonhosted.org/packages/1c/12/734dce1087eed1875f2297f687e671cfe53a091b6f2f55f0c7241aad041b/numpy-2.3.0-cp313-cp313-manylinux_2_28_x86_64.whl
   name: numpy
   version: 2.3.0
