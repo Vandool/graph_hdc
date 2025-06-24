@@ -8,19 +8,19 @@ DATASET="ZINC_ND_COMB"
 SEED="42"
 DATA_BATCH_SIZE="32"
 HYPERNET_DEPTH="3"
-MAX_MAIN_LOOP="3"
+MAX_MAIN_LOOP="1"
 
 # Grid search
-hv_dims=(6400 9216)  # 80*80=6400, 96*96=9216
-VSAs=("HRR" "MAP")
+hv_dims=(9216)  # 80*80=6400, 96*96=9216
+VSAs=("HRR")
 
 
 for hv_dim in "${hv_dims[@]}"; do
   for vsa in "${VSAs[@]}"; do
     sbatch \
       --job-name=hyperrec \
-      --partition=gpu_h100 \
-      --time=18:00:00 \
+      --partition=dev_gpu_h100 \
+      --time=00:30:00 \
       --gres=gpu:1 \
       --nodes=1 \
       --ntasks=1 \
