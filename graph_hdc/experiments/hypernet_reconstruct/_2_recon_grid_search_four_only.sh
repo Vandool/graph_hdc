@@ -19,12 +19,12 @@ for hv_dim in "${hv_dims[@]}"; do
   for vsa in "${VSAs[@]}"; do
     sbatch \
       --job-name=hyperrec \
-      --partition=gpu_h100 \
+      --partition=gpu_mi300 \
       --time=18:00:00 \
       --gres=gpu:1 \
       --nodes=1 \
       --ntasks=1 \
-      --mem=50G \
+      --mem=64G \
       --wrap="module load devel/cuda/11.8 && \\
         pixi run python ${SCRIPT} \\
           --PROJECT_DIR=\"\\\"${PROJECT_DIR}\\\"\" \\
