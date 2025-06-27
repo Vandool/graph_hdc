@@ -40,8 +40,8 @@ DATASET: SupportedDataset = SupportedDataset.ZINC_NODE_DEGREE_COMB
 DATA_BATCH_SIZE: int = 32
 
 # :param VSA:
-#       VSAModel representation of a supported vsa (hypervector) types
-VSA: VSAModel = VSAModel.HRR
+#       str representation of a supported vsa (hypervector) types
+VSA: str = "MAP"
 
 # :param HV_DIM:
 #       int the dimension of the hypervectors
@@ -106,8 +106,9 @@ def experiment(e: Experiment):
     e.log(f"{device=}")
 
     ## Apply configs
+    vsa = VSAModel(e.VSA)
     ds = SupportedDataset(e.DATASET)
-    ds.default_cfg.vsa = VSAModel(e.VSA)
+    ds.default_cfg.vsa = vsa
     ds.default_cfg.hv_dim = e.HV_DIM
     ds.default_cfg.device = device
     ds.default_cfg.seed = e.SEED
@@ -132,13 +133,13 @@ def experiment(e: Experiment):
     # GRID SEARCH
     for exp_nr, (num_iters, lr, alpha, lambda_l1, (low, high, rec_batch_size)) in enumerate(GRIDS):
         ## We timed out, so we continue
-        if e.VSA == VSAModel.HRR and e.HV_DIM == 6400 and exp_nr <= 47:
+        if vsa == VSAModel.HRR and e.HV_DIM == 6400 and exp_nr <= 47:
             continue
-        if e.VSA == VSAModel.MAP and e.HV_DIM == 6400 and exp_nr <= 58:
+        if vsa == VSAModel.MAP and e.HV_DIM == 6400 and exp_nr <= 58:
             continue
-        if e.VSA == VSAModel.HRR and e.HV_DIM == 9216 and exp_nr <= 33:
+        if vsa == VSAModel.HRR and e.HV_DIM == 9216 and exp_nr <= 33:
             continue
-        if e.VSA == VSAModel.MAP and e.HV_DIM == 9216 and exp_nr <= 40:
+        if vsa == VSAModel.MAP and e.HV_DIM == 9216 and exp_nr <= 40:
             continue
         e.log(
             f"-------\nNew grid: {exp_nr=}, {num_iters=}, {lr=}, {alpha=}, {lambda_l1=}, {low=}, {high=}, {rec_batch_size=}"
