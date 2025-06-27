@@ -135,7 +135,7 @@ def experiment(e: Experiment):
         ## We timed out, so we continue
         if vsa == VSAModel.HRR and e.HV_DIM == 6400 and exp_nr <= 47:
             continue
-        if vsa == VSAModel.MAP and e.HV_DIM == 6400 and exp_nr <= 58:
+        if vsa == VSAModel.MAP and e.HV_DIM == 6400 and exp_nr <= 93:
             continue
         if vsa == VSAModel.HRR and e.HV_DIM == 9216 and exp_nr <= 33:
             continue
