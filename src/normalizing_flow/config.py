@@ -1,0 +1,142 @@
+import argparse
+from pathlib import Path
+
+import torch
+from pydantic.dataclasses import dataclass
+from torch import nn
+from torch.nn import GELU, LeakyReLU, ReLU
+
+from src.encoding.configs_and_constants import SupportedDataset
+from src.encoding.types import VSAModel
+
+
+@dataclass
+class SpiralFlowConfig:
+    """
+    Configuration for constructing a Neural Spline Flow model.
+
+    :param num_input_channels: Total dimension of the flattened input (e.g., 3 * D).
+    :param num_flows: Number of coupling-spline blocks (and optional permutations).
+    :param num_blocks: Number of hidden layers in each coupling NN.
+    :param num_hidden_channels: Number of hidden units per layer in each coupling NN.
+    :param num_context_channels: Dimension of optional conditioning/context vector.
+    :param num_bins: Number of bins for the rational-quadratic spline.
+    :param tail_bound: Threshold beyond which the spline is linear.
+    :param activation: Activation module for coupling NNs.
+    :param dropout_probability: Dropout rate in coupling NNs.
+    :param permute: Whether to insert LU-permutations between blocks.
+    :param init_identity: If True, initialize each spline as (approx.) identity.
+    :param input_shape: Original tensor shape for reshaping samples back (e.g., (3, D)).
+    """
+
+    ## General Config
+    base_dir: Path
+
+    ## HDC Config
+    vsa: VSAModel
+    hv_dim: int
+    dataset: SupportedDataset
+
+    ## Spiral Flow Config
+    num_input_channels: int
+    num_flows: int
+    num_blocks: int
+    num_hidden_channels: int
+    num_context_channels: int | None = None
+    num_bins: int = 8
+    tail_bound: int = 3
+    activation: type[ReLU | GELU | LeakyReLU] = nn.ReLU
+    dropout_probability: float = 0.0
+    permute: bool = False
+    init_identity: bool = True
+    input_shape: tuple[int, ...] | None = None
+    device: torch.device | None = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    lr: float = 1e-3  # learning rate for optimizer
+    weight_decay: float = 0.0  # optimizer weight decay
+
+
+# Helper for --input_shape (comma-separated integers, e.g., "3,512")
+def parse_shape(s):
+    return tuple(int(x) for x in s.split(","))
+
+
+def get_activation(name: str) -> type[ReLU | GELU | LeakyReLU]:
+    if name.lower() == "relu":
+        return nn.ReLU
+    if name.lower() == "gelu":
+        return nn.GELU
+    if name.lower() == "leakyrelu":
+        return nn.LeakyReLU
+    raise argparse.ArgumentTypeError(f"Unsupported activation: {name}")
+
+
+def get_flow_cli_args() -> SpiralFlowConfig:
+    parser = argparse.ArgumentParser(description="Neural Spline Flow CLI")
+
+    ## General Config
+    parser.add_argument(
+        "--base_dir",
+        "-dir",
+        type=Path,
+        required=True,
+        help="The base directory, path to all the artefacts of the experiment",
+    )
+
+    ## HDC Config
+    parser.add_argument("--vsa_model", "-v", type=VSAModel, required=True, help="Hypervector Type")
+    parser.add_argument("--hv_dim", "-hd", type=int, required=True, help="The dimension of hypervector space")
+    parser.add_argument(
+        "--dataset", "-ds", type=SupportedDataset, default="ZINC_ND_COMB", help="The dimension of hypervector space"
+    )
+
+    ## Spiral Flow Configt
+    parser.add_argument(
+        "--num_input_channels",
+        "-ic",
+        type=int,
+        required=True,
+        help="Total dimension of the flattened input (e.g., 3*D)",
+    )
+    parser.add_argument("--num_flows", "-nf", type=int, default=8, help="Number of coupling-spline blocks")
+    parser.add_argument("--num_blocks", "-nb", type=int, default=2, help="Number of hidden layers in coupling NN")
+    parser.add_argument("--num_hidden_channels", "-nh", type=int, default=128, help="Number of hidden units per layer")
+    parser.add_argument(
+        "--num_context_channels", "-nc", type=int, default=None, help="Number of context/conditional channels"
+    )
+    parser.add_argument(
+        "--num_bins", "-bins", type=int, default=8, help="Number of bins for the rational-quadratic spline"
+    )
+    parser.add_argument("--tail_bound", "-tb", type=int, default=3, help="Threshold beyond which the spline is linear")
+    parser.add_argument(
+        "--activation", "-a", type=get_activation, default="relu", help="Activation: relu, gelu, leakyrelu"
+    )
+    parser.add_argument(
+        "--dropout_probability", "-dp", type=float, default=0.0, help="Dropout probability in coupling NNs"
+    )
+    parser.add_argument("--permute", "-p", action="store_true", help="Insert LU-permutations between blocks")
+    parser.add_argument("--init_identity", "-ii", action="store_true", help="Initialize splines as identity")
+    parser.add_argument(
+        "--input_shape",
+        "-is",
+        type=parse_shape,
+        default=None,
+        help="Original tensor shape as comma-separated, e.g. '3,512'",
+    )
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for optimizer")
+    parser.add_argument("--weight_decay", "-wd", type=float, default=0.0, help="Optimizer weight decay")
+    parser.add_argument(
+        "--device",
+        "-dev",
+        type=str,
+        choices=["cpu", "cuda"],
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device",
+    )
+
+    args = parser.parse_args()
+    flow_config = SpiralFlowConfig(**vars(parser.parse_args()))
+
+    flow_config.device = torch.device(args.device)
+    flow_config.activation = args.activation if isinstance(args.activation, type) else get_activation(args.activation)
+
+    return flow_config

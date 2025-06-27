@@ -16,7 +16,14 @@ from torch_geometric.utils import scatter
 
 from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import DatasetConfig, Features, IndexRange
-from src.encoding.feature_encoders import AbstractFeatureEncoder, CategoricalOneHotEncoder, CombinatoricIntegerEncoder
+from src.encoding.feature_encoders import (
+    AbstractFeatureEncoder,
+    CategoricalOneHotEncoder,
+    CombinatoricIntegerEncoder,
+    CategoricalIntegerEncoder,
+    TrueFalseEncoder,
+    CategoricalLevelEncoder,
+)
 from src.encoding.types import VSAModel
 from src.utils.utils import TupleIndexer, cartesian_bind_tensor, scatter_hd, flatten_counter
 
@@ -238,34 +245,34 @@ class HyperNet(AbstractGraphEncoder):
 
     def __init__(
         self,
-        config: DatasetConfig,
+        config: DatasetConfig | None = None,
         hidden_dim: int = 100,
         depth: int = 3,
         use_explain_away: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
         self.use_explain_away = use_explain_away
-        self.vsa = self._validate_vsa(config.vsa)
         self.hidden_dim = hidden_dim
         self.depth = depth
+        self.vsa = self._validate_vsa(config.vsa)
         self.hv_dim = config.hv_dim
         self.node_encoder_map: EncoderMap = {
             feat: (
-                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa, idx_offset=cfg.idx_offset),
+                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset),
                 cfg.index_range,
             )
             for feat, cfg in config.node_feature_configs.items()
         }
         self.edge_encoder_map: EncoderMap = {
             feat: (
-                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa, idx_offset=cfg.idx_offset),
+                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset),
                 cfg.index_range,
             )
             for feat, cfg in config.edge_feature_configs.items()
         }
         self.graph_encoder_map: EncoderMap = {
             feat: (
-                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa, idx_offset=cfg.idx_offset),
+                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset),
                 cfg.index_range,
             )
             for feat, cfg in config.graph_feature_configs.items()
@@ -928,57 +935,105 @@ class HyperNet(AbstractGraphEncoder):
         # -- saving and loading
         # methods that handle the storage of the HyperNet instance to and from a file.
 
-    def save_to_path(self, path: str) -> None:
-        """
-        Saves the current state of the current instance to the given ``path`` using jsonpickle.
+    def save_to_path(self, path: str | Path) -> None:
+        """Serialize the HyperNet to *path* in a pickle-safe, version-tolerant format."""
 
-        :param path: The absolute path to the file where the instance should be saved. Will overwrite
-            if the file already exists.
+        def serialize_encoder_map(encoder_map):
+            result: dict[str, Any] = {}
+            for feat, (encoder, idx_range) in encoder_map.items():
+                entry = {
+                    "encoder_class": encoder.__class__.__name__,
+                    "init_args": {
+                        "dim": encoder.dim,
+                        "vsa": encoder.vsa,  # ← store string
+                        "device": str(encoder.device),
+                        "seed": getattr(encoder, "seed", None),
+                        "num_categories": getattr(encoder, "num_categories", None),
+                        "idx_offset": getattr(encoder, "idx_offset", 0),
+                    },
+                    "index_range": idx_range,
+                    "codebook": encoder.codebook.cpu(),  # always CPU
+                }
+                # Special case: CombinatoricIntegerEncoder carries an indexer
+                if hasattr(encoder, "indexer"):
+                    entry["indexer_state"] = encoder.indexer.__dict__.copy()
+                result[feat.name] = entry  # ← just the member name
+            return result
 
-        :returns: None
-        """
-        data = {
+        state = {
             "attributes": {
                 "hidden_dim": self.hidden_dim,
                 "depth": self.depth,
                 "seed": self.seed,
-                "pooling": self.pooling,
-                "vsa": self.vsa,
+                "vsa": self.vsa.value,  # ← store string
                 "hv_dim": self.hv_dim,
             },
-            "node_encoder_map": self.node_encoder_map,
-            "edge_encoder_map": self.edge_encoder_map,
-            "graph_encoder_map": self.graph_encoder_map,
+            "node_encoder_map": serialize_encoder_map(self.node_encoder_map),
+            "edge_encoder_map": serialize_encoder_map(self.edge_encoder_map),
+            "graph_encoder_map": serialize_encoder_map(self.graph_encoder_map),
         }
-        with Path.open(path, mode="w") as file:
-            content = jsonpickle.dumps(data)
-            file.write(content)
+        torch.save(state, path)
 
-    def load_from_path(self, path: str) -> None:
-        """
-        Given the absolute string ``path`` to an existing file, this will load the saved state that
-        has been saved using the "save_to_path" method. This will overwrite the values of the
-        current object instance.
+    def load_from_path(self, path: str | Path) -> None:
+        """Inverse of *save_to_path* – tolerates both old and new checkpoints."""
 
-        :param path: The absolute path to the file where a HyperNet instance has previously been
-            saved to.
+        encoder_class_map = {
+            "CategoricalOneHotEncoder": CategoricalOneHotEncoder,
+            "CategoricalIntegerEncoder": CategoricalIntegerEncoder,
+            "CombinatoricIntegerEncoder": CombinatoricIntegerEncoder,
+            "TrueFalseEncoder": TrueFalseEncoder,
+            "CategoricalLevelEncoder": CategoricalLevelEncoder,
+        }
 
-        :returns: None
-        """
 
-        with Path.open(path) as file:
-            data = jsonpickle.loads(file.read())
+        def _ensure_enum(x: str | VSAModel) -> VSAModel:
+            """Return *x* as VSAModel (idempotent)."""
+            return x if isinstance(x, VSAModel) else VSAModel(x)
 
-        for key, value in data["attributes"].items():
-            setattr(self, key, value)
+        def _feat_key_to_enum(key: str) -> Features:
+            """
+            Accept either `'ATOM_TYPE'` (new) or `'Features.ATOM_TYPE'` (legacy)
+            and return the corresponding enum member.
+            """
+            if key.startswith("Features."):
+                key = key.split(".", 1)[1]
+            return Features[key]
 
-        self.node_encoder_map = data["node_encoder_map"]
-        self.edge_encoder_map = data["edge_encoder_map"]
-        self.graph_encoder_map = data["graph_encoder_map"]
+        def deserialize_encoder_map(serialized: dict[str, Any]):
+            from src.utils.utils import TupleIndexer
 
-    ## TODO(Clarify): Is this method necessary?
+            result = {}
+            for feat_key, entry in serialized.items():
+                args = entry["init_args"]
+                enc_cls = encoder_class_map[entry["encoder_class"]]
+
+                # -- indexer (only for CombinatoricIntegerEncoder) ---------------
+                if "indexer_state" in entry:
+                    indexer = TupleIndexer.__new__(TupleIndexer)
+                    indexer.__dict__.update(entry["indexer_state"])
+                    encoder = enc_cls(**args, indexer=indexer)
+                else:
+                    encoder = enc_cls(**args)
+
+                # restore codebook / device
+                encoder.codebook = entry["codebook"]
+                encoder.device = torch.device(args["device"])
+
+                result[_feat_key_to_enum(feat_key)] = (encoder, entry["index_range"])
+            return result
+
+
+        # With weights_only=True the “safe” un-pickler only accepts tensors, primitive types and whatever you
+        # explicitly allow-list. We set it to False to allow unsafe un-pickler.
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        for k, v in state["attributes"].items():
+            setattr(self, k, v)
+        self.node_encoder_map = deserialize_encoder_map(state["node_encoder_map"])
+        self.edge_encoder_map = deserialize_encoder_map(state["edge_encoder_map"])
+        self.graph_encoder_map = deserialize_encoder_map(state["graph_encoder_map"])
+
     @classmethod
-    def load(cls, path: str):
+    def load(cls, path: str | Path) -> 'HyperNet':
         """
         Given the absolute string ``path`` to an existing file, this will load the saved state that
         has been saved using the "save_to_path" method. This will overwrite the values of the
@@ -989,8 +1044,9 @@ class HyperNet(AbstractGraphEncoder):
 
         :returns: A new instance of the HyperNet class with the loaded state.
         """
-        instance = cls(hidden_dim=100, node_encoder_map={"node": CategoricalOneHotEncoder(dim=100, num_categories=2)})
-        instance.load_from_path(path)
+        instance = cls.__new__(cls)
+        pl.LightningModule.__init__(instance)
+        instance.load_from_path(path=path)
         return instance
 
     def possible_graph_from_constraints(

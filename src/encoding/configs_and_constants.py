@@ -58,7 +58,7 @@ class DatasetConfig:
     """
 
     hv_dim: int = 10000
-    vsa: VSAModel = VSAModel.MAP
+    vsa: VSAModel = field(default_factory=lambda: VSAModel.MAP)
     node_feature_configs: dict[Features, FeatureConfig] = field(default_factory=OrderedDict)
     edge_feature_configs: Optional[dict[Features, FeatureConfig]] = field(default_factory=OrderedDict)
     graph_feature_configs: Optional[dict[Features, FeatureConfig]] = field(default_factory=OrderedDict)

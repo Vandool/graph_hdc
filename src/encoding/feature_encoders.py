@@ -4,7 +4,6 @@ from typing import Any, Optional
 import torch
 import torchhd
 
-from src.encoding.types import VSAModel
 from src.utils.utils import TupleIndexer
 
 
@@ -12,14 +11,14 @@ class AbstractFeatureEncoder(ABC):
     def __init__(
         self,
         dim: int,
-        vsa: VSAModel,
+        vsa: str,
         device: torch.device = torch.device("cpu"),
-        seed: Optional[int] = None,
-        num_categories: Optional[int] = None,
+        seed: int | None = None,
+        num_categories: int | None = None,
         idx_offset: int = 0,
     ):
         self.dim = dim
-        self.vsa = vsa.value
+        self.vsa = vsa
         self.device = device
         self.num_categories = num_categories
         self.idx_offset = idx_offset
@@ -56,12 +55,14 @@ class CategoricalOneHotEncoder(AbstractFeatureEncoder):
         self,
         dim: int,
         num_categories: int,
-        vsa: VSAModel = VSAModel.MAP,
+        vsa: str = "MAP",
         device: torch.device = torch.device("cpu"),
-        seed: Optional[int] = None,
+        seed: int | None = None,
         idx_offset: int = 0,
     ):
-        super().__init__(dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories, idx_offset=idx_offset)
+        super().__init__(
+            dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories, idx_offset=idx_offset
+        )
 
     def generate_codebook(self) -> torch.Tensor:
         return torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device=self.device)
@@ -77,7 +78,6 @@ class CategoricalOneHotEncoder(AbstractFeatureEncoder):
         one_hot[index] = 1
         return one_hot
 
-
     def decode_index(self, index: int) -> torch.Tensor:
         """
         Given a category index ∈ [0 .. num_categories-1], return the corresponding one-hot tensor.
@@ -89,14 +89,15 @@ class CategoricalOneHotEncoder(AbstractFeatureEncoder):
         one_hot[index] = 1
         return one_hot
 
+
 class CategoricalIntegerEncoder(AbstractFeatureEncoder):
     def __init__(
         self,
         dim: int,
         num_categories: int,
-        vsa: VSAModel = VSAModel.MAP,
+        vsa: str = "MAP",
         device: torch.device = torch.device("cpu"),
-        seed: Optional[int] = None,
+        seed: int | None = None,
         idx_offset: int = 0,
     ):
         """
@@ -174,16 +175,17 @@ class CategoricalIntegerEncoder(AbstractFeatureEncoder):
         # Create a Tensor of shape [1, 1] containing `label`.
         return torch.tensor([[label]], dtype=torch.long, device=self.device)
 
+
 class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
     def __init__(
-            self,
-            dim: int,
-            num_categories: int,
-            indexer: TupleIndexer = TupleIndexer([28, 6]),
-            vsa: VSAModel = VSAModel.MAP,
-            device: torch.device = torch.device("cpu"),
-            seed: Optional[int] = None,
-            idx_offset: int = 0,
+        self,
+        dim: int,
+        num_categories: int,
+        indexer: TupleIndexer = TupleIndexer([28, 6]),
+        vsa: str = "MAP",
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        idx_offset: int = 0,
     ):
         """
         :param dim: Dimensionality of the VSA hyper-vectors
@@ -268,9 +270,9 @@ class TrueFalseEncoder(AbstractFeatureEncoder):
         self,
         dim: int,
         num_categories: int,  # noqa: ARG002
-        vsa: VSAModel = VSAModel.MAP,
+        vsa: str = "MAP",
         device: torch.device = torch.device("cpu"),
-        seed: Optional[int] = None,
+        seed: int | None = None,
     ):
         super().__init__(dim, vsa, device, seed, num_categories=1)
 
@@ -310,14 +312,15 @@ class TrueFalseEncoder(AbstractFeatureEncoder):
         one_hot[label] = 1.0
         return one_hot
 
+
 class CategoricalLevelEncoder(AbstractFeatureEncoder):
     def __init__(
         self,
         dim: int,
         num_categories: int,
-        vsa: VSAModel = VSAModel.MAP,
+        vsa: str = "MAP",
         device: torch.device = torch.device("cpu"),
-        seed: Optional[int] = None,
+        seed: int | None = None,
     ):
         """
         :param dim: Dimensionality of the VSA hyper-vectors
