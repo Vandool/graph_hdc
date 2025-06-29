@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import torch
 from torch import Tensor
 
-from normalizing_flow.config import SpiralFlowConfig
+from src.normalizing_flow.config import SpiralFlowConfig
 
 
 class NeuralSplineLightning(pl.LightningModule):
@@ -28,6 +28,7 @@ class NeuralSplineLightning(pl.LightningModule):
             )
             flows.append(spline)
             flows.append(nf.flows.LULinearPermute(latent_dim))
+            # flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
 
         base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
@@ -53,14 +54,18 @@ class NeuralSplineLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x = batch  # expects [batch_size, *input_shape]
         loss = self.forward_kld(x)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        return loss
+        # Ensure loss is a scalar float (CPU)
+        loss_scalar = loss.mean().item() if torch.is_tensor(loss) else float(loss)
+        self.log('train_loss', loss_scalar, on_step=True, on_epoch=True, prog_bar=True)
+        return loss.mean() if torch.is_tensor(loss) else torch.tensor(loss)
 
     def validation_step(self, batch, batch_idx):
         x = batch
         loss = self.forward_kld(x)
-        self.log('val_loss', loss, on_epoch=True, prog_bar=True)
-        return loss
+        # Ensure loss is a scalar float (CPU)
+        loss_scalar = loss.mean().item() if torch.is_tensor(loss) else float(loss)
+        self.log('val_loss', loss_scalar, on_epoch=True, prog_bar=True)
+        return loss.mean() if torch.is_tensor(loss) else torch.tensor(loss)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
@@ -70,11 +75,6 @@ class NeuralSplineLightning(pl.LightningModule):
         # For demonstration, we log the current learning rate
         optimizer = self.optimizers()
         lr = optimizer.param_groups[0]['lr']
-        self.log('lr', lr, on_epoch=True, prog_bar=True)
-        # Example: sample and log a batch of generated vectors
-        # sample = self.sample(1)
-        # self.logger.experiment.add_histogram('sample', sample, self.current_epoch)
-        # (Uncomment and adjust for your logger)
+        self.log('lr', float(lr), on_epoch=True, prog_bar=True)
 
-def get_model(cfg: SpiralFlowConfig) -> NeuralSplineLightning:
-    return NeuralSplineLightning(cfg)
+

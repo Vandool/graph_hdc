@@ -8,6 +8,8 @@ tests_new/artifacts/*
 assets/
 artifacts/
 datasests/
+_datasets/
+_models/
 
 # VS Code
 .idea/

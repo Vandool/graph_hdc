@@ -22,15 +22,16 @@ lint.ignore = [
     # Production‐grade style/type ignores
     "E501", # line too long (we allow up to 120)
     "ERA001", # Found commented-out code
+    "FBT003", # boolean positional
     "N805", # invalid first arg name
     "N806", # Uppercase variable name
     "N802", # Lower case function name
-    "UP007", # prefer X|Y types
     "PLE1205", # logging format args count
-    "RUF003", # Ambigious charachter in comment
-    "FBT003", # boolean positional
-    "W291", # trailing whitespace
     "PLR0913", # too-many-arguments
+    "RUF003", # Ambigious charachter in comment
+    "TRY003", # Message in the raise statements
+    "UP007", # prefer X|Y types
+    "W291", # trailing whitespace
 ]
 
 lint.extend-ignore = [

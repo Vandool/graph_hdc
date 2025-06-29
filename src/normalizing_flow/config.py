@@ -30,7 +30,11 @@ class SpiralFlowConfig:
     """
 
     ## General Config
+    project_dir: Path
     base_dir: Path
+    seed: int
+    epochs: int
+    batch_size: int
 
     ## HDC Config
     vsa: VSAModel
@@ -50,7 +54,7 @@ class SpiralFlowConfig:
     permute: bool = False
     init_identity: bool = True
     input_shape: tuple[int, ...] | None = None
-    device: torch.device | None = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device: str = "cpu"
     lr: float = 1e-3  # learning rate for optimizer
     weight_decay: float = 0.0  # optimizer weight decay
 
@@ -75,15 +79,43 @@ def get_flow_cli_args() -> SpiralFlowConfig:
 
     ## General Config
     parser.add_argument(
-        "--base_dir",
-        "-dir",
+        "--project_dir",
+        "-pdir",
         type=Path,
         required=True,
         help="The base directory, path to all the artefacts of the experiment",
     )
+    parser.add_argument(
+        "--base_dir",
+        "-bdir",
+        type=Path,
+        required=True,
+        help="The base directory, path to all the artefacts of the experiment",
+    )
+    parser.add_argument(
+        "--seed",
+        "-seed",
+        type=int,
+        default=42,
+        help="The random seed for reproducibility (default: 42)",
+    )
+    parser.add_argument(
+        "--epochs",
+        "-e",
+        type=int,
+        default=10,
+        help="The number of epochs to train the model (default: 10)",
+    )
+    parser.add_argument(
+        "--batch_size",
+        "-bs",
+        type=int,
+        default=64,
+        help="The batch size for training (default: 32)",
+    )
 
     ## HDC Config
-    parser.add_argument("--vsa_model", "-v", type=VSAModel, required=True, help="Hypervector Type")
+    parser.add_argument("--vsa", "-v", type=VSAModel, required=True, help="Hypervector Type")
     parser.add_argument("--hv_dim", "-hd", type=int, required=True, help="The dimension of hypervector space")
     parser.add_argument(
         "--dataset", "-ds", type=SupportedDataset, default="ZINC_ND_COMB", help="The dimension of hypervector space"
@@ -136,7 +168,6 @@ def get_flow_cli_args() -> SpiralFlowConfig:
     args = parser.parse_args()
     flow_config = SpiralFlowConfig(**vars(parser.parse_args()))
 
-    flow_config.device = torch.device(args.device)
     flow_config.activation = args.activation if isinstance(args.activation, type) else get_activation(args.activation)
 
     return flow_config

@@ -18,14 +18,14 @@ from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import DatasetConfig, Features, IndexRange
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
+    CategoricalIntegerEncoder,
+    CategoricalLevelEncoder,
     CategoricalOneHotEncoder,
     CombinatoricIntegerEncoder,
-    CategoricalIntegerEncoder,
     TrueFalseEncoder,
-    CategoricalLevelEncoder,
 )
 from src.encoding.types import VSAModel
-from src.utils.utils import TupleIndexer, cartesian_bind_tensor, scatter_hd, flatten_counter
+from src.utils.utils import TupleIndexer, cartesian_bind_tensor, flatten_counter, scatter_hd
 
 # === HYPERDIMENSIONAL MESSAGE PASSING NETWORKS ===
 
@@ -248,6 +248,7 @@ class HyperNet(AbstractGraphEncoder):
         config: DatasetConfig | None = None,
         hidden_dim: int = 100,
         depth: int = 3,
+        *,
         use_explain_away: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
@@ -303,6 +304,16 @@ class HyperNet(AbstractGraphEncoder):
             f"Supported vsa models are: {self.__allowed_vsa_models__}"
         )
         raise ValueError(err_msg)
+
+    def populate_codebooks(self) -> None:
+        """Generates the codebooks and indexers for the nodes, edges, and graph features."""
+        self.populate_nodes_codebooks()
+        self._populate_nodes_indexer()
+        self.populate_edge_feature_codebook()
+        self._populate_edge_feature_indexer()
+        self.populate_edges_codebook()
+        self._populate_edges_indexer()
+
 
     # -- encoding
     # These methods handle the encoding of the graph structures into the graph embedding vector
@@ -531,7 +542,7 @@ class HyperNet(AbstractGraphEncoder):
             - num: The integer number of how many of these nodes are present in the graph.
         """
 
-        self._populate_nodes_codebooks()
+        self.populate_nodes_codebooks()
         self._populate_nodes_indexer()
 
         # Compute the dot product between the embedding and each node hypervector representation.
@@ -596,7 +607,7 @@ class HyperNet(AbstractGraphEncoder):
             else:
                 self.nodes_indexer = TupleIndexer([e.num_categories for e, _ in self.node_encoder_map.values()])
 
-    def _populate_nodes_codebooks(self) -> None:
+    def populate_nodes_codebooks(self) -> None:
         if self.is_not_initialized(tensor=self.nodes_codebook):
             # Retrieve the node encoders from the node_encoder_map.
             # Each node encoder is responsible for encoding on property of the node
@@ -621,18 +632,14 @@ class HyperNet(AbstractGraphEncoder):
         unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
         max_iters: int = 50,
         threshold: float = 0.5,
+        *,
         use_break: bool = True,
     ) -> list[Counter]:
         """
         Peel off top edges iteratively exactly as in your script,
         but do it for each graph in the batch.
         """
-        self._populate_nodes_codebooks()
-        self._populate_nodes_indexer()
-        self._populate_edge_feature_codebook()
-        self._populate_edge_feature_indexer()
-        self._populate_edges_codebook()
-        self._populate_edges_indexer()
+        self.populate_codebooks()
 
         # 1) ensure batch dimension
         if embedding.dim() == 1:
@@ -706,11 +713,11 @@ class HyperNet(AbstractGraphEncoder):
         *,
         use_break: bool = False,
     ) -> list[Counter]:
-        self._populate_nodes_codebooks()
+        self.populate_nodes_codebooks()
         self._populate_nodes_indexer()
-        self._populate_edge_feature_codebook()
+        self.populate_edge_feature_codebook()
         self._populate_edge_feature_indexer()
-        self._populate_edges_codebook()
+        self.populate_edges_codebook()
         self._populate_edges_indexer()
 
         # 1) ensure batch dimension
@@ -832,11 +839,11 @@ class HyperNet(AbstractGraphEncoder):
             # single graph case → treat it as batch of size 1
             embedding = embedding.unsqueeze(0)
 
-        self._populate_nodes_codebooks()
+        self.populate_nodes_codebooks()
         self._populate_nodes_indexer()
-        self._populate_edge_feature_codebook()
+        self.populate_edge_feature_codebook()
         self._populate_edge_feature_indexer()
-        self._populate_edges_codebook()
+        self.populate_edges_codebook()
         self._populate_edges_indexer()
 
         # # Compute the dot product between the embedding and each node hypervector representation.
@@ -895,7 +902,7 @@ class HyperNet(AbstractGraphEncoder):
 
         self.edge_feature_indexer = TupleIndexer([e.num_categories for e, _ in self.edge_encoder_map.values()])
 
-    def _populate_edge_feature_codebook(self) -> None:
+    def populate_edge_feature_codebook(self) -> None:
         if self.is_not_initialized(self.edge_feature_codebook) and self.use_edge_features():
             # Retrieve the node encoders from the edge_encoder_map.
             # Each node encoder is responsible for encoding on property of the node
@@ -921,7 +928,7 @@ class HyperNet(AbstractGraphEncoder):
                 [self.nodes_indexer.size(), self.nodes_indexer.size(), self.edge_feature_indexer.size()]
             )
 
-    def _populate_edges_codebook(self) -> None:
+    def populate_edges_codebook(self) -> None:
         # The binding of encoded properties of a nodes of an with with the edges HV represents an edge
         # HV_edge = bind(HV(src_node), HV(dst_node), HV(edge_feature))
         # [N*N*E, D]
