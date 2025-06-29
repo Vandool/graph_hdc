@@ -11,7 +11,7 @@ BASE_DIR="${EXPERIMENTS_PATH}/results/${SCRIPT_NAME%.*}"  # Remove .py extension
 
 # ========== HDC Config ==========
 VSA_MODELS=("HRR")
-HV_DIMS=(6400, 9216)           # 80*80=6400, 96*96=9216
+HV_DIMS=(6400 9216)           # 80*80=6400, 96*96=9216
 DATASET="ZINC_ND_COMB"
 SEED=42
 EPOCHS=10
@@ -25,7 +25,7 @@ NUM_HIDDEN_CHANNELS=128
 NUM_CONTEXT_CHANNELS=0           # or set to None if not used
 NUM_BINS=8
 TAIL_BOUND=3
-ACTIVATION="leakyrelu"                # relu, gelu, leakyrelu
+ACTIVATION="relu"                # relu, gelu, leakyrelu
 DROPOUT_PROBABILITY=0.0
 PERMUTE=false                    # pass --permute if true
 INIT_IDENTITY=true               # pass --init_identity if true
@@ -43,12 +43,12 @@ for idx in "${!HV_DIMS[@]}"; do
   for vsa in "${VSA_MODELS[@]}"; do
     sbatch \
       --job-name=spiralflow \
-      --partition=gpu_h100 \
-      --time=20:00:00 \
+      --partition=gpu_h100_il \
+      --time=12:00:00 \
       --gres=gpu:1 \
       --nodes=1 \
       --ntasks=1 \
-      --mem=48G \
+      --mem=16G \
       --wrap="module load devel/cuda/11.8 && \\
         pixi run python ${SCRIPT} \\
           --project_dir ${PROJECT_DIR} \\

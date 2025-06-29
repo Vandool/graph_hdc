@@ -246,14 +246,12 @@ class HyperNet(AbstractGraphEncoder):
     def __init__(
         self,
         config: DatasetConfig | None = None,
-        hidden_dim: int = 100,
         depth: int = 3,
         *,
         use_explain_away: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
         self.use_explain_away = use_explain_away
-        self.hidden_dim = hidden_dim
         self.depth = depth
         self.vsa = self._validate_vsa(config.vsa)
         self.hv_dim = config.hv_dim
@@ -371,7 +369,7 @@ class HyperNet(AbstractGraphEncoder):
             slices.append(encoder.encode(feat))  # [..., N?, D]
 
         if not slices:
-            return torch.zeros(fallback_count, self.hidden_dim, device=self.device)
+            return torch.zeros(fallback_count, self.hv_dim, device=self.device)
 
         # stack on new “property” axis and bind
         stacked = torch.stack(slices, dim=0)  # [P, N, D]
@@ -399,7 +397,7 @@ class HyperNet(AbstractGraphEncoder):
         :param data: The PyG Data object that represents the batch of graphs.
 
         :returns: A dict with string keys and torch Tensor values. The "graph_embedding" key should contain the
-            high-dimensional graph embedding vectors for the input graphs with shape (batch_size, hidden_dim)
+            high-dimensional graph embedding vectors for the input graphs with shape (batch_size, hv_dim)
         """
 
         # ~ mapping node & graph properties as hyper-vectors
@@ -448,9 +446,9 @@ class HyperNet(AbstractGraphEncoder):
 
         # In this data structure we will stack all the intermediate node embeddings for the various message-passing
         # depths.
-        # node_hv_stack: (num_layers + 1, batch_size * num_nodes, hidden_dim)
+        # node_hv_stack: (num_layers + 1, batch_size * num_nodes, hv_dim)
         node_dim = data.x.size(0)
-        node_hv_stack = data.node_hv.new_zeros(size=(self.depth + 1, node_dim, self.hidden_dim), device=self.device)
+        node_hv_stack = data.node_hv.new_zeros(size=(self.depth + 1, node_dim, self.hv_dim), device=self.device)
         node_hv_stack[0] = data.node_hv  # Level 0 HV: Nodes are binding of their features
 
         # ~ message passing
@@ -502,11 +500,11 @@ class HyperNet(AbstractGraphEncoder):
         return {
             # This the main result of the forward pass which is the individual graph embedding vectors of the
             # input graphs.
-            # graph_embedding: (batch_size, hidden_dim)
+            # graph_embedding: (batch_size, hv_dim)
             "graph_embedding": embedding,
             # As additional information that might be useful we also pass the stack of the node embeddings across
             # the various convolutional depths.
-            # node_hv_stack: (batch_size * num_nodes, num_layers + 1, hidden_dim)
+            # node_hv_stack: (batch_size * num_nodes, num_layers + 1, hv_dim)
             "node_hv_stack": node_hv_stack,
             "node_terms": node_terms,
             "edge_terms": edge_terms,
@@ -969,7 +967,6 @@ class HyperNet(AbstractGraphEncoder):
 
         state = {
             "attributes": {
-                "hidden_dim": self.hidden_dim,
                 "depth": self.depth,
                 "seed": self.seed,
                 "vsa": self.vsa.value,  # ← store string
@@ -1151,7 +1148,7 @@ class HyperNet(AbstractGraphEncoder):
         data = Data()
         data.edge_index = torch.tensor(list(edge_indices), dtype=torch.long).t()
         data.batch = torch.tensor([0] * __x__.shape[0], dtype=torch.long, device=__x__.device)
-        # data.x = torch.zeros(__x__.shape[0], self.hidden_dim)
+        # data.x = torch.zeros(__x__.shape[0], self.hv_dim)
         data.x = __x__
         # data = self.encode_properties(data)
 
@@ -1188,7 +1185,7 @@ class HyperNet(AbstractGraphEncoder):
             batch.edge_weight = full_logits
 
             result = self.forward(batch)
-            embedding = result["graph_embedding"]  # shape (candidate_batch_size, hidden_dim)
+            embedding = result["graph_embedding"]  # shape (candidate_batch_size, hv_dim)
 
             # Compute mean squared error loss for each candidate (compare each to graph_hv)
             losses = torch.square(embedding - graph_hv.expand_as(embedding)).mean(dim=1)
