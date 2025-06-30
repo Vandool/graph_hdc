@@ -14,8 +14,8 @@ VSA_MODELS=("HRR")
 HV_DIMS=(6400)           # 80*80=6400, 96*96=9216
 DATASET="ZINC_ND_COMB"
 SEED=42
-EPOCHS=10
-BATCH_SIZE=64
+EPOCHS=50
+BATCH_SIZE=16
 
 # ========== Spiral Flow Config ==========
 NUM_INPUT_CHANNELS=(19200 27648)  # 3*6400=19200, 3*9216=27648
@@ -44,7 +44,7 @@ for idx in "${!HV_DIMS[@]}"; do
   for vsa in "${VSA_MODELS[@]}"; do
     sbatch \
       --job-name=spiralflow \
-      --partition=dev_gpu_h100 \
+      --partition=dev_gpu_a100_il \
       --time=00:30:00 \
       --gres=gpu:1 \
       --nodes=1 \

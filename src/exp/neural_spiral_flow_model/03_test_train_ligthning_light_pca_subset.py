@@ -205,7 +205,7 @@ def run_experiment(cfg: SpiralFlowConfig):
     )
 
     # PCA: Load or fit
-    n_components = 0.999
+    n_components = 0.99999
     pca_path = global_model_dir / f"hypervec_pca_{vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"
     pca = load_or_fit_pca(
         train_dataset=train_dataset, encoder=encoder, pca_path=pca_path, n_components=n_components, n_fit=20_000
