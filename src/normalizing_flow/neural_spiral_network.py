@@ -51,21 +51,22 @@ class NeuralSplineLightning(pl.LightningModule):
             return z.view(num_samples, *self.cfg.input_shape)
         return z
 
+
     def training_step(self, batch, batch_idx):
-        x = batch  # expects [batch_size, *input_shape]
-        loss = self.forward_kld(x)
-        # Ensure loss is a scalar float (CPU)
-        loss_scalar = loss.mean().item() if torch.is_tensor(loss) else float(loss)
-        self.log('train_loss', loss_scalar, on_step=True, on_epoch=True, prog_bar=True)
-        return loss.mean() if torch.is_tensor(loss) else torch.tensor(loss)
+        loss = self.forward_kld(batch).mean()
+        if torch.isfinite(loss):
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+            return loss
+        else:
+            self.log("train_loss", torch.tensor(0.0), prog_bar=True)
+            self.logger.warning(f"Skipping NaN/Inf loss at step {batch_idx}")
+            return None
+
 
     def validation_step(self, batch, batch_idx):
-        x = batch
-        loss = self.forward_kld(x)
-        # Ensure loss is a scalar float (CPU)
-        loss_scalar = loss.mean().item() if torch.is_tensor(loss) else float(loss)
-        self.log('val_loss', loss_scalar, on_epoch=True, prog_bar=True)
-        return loss.mean() if torch.is_tensor(loss) else torch.tensor(loss)
+        loss = self.forward_kld(batch).mean()
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
+        return loss
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
@@ -76,5 +77,3 @@ class NeuralSplineLightning(pl.LightningModule):
         optimizer = self.optimizers()
         lr = optimizer.param_groups[0]['lr']
         self.log('lr', float(lr), on_epoch=True, prog_bar=True)
-
-
