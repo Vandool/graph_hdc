@@ -183,9 +183,9 @@ def run_experiment(cfg: SpiralFlowConfig):
     global_dataset_dir = dirs["global_dataset_dir"]
 
     # Datasets
-    train_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True)
+    train_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True)[:1000]
     print(f"Train dataset: {len(train_dataset)} samples")
-    validation_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="val", subset=True)
+    validation_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="val", subset=True)[:200]
     print(f"Validation dataset: {len(validation_dataset)} samples")
 
     # Update config
@@ -205,7 +205,7 @@ def run_experiment(cfg: SpiralFlowConfig):
     )
 
     # PCA: Load or fit
-    n_components = 0.99999
+    n_components = 0.999
     pca_path = global_model_dir / f"hypervec_pca_{vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"
     pca = load_or_fit_pca(
         train_dataset=train_dataset, encoder=encoder, pca_path=pca_path, n_components=n_components, n_fit=20_000

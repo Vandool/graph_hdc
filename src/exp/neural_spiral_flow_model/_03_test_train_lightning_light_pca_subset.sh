@@ -25,6 +25,7 @@ NUM_HIDDEN_CHANNELS=128
 NUM_CONTEXT_CHANNELS=0           # or set to None if not used
 NUM_BINS=8
 TAIL_BOUND=3
+FLOW_TYPE="autoregressive"
 ACTIVATION="relu"                # relu, gelu, leakyrelu
 DROPOUT_PROBABILITY=0.0
 PERMUTE=false                    # pass --permute if true
@@ -64,6 +65,7 @@ for idx in "${!HV_DIMS[@]}"; do
           --num_bins ${NUM_BINS} \\
           --tail_bound ${TAIL_BOUND} \\
           --activation ${ACTIVATION} \\
+          --flow_type ${FLOW_TYPE} \\
           --dropout_probability ${DROPOUT_PROBABILITY} \\
           $([[ $PERMUTE == true ]] && echo '--permute') \\
           $([[ $INIT_IDENTITY == true ]] && echo '--init_identity') \\

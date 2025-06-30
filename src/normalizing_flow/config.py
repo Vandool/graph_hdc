@@ -1,7 +1,14 @@
 import argparse
 from pathlib import Path
 
+import normflows as nf
 import torch
+from normflows.flows import (
+    AutoregressiveRationalQuadraticSpline,
+    CircularAutoregressiveRationalQuadraticSpline,
+    CircularCoupledRationalQuadraticSpline,
+    CoupledRationalQuadraticSpline,
+)
 from pydantic.dataclasses import dataclass
 from torch import nn
 from torch.nn import GELU, LeakyReLU, ReLU
@@ -49,6 +56,12 @@ class SpiralFlowConfig:
     num_context_channels: int | None = None
     num_bins: int = 8
     tail_bound: int = 3
+    flow_type: type[
+        CoupledRationalQuadraticSpline
+        | CircularCoupledRationalQuadraticSpline
+        | AutoregressiveRationalQuadraticSpline
+        | CircularAutoregressiveRationalQuadraticSpline
+    ] = nf.flows.AutoregressiveRationalQuadraticSpline
     activation: type[ReLU | GELU | LeakyReLU] = nn.ReLU
     dropout_probability: float = 0.0
     permute: bool = False
@@ -72,6 +85,21 @@ def get_activation(name: str) -> type[ReLU | GELU | LeakyReLU]:
     if name.lower() == "leakyrelu":
         return nn.LeakyReLU
     raise argparse.ArgumentTypeError(f"Unsupported activation: {name}")
+
+
+def get_flow(
+    name: str,
+) -> type[CoupledRationalQuadraticSpline | AutoregressiveRationalQuadraticSpline]:
+    key = name.lower()
+    if key == "coupled":
+        return nf.flows.CoupledRationalQuadraticSpline
+    if key == "autoregressive":
+        return nf.flows.AutoregressiveRationalQuadraticSpline
+    raise argparse.ArgumentTypeError(
+        f"Unsupported flow type: {name!r}. "
+        "Choose from 'coupled', 'circular_coupled', "
+        "'autoregressive', or 'circular_autoregressive'."
+    )
 
 
 def get_flow_cli_args() -> SpiralFlowConfig:
@@ -121,7 +149,7 @@ def get_flow_cli_args() -> SpiralFlowConfig:
         "--dataset", "-ds", type=SupportedDataset, default="ZINC_ND_COMB", help="The dimension of hypervector space"
     )
 
-    ## Spiral Flow Configt
+    ## Spiral Flow Config
     parser.add_argument(
         "--num_input_channels",
         "-ic",
@@ -141,6 +169,13 @@ def get_flow_cli_args() -> SpiralFlowConfig:
     parser.add_argument("--tail_bound", "-tb", type=int, default=3, help="Threshold beyond which the spline is linear")
     parser.add_argument(
         "--activation", "-a", type=get_activation, default="relu", help="Activation: relu, gelu, leakyrelu"
+    )
+    parser.add_argument(
+        "--flow_type",
+        "-ft",
+        type=get_flow,
+        default="autoregressive",
+        help="Flow Type: coupled, autoregressive",
     )
     parser.add_argument(
         "--dropout_probability", "-dp", type=float, default=0.0, help="Dropout probability in coupling NNs"
@@ -169,5 +204,6 @@ def get_flow_cli_args() -> SpiralFlowConfig:
     flow_config = SpiralFlowConfig(**vars(parser.parse_args()))
 
     flow_config.activation = args.activation if isinstance(args.activation, type) else get_activation(args.activation)
+    flow_config.flow_type = args.flow_type if isinstance(args.flow_type, type) else get_flow(args.flow_type)
 
     return flow_config
