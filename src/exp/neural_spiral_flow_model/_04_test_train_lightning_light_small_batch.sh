@@ -3,7 +3,7 @@
 # ========== Experiment Path Configuration ==========
 PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
 EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/neural_spiral_flow_model"
-SCRIPT_NAME="03_test_train_ligthning_light_pca_subset.py"
+SCRIPT_NAME="04_test_train_ligthning_light_small_batch.py"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 
 # ========== General Config ==========
@@ -11,26 +11,26 @@ BASE_DIR="${EXPERIMENTS_PATH}/results/${SCRIPT_NAME%.*}"  # Remove .py extension
 
 # ========== HDC Config ==========
 VSA_MODELS=("HRR")
-HV_DIMS=(6400)           # 80*80=6400, 96*96=9216
+HV_DIMS=(1024)           # 80*80=6400, 96*96=9216
 DATASET="ZINC_ND_COMB"
 SEED=42
-EPOCHS=50
+EPOCHS=100
 BATCH_SIZE=16
 
 # ========== Spiral Flow Config ==========
-NUM_INPUT_CHANNELS=(19200 27648)  # 3*6400=19200, 3*9216=27648
-NUM_FLOWS=8
+NUM_INPUT_CHANNELS=(3072)  # 3*6400=19200, 3*9216=27648
+NUM_FLOWS=16
 NUM_BLOCKS=2
-NUM_HIDDEN_CHANNELS=256
+NUM_HIDDEN_CHANNELS=128
 NUM_CONTEXT_CHANNELS=0           # or set to None if not used
 NUM_BINS=8
 TAIL_BOUND=3
 FLOW_TYPE="autoregressive"
-ACTIVATION="relu"                # relu, gelu, leakyrelu
+ACTIVATION="leakyrelu"                # relu, gelu, leakyrelu
 DROPOUT_PROBABILITY=0.0
 PERMUTE=false                    # pass --permute if true
 INIT_IDENTITY=true               # pass --init_identity if true
-INPUT_SHAPE="3,6400"             # or "3,9216"
+INPUT_SHAPE="3,1024"             # or "3,9216"
 LR=0.001                         # 1e-3 
 WEIGHT_DECAY=0.00001             # 1e-5
 DEVICE="cuda"

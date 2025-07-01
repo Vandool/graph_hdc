@@ -201,7 +201,7 @@ def load_or_create_hypernet(path: Path, cfg: DatasetConfig, depth: int) -> Hyper
 
 
 class EncodedPCADataset(torch.utils.data.Dataset):
-    def __init__(self, base_dataset, encoder, pca: PCA | None = None, *, use_norm_pca: bool = True):
+    def __init__(self, base_dataset, encoder, pca, *, use_norm_pca: bool = True):
         self.base_dataset = base_dataset
         self.encoder = encoder
         self.pca = pca
@@ -217,9 +217,8 @@ class EncodedPCADataset(torch.utils.data.Dataset):
         x = torch.stack(
             [res["node_terms"].squeeze(0), res["edge_terms"].squeeze(0), res["graph_embedding"].squeeze(0)], dim=0
         )
-        if self.pca is not None:
-            return pca_encode(x, self.pca, self.use_norm)
-        return x
+        x_reduced = pca_encode(x, self.pca, self.use_norm)
+        return x_reduced
 
 
 def get_device():
@@ -275,23 +274,23 @@ def run_experiment(cfg: SpiralFlowConfig):
     encoder = load_or_create_hypernet(path=global_model_dir, cfg=ds.default_cfg, depth=3)
 
     # PCA: Load or fit
-    # n_components = 0.998
-    # pca_path = global_model_dir / f"hypervec_pca_{vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"
-    # pca = load_or_fit_pca(
-    #     train_dataset=ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True),
-    #     encoder=encoder,
-    #     pca_path=pca_path,
-    #     n_components=n_components,
-    #     n_fit=20_000,
-    # )
+    n_components = 0.998
+    pca_path = global_model_dir / f"hypervec_pca_{vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"
+    pca = load_or_fit_pca(
+        train_dataset=ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True),
+        encoder=encoder,
+        pca_path=pca_path,
+        n_components=n_components,
+        n_fit=20_000,
+    )
 
-    # reduced_dim = int(pca.n_components_)
-    # cfg.num_input_channels = 3 * reduced_dim
-    # cfg.input_shape = (3, reduced_dim)
+    reduced_dim = int(pca.n_components_)
+    cfg.num_input_channels = 3 * reduced_dim
+    cfg.input_shape = (3, reduced_dim)
 
     # DataLoaders
     train_dataloader = DataLoader(
-        EncodedPCADataset(train_dataset, encoder, use_norm_pca=True),
+        EncodedPCADataset(train_dataset, encoder, pca, use_norm_pca=True),
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=4,
@@ -299,7 +298,7 @@ def run_experiment(cfg: SpiralFlowConfig):
         drop_last=True,
     )
     validation_dataloader = DataLoader(
-        EncodedPCADataset(validation_dataset, encoder, use_norm_pca=True),
+        EncodedPCADataset(validation_dataset, encoder, pca, use_norm_pca=True),
         batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=2,

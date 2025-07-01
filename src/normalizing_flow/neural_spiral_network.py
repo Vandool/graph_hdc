@@ -27,8 +27,8 @@ class NeuralSplineLightning(pl.LightningModule):
                 permute_mask=cfg.permute,
             )
             flows.append(spline)
-            flows.append(nf.flows.LULinearPermute(latent_dim))
-            # flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
+            # flows.append(nf.flows.LULinearPermute(latent_dim))
+            flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
 
         base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
