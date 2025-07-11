@@ -1,0 +1,24 @@
+wandb_version: 1
+
+batch_size:
+  value: 16
+dataset:
+  value: ZINC_ND_COMB
+epochs:
+  value: 30
+hv_dim:
+  value: 6400
+lr:
+  value: 1.001019515276401
+num_flows:
+  value: 16
+num_hidden_channels:
+  value: 128
+num_input_channels:
+  value: 19200
+seed:
+  value: 42
+vsa:
+  value: HRR
+weight_decay:
+  value: 0

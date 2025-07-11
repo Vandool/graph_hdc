@@ -1,0 +1,136 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            p0qasa89e643lfw6loe6ex83korzr0fq:
+                args:
+                    - --batch_size=16
+                    - --dataset=ZINC_ND_COMB
+                    - --epochs=30
+                    - --hv_dim=6400
+                    - --lr=1.001019515276401
+                    - --num_flows=16
+                    - --num_hidden_channels=128
+                    - --num_input_channels=19200
+                    - --seed=42
+                    - --vsa=HRR
+                    - --weight_decay=0
+                codePath: src/exp/real_nvp_model/01_test_train_real_nvp.py
+                codePathLocal: 01_test_train_real_nvp.py
+                cpu_count: 96
+                cpu_count_logical: 192
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "99950723072"
+                        used: "48200953856"
+                email: arvand.kaveh@tuta.com
+                executable: /pfs/data6/home/ka/ka_iti/ka_zi9629/projects/graph_hdc/.pixi/envs/default/bin/python
+                git:
+                    commit: 1e9bae9b049dbf89de00e3dd2e695aa6b2f80544
+                    remote: git@github.com:Vandool/graph_hdc.git
+                gpu: NVIDIA H100
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "100485038080"
+                      name: NVIDIA H100
+                      uuid: GPU-966b6154-c8b5-fc63-5c6d-e15bd6d7a2f9
+                host: uc3n082.localdomain
+                memory:
+                    total: "811275751424"
+                os: Linux-5.14.0-427.50.1.el9_4.x86_64-x86_64-with-glibc2.34
+                program: /pfs/data6/home/ka/ka_iti/ka_zi9629/projects/graph_hdc/src/exp/real_nvp_model/01_test_train_real_nvp.py
+                python: CPython 3.12.11
+                root: /pfs/data6/home/ka/ka_iti/ka_zi9629/projects/graph_hdc/src/exp/real_nvp_model
+                slurm:
+                    cluster_name: uc3
+                    conf: /etc/slurm/slurm.conf
+                    cpus_on_node: "48"
+                    gpus_on_node: "1"
+                    gtids: "0"
+                    job_account: ka
+                    job_cpus_per_node: "48"
+                    job_end_time: "1752234802"
+                    job_gid: "44499"
+                    job_gpus: "0"
+                    job_id: "710396"
+                    job_name: sweep_hdc6400
+                    job_nodelist: uc3n082
+                    job_num_nodes: "1"
+                    job_partition: dev_gpu_h100
+                    job_qos: normal
+                    job_start_time: "1752234202"
+                    job_uid: "506884"
+                    job_user: ka_zi9629
+                    jobid: "710396"
+                    localid: "0"
+                    mem_per_node: "16384"
+                    nnodes: "1"
+                    nodeid: "0"
+                    nodelist: uc3n082
+                    nprocs: "1"
+                    ntasks: "1"
+                    oom_kill_step: "0"
+                    prio_process: "0"
+                    procid: "0"
+                    script_context: prolog_task
+                    submit_dir: /pfs/data6/home/ka/ka_iti/ka_zi9629/projects/graph_hdc/src/exp/real_nvp_model
+                    submit_host: uc3n991.localdomain
+                    task_pid: "548905"
+                    tasks_per_node: "1"
+                    topology_addr: VirtualInterconnnect..uc3ibbi1r2.uc3n082
+                    topology_addr_pattern: switch.switch.switch.node
+                startedAt: "2025-07-11T11:43:57.641262Z"
+                writerId: p0qasa89e643lfw6loe6ex83korzr0fq
+        m: []
+        python_version: 3.12.11
+        t:
+            "1":
+                - 1
+                - 5
+                - 9
+                - 53
+                - 77
+                - 103
+                - 105
+            "2":
+                - 1
+                - 5
+                - 9
+                - 53
+                - 77
+                - 103
+                - 105
+            "3":
+                - 14
+                - 18
+            "4": 3.12.11
+            "5": 0.21.0
+            "12": 0.21.0
+            "13": linux-x86_64
+batch_size:
+    value: 16
+cfg:
+    value: 'FlowConfig(project_dir=PosixPath(''/home/ka/ka_iti/ka_zi9629/projects/graph_hdc''), seed=42, epochs=30, batch_size=16, vsa=<VSAModel.HRR: ''HRR''>, hv_dim=6400, dataset=<SupportedDataset.ZINC_NODE_DEGREE_COMB: ''ZINC_ND_COMB''>, num_input_channels=339, num_flows=16, num_blocks=2, num_hidden_channels=128, num_context_channels=None, num_bins=8, tail_bound=3, flow_type=<class ''normflows.flows.neural_spline.wrapper.AutoregressiveRationalQuadraticSpline''>, activation=<class ''torch.nn.modules.activation.ReLU''>, dropout_probability=0.0, permute=False, init_identity=False, input_shape=(3, 113), device=''cuda'', lr=1.001019515276401, weight_decay=0.0)'
+dataset:
+    value: ZINC_ND_COMB
+epochs:
+    value: 30
+hv_dim:
+    value: 6400
+lr:
+    value: 1.001019515276401
+num_flows:
+    value: 16
+num_hidden_channels:
+    value: 128
+num_input_channels:
+    value: 19200
+seed:
+    value: 42
+vsa:
+    value: HRR
+weight_decay:
+    value: 0

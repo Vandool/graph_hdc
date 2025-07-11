@@ -1,4 +1,5 @@
 import datetime
+import os
 import random
 import shutil
 import string
@@ -6,13 +7,12 @@ import time
 from pathlib import Path
 from pprint import pprint
 
-import os
-import wandb
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import wandb
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
@@ -23,16 +23,34 @@ from torch_geometric.datasets import ZINC
 
 from graph_hdc.utils import AbstractEncoder
 from src.datasets import AddNodeDegree
-from src.encoding.configs_and_constants import DatasetConfig
+from src.encoding.configs_and_constants import DatasetConfig, SupportedDataset
 from src.encoding.graph_encoders import HyperNet
+from src.encoding.the_types import VSAModel
 from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
-from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning, RealNVPLightning
+from src.normalizing_flow.models import RealNVPLightning
 
 
-def setup_exp(base_dir: Path, project_dir: Path, ds_value: str) -> dict:
+def setup_exp(ds_value: str) -> dict:
     """
-    Sets up and returns all directories as a dict.
+    Sets up experiment directories based on the current script location.
+
+    Args:
+        ds_value (str): Dataset name to use for global_dataset_dir.
+
+    Returns:
+        dict: Dictionary containing paths to various directories.
     """
+    # Resolve script location
+    script_path = Path(__file__).resolve()
+    experiments_path = script_path.parent
+    script_stem = script_path.stem  # without .py
+
+    # Resolve base and project directories
+    base_dir = experiments_path / "results" / script_stem
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    project_dir = script_path.parents[3]  # adjust as needed
+
     print(f"Setting up experiment in {base_dir}")
     now = f"{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
     exp_dir = base_dir / now
@@ -51,13 +69,12 @@ def setup_exp(base_dir: Path, project_dir: Path, ds_value: str) -> dict:
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
-    # Save a copy of the current script
+    # Save a copy of the script
     try:
-        script_file = Path(__file__).resolve()
-        shutil.copy(script_file, exp_dir / script_file.name)
-        print(f"Saved a copy of the script to {exp_dir / script_file.name}")
-    except NameError:
-        print("Warning: __file__ is not defined. Script not saved.")
+        shutil.copy(script_path, exp_dir / script_path.name)
+        print(f"Saved a copy of the script to {exp_dir / script_path.name}")
+    except Exception as e:
+        print(f"Warning: Failed to save script copy: {e}")
 
     return dirs
 
@@ -204,7 +221,7 @@ def load_or_create_hypernet(path: Path, cfg: DatasetConfig, depth: int) -> Hyper
 
 
 class EncodedPCADataset(torch.utils.data.Dataset):
-    def __init__(self, base_dataset, encoder, pca: PCA | None = None, *, use_norm_pca: bool = True):
+    def __init__(self, base_dataset, encoder, pca: PCA | None = None, *, use_norm_pca: bool = False):
         self.base_dataset = base_dataset
         self.encoder = encoder
         self.pca = pca
@@ -247,7 +264,7 @@ def run_experiment(cfg: FlowConfig):
     print("Running experiment")
     pprint(cfg.__dict__, indent=2)
 
-    dirs = setup_exp(cfg.base_dir, cfg.project_dir, cfg.dataset.value)
+    dirs = setup_exp(cfg.dataset.value)
     exp_dir = dirs["exp_dir"]
     models_dir = dirs["models_dir"]
     evals_dir = dirs["evals_dir"]
@@ -256,7 +273,7 @@ def run_experiment(cfg: FlowConfig):
     global_dataset_dir = dirs["global_dataset_dir"]
 
     # W&B Logging — use existing run (from sweep or manual init)
-    run = wandb.run or wandb.init(project="realnvp-hdc", config=cfg.dict(), name=f"run_{cfg.hv_dim}_{cfg.seed}", reinit=True)
+    run = wandb.run or wandb.init(project="realnvp-hdc", config=cfg.__dict__, name=f"run_{cfg.hv_dim}_{cfg.seed}", reinit=True)
     run.tags = [f"hv_dim={cfg.hv_dim}", f"vsa={cfg.vsa.value}", f"dataset={cfg.dataset.value}"]
 
     wandb_logger = WandbLogger(log_model=True, experiment=run)
@@ -350,6 +367,13 @@ def sweep_entrypoint():
     fixed_cfg = get_flow_cli_args()
     for k, v in args.items():
         setattr(fixed_cfg, k, v)
+
+        # 🔧 Convert back to enums
+    fixed_cfg.dataset = SupportedDataset(fixed_cfg.dataset)
+    fixed_cfg.vsa = VSAModel(fixed_cfg.vsa)
+    fixed_cfg.weight_decay = float(fixed_cfg.weight_decay)
+
+
     run_experiment(fixed_cfg)
 
 if __name__ == "__main__":
