@@ -1,8 +1,9 @@
+from pathlib import Path
+
+import normflows as nf
 import pytorch_lightning as pl
 import torch
 from torch import Tensor
-from pathlib import Path
-import normflows as nf
 
 from src.normalizing_flow.config import FlowConfig
 
@@ -35,8 +36,7 @@ class AbstractNFModel(pl.LightningModule):
         if torch.isfinite(loss):
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
             return loss
-        self.log("train_loss", torch.tensor(0.0), prog_bar=True)
-        self.logger.warning(f"Skipping NaN/Inf loss at step {batch_idx}")
+        print(f"Skipping NaN/Inf loss at step {batch_idx}")
         return None
 
     def validation_step(self, batch, batch_idx):
@@ -75,17 +75,36 @@ class RealNVPLightning(AbstractNFModel):
     def __init__(self, cfg: FlowConfig):
         super().__init__(cfg)
 
-        latent_dim = cfg.num_input_channels
+
+        # flatten dimensionality
+        latent_dim = int(np.prod(cfg.input_shape))
+
+        # build alternating mask [1,0,1,0,...] and register as buffer
+        mask = torch.tensor(
+            [1 if i % 2 == 0 else 0 for i in range(latent_dim)],
+            dtype=torch.float32
+        )
+        self.register_buffer('mask', mask)
+
         flows = []
-        b = torch.tensor([1 if i % 2 == 0 else 0 for i in range(latent_dim)], dtype=torch.float32)
-
         for _ in range(cfg.num_flows):
-            t_net = nf.nets.MLP([latent_dim, cfg.num_hidden_channels]*2 + [latent_dim], init_zeros=True)
-            s_net = nf.nets.MLP([latent_dim, cfg.num_hidden_channels]*2 + [latent_dim], init_zeros=True)
-            flows.append(nf.flows.MaskedAffineFlow(b, t=t_net, s=s_net))
-            flows.append(nf.flows.Permute(latent_dim, mode='swap'))
+            # 2 hidden layers: [latent_dim → hidden → hidden → latent_dim]
+            mlp_layers = [latent_dim,
+                          cfg.num_hidden_channels,
+                          cfg.num_hidden_channels,
+                          latent_dim]
 
-        base = nf.distributions.base.DiagGaussian(latent_dim, trainable=False)
+            t_net = nf.nets.MLP(mlp_layers, init_zeros=True)
+            s_net = nf.nets.MLP(mlp_layers, init_zeros=True)
+
+            flows.append(
+                nf.flows.MaskedAffineFlow(self.mask, t=t_net, s=s_net)
+            )
+            flows.append(
+                nf.flows.Permute(latent_dim, mode='swap')
+            )
+
+        base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
 
 

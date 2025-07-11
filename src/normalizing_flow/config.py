@@ -16,6 +16,8 @@ from torch.nn import GELU, LeakyReLU, ReLU
 from src.encoding.configs_and_constants import SupportedDataset
 from src.encoding.the_types import VSAModel
 
+PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
+EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/real_nvp_model"
 
 @dataclass
 class FlowConfig:
@@ -38,7 +40,7 @@ class FlowConfig:
 
     ## General Config
     project_dir: Path
-    base_dir: Path
+
     seed: int
     epochs: int
     batch_size: int
@@ -110,16 +112,11 @@ def get_flow_cli_args() -> FlowConfig:
         "--project_dir",
         "-pdir",
         type=Path,
-        required=True,
+        required=False,
+        default=Path(PROJECT_DIR),
         help="The base directory, path to all the artefacts of the experiment",
     )
-    parser.add_argument(
-        "--base_dir",
-        "-bdir",
-        type=Path,
-        required=True,
-        help="The base directory, path to all the artefacts of the experiment",
-    )
+
     parser.add_argument(
         "--seed",
         "-seed",
@@ -207,12 +204,3 @@ def get_flow_cli_args() -> FlowConfig:
     flow_config.flow_type = args.flow_type if isinstance(args.flow_type, type) else get_flow(args.flow_type)
 
     return flow_config
-
-
-if __name__ == '__main__':
-    @dataclass
-    class A:
-        a: int
-
-    a = A(3)
-    print(a.__dict__)

@@ -18,7 +18,7 @@ from torch_geometric.datasets import ZINC
 from src.datasets import AddNodeDegree
 from src.encoding.graph_encoders import HyperNet
 from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
-from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning
+from src.normalizing_flow.models import NeuralSplineLightning
 
 
 def plot_train_val_loss(df, exp_dir):

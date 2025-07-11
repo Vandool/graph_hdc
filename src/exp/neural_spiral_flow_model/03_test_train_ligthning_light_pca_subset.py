@@ -23,7 +23,7 @@ from src.datasets import AddNodeDegree
 from src.encoding.configs_and_constants import DatasetConfig
 from src.encoding.graph_encoders import HyperNet
 from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
-from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning
+from src.normalizing_flow.models import NeuralSplineLightning
 
 
 def setup_exp(base_dir: Path, project_dir: Path, ds_value: str) -> dict:
