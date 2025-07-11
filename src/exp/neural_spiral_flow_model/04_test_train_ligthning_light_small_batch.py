@@ -19,10 +19,11 @@ from torch.utils.data import DataLoader, Dataset
 from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
+from graph_hdc.utils import AbstractEncoder
 from src.datasets import AddNodeDegree
 from src.encoding.configs_and_constants import DatasetConfig
 from src.encoding.graph_encoders import HyperNet
-from src.normalizing_flow.config import SpiralFlowConfig, get_flow_cli_args
+from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
 from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning
 
 
@@ -125,7 +126,7 @@ def pca_decode(x_reduced: torch.Tensor, pca: PCA, denorm: bool = False) -> torch
 
 
 def load_or_fit_pca(
-    train_dataset: Dataset, encoder, pca_path: Path, n_components: float = 0.99999, n_fit: int = 20000
+    train_dataset: Dataset, encoder: AbstractEncoder, pca_path: Path | None = None, n_components: float = 0.99999, n_fit: int = 20000
 ) -> PCA:
     """
     Load an existing PCA from disk or fit a new one and save it.
@@ -147,7 +148,7 @@ def load_or_fit_pca(
     samples, flattened, and used to fit a new PCA. The mean and std of the
     fit data are stored on the PCA for later normalization.
     """
-    if pca_path.exists():
+    if pca_path is not None and pca_path.exists():
         print(f"Loading existing PCA from {pca_path}")
         pca = joblib.load(pca_path)
         print(f"Loaded PCA with {pca.n_components_} components")
@@ -239,7 +240,7 @@ class TimeLoggingCallback(Callback):
         trainer.logger.log_metrics({"elapsed_time_sec": elapsed}, step=trainer.current_epoch)
 
 
-def run_experiment(cfg: SpiralFlowConfig):
+def run_experiment(cfg: FlowConfig):
     print("Running experiment")
     print(pprint(cfg.__dict__, indent=2))
 

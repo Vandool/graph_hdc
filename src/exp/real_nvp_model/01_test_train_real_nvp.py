@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from pprint import pprint
 
+import os
+import wandb
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,17 +15,18 @@ import pandas as pd
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from sklearn.decomposition import PCA
 from torch.utils.data import DataLoader, Dataset
 from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
+from graph_hdc.utils import AbstractEncoder
 from src.datasets import AddNodeDegree
 from src.encoding.configs_and_constants import DatasetConfig
 from src.encoding.graph_encoders import HyperNet
 from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
-from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning
+from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning, RealNVPLightning
 
 
 def setup_exp(base_dir: Path, project_dir: Path, ds_value: str) -> dict:
@@ -125,7 +128,7 @@ def pca_decode(x_reduced: torch.Tensor, pca: PCA, denorm: bool = False) -> torch
 
 
 def load_or_fit_pca(
-    train_dataset: Dataset, encoder, pca_path: Path, n_components: float = 0.99999, n_fit: int = 20000
+    train_dataset: Dataset, encoder: AbstractEncoder, pca_path: Path | None = None, n_components: float = 0.99999, n_fit: int = 20000
 ) -> PCA:
     """
     Load an existing PCA from disk or fit a new one and save it.
@@ -147,7 +150,7 @@ def load_or_fit_pca(
     samples, flattened, and used to fit a new PCA. The mean and std of the
     fit data are stored on the PCA for later normalization.
     """
-    if pca_path.exists():
+    if pca_path is not None and pca_path.exists():
         print(f"Loading existing PCA from {pca_path}")
         pca = joblib.load(pca_path)
         print(f"Loaded PCA with {pca.n_components_} components")
@@ -242,7 +245,7 @@ class TimeLoggingCallback(Callback):
 
 def run_experiment(cfg: FlowConfig):
     print("Running experiment")
-    print(pprint(cfg.__dict__, indent=2))
+    pprint(cfg.__dict__, indent=2)
 
     dirs = setup_exp(cfg.base_dir, cfg.project_dir, cfg.dataset.value)
     exp_dir = dirs["exp_dir"]
@@ -252,46 +255,42 @@ def run_experiment(cfg: FlowConfig):
     global_model_dir = dirs["global_model_dir"]
     global_dataset_dir = dirs["global_dataset_dir"]
 
-    # Datasets
-    train_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True)[:64]
-    print(f"Train dataset: {len(train_dataset)} samples")
-    validation_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="val", subset=True)[
-        :8
-    ]
-    print(f"Validation dataset: {len(validation_dataset)} samples")
+    # W&B Logging — use existing run (from sweep or manual init)
+    run = wandb.run or wandb.init(project="realnvp-hdc", config=cfg.dict(), name=f"run_{cfg.hv_dim}_{cfg.seed}", reinit=True)
+    run.tags = [f"hv_dim={cfg.hv_dim}", f"vsa={cfg.vsa.value}", f"dataset={cfg.dataset.value}"]
 
-    # Update config
+    wandb_logger = WandbLogger(log_model=True, experiment=run)
+
+    train_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True)[:64]
+    validation_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="val", subset=True)[:8]
+
     device = get_device()
-    vsa = cfg.vsa
     ds = cfg.dataset
-    ds.default_cfg.vsa = vsa
+    ds.default_cfg.vsa = cfg.vsa
     ds.default_cfg.hv_dim = cfg.hv_dim
     ds.default_cfg.device = device
     ds.default_cfg.seed = cfg.seed
     ds.default_cfg.edge_feature_configs = {}
     ds.default_cfg.graph_feature_configs = {}
 
-    # HyperNet: Load or create
     encoder = load_or_create_hypernet(path=global_model_dir, cfg=ds.default_cfg, depth=3)
 
-    # PCA: Load or fit
-    # n_components = 0.998
-    # pca_path = global_model_dir / f"hypervec_pca_{vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"
-    # pca = load_or_fit_pca(
-    #     train_dataset=ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True),
-    #     encoder=encoder,
-    #     pca_path=pca_path,
-    #     n_components=n_components,
-    #     n_fit=20_000,
-    # )
+    n_components = 0.998
+    pca_path = global_model_dir / f"hypervec_pca_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"
+    pca = load_or_fit_pca(
+        train_dataset=ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True),
+        encoder=encoder,
+        pca_path=pca_path,
+        n_components=n_components,
+        n_fit=20_000,
+    )
 
-    # reduced_dim = int(pca.n_components_)
-    # cfg.num_input_channels = 3 * reduced_dim
-    # cfg.input_shape = (3, reduced_dim)
+    reduced_dim = int(pca.n_components_)
+    cfg.num_input_channels = 3 * reduced_dim
+    cfg.input_shape = (3, reduced_dim)
 
-    # DataLoaders
     train_dataloader = DataLoader(
-        EncodedPCADataset(train_dataset, encoder, use_norm_pca=True),
+        EncodedPCADataset(train_dataset, encoder, pca, use_norm_pca=True),
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=4,
@@ -299,7 +298,7 @@ def run_experiment(cfg: FlowConfig):
         drop_last=True,
     )
     validation_dataloader = DataLoader(
-        EncodedPCADataset(validation_dataset, encoder, use_norm_pca=True),
+        EncodedPCADataset(validation_dataset, encoder, pca, use_norm_pca=True),
         batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=2,
@@ -307,10 +306,8 @@ def run_experiment(cfg: FlowConfig):
         drop_last=False,
     )
 
-    # Model
-    model = NeuralSplineLightning(cfg)
+    model = RealNVPLightning(cfg)
 
-    # Logging and callbacks
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
@@ -325,30 +322,39 @@ def run_experiment(cfg: FlowConfig):
 
     trainer = Trainer(
         max_epochs=cfg.epochs,
-        logger=csv_logger,
+        logger=[csv_logger, wandb_logger],
         callbacks=[checkpoint_callback, lr_monitor, time_logger],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         log_every_n_steps=20,
         enable_progress_bar=True,
-        detect_anomaly=True,  # Detect anomalies in training
+        detect_anomaly=True,
     )
 
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader)
 
-    # Save final model weights (checkpoint already saves best/last)
     torch.save(model.state_dict(), models_dir / "final_model.pt")
 
-    # Save metrics
     metrics_path = Path(csv_logger.log_dir) / "metrics.csv"
     if metrics_path.exists():
         df = pd.read_csv(metrics_path)
         df.to_parquet(evals_dir / "metrics.parquet")
-        print(f"Saved training/validation metrics to {evals_dir / 'metrics.parquet'}")
         plot_train_val_loss(df, artefacts_dir)
 
     print("==== The Experiment is done! ====")
 
 
+def sweep_entrypoint():
+    wandb.init()
+    args = wandb.config.as_dict()
+    fixed_cfg = get_flow_cli_args()
+    for k, v in args.items():
+        setattr(fixed_cfg, k, v)
+    run_experiment(fixed_cfg)
+
 if __name__ == "__main__":
-    run_experiment(get_flow_cli_args())
+    if "WANDB_SWEEP" in os.environ:
+        sweep_entrypoint()
+    else:
+        run_experiment(get_flow_cli_args())
+

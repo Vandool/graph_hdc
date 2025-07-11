@@ -1,44 +1,23 @@
-import normflows as nf
 import pytorch_lightning as pl
 import torch
 from torch import Tensor
+from pathlib import Path
+import normflows as nf
 
-from src.normalizing_flow.config import SpiralFlowConfig
+from src.normalizing_flow.config import FlowConfig
 
 
-class NeuralSplineLightning(pl.LightningModule):
-    def __init__(self, cfg: SpiralFlowConfig):
+class AbstractNFModel(pl.LightningModule):
+    def __init__(self, cfg: FlowConfig):
         super().__init__()
         self.save_hyperparameters()
         self.cfg = cfg
-        latent_dim = cfg.num_input_channels
-        flows = []
-
-        for _ in range(cfg.num_flows):
-            spline = nf.flows.AutoregressiveRationalQuadraticSpline(
-                num_input_channels=cfg.num_input_channels,
-                num_blocks=cfg.num_blocks,
-                num_hidden_channels=cfg.num_hidden_channels,
-                num_context_channels=cfg.num_context_channels,
-                num_bins=cfg.num_bins,
-                tail_bound=cfg.tail_bound,
-                activation=cfg.activation,
-                dropout_probability=cfg.dropout_probability,
-                permute_mask=cfg.permute,
-            )
-            flows.append(spline)
-            # flows.append(nf.flows.LULinearPermute(latent_dim))
-            flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
-
-        base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
-        self.flow = nf.NormalizingFlow(q0=base, flows=flows)
+        self.flow = None  # Must be initialized in subclass
 
     def forward(self, x: Tensor, context: Tensor = None) -> Tensor:
         batch = x.shape[0]
         flat = x.view(batch, -1)
-        if context is not None:
-            return self.flow.forward(flat, context)
-        return self.flow.forward(flat)
+        return self.flow.forward(flat, context) if context is not None else self.flow.forward(flat)
 
     def forward_kld(self, x: Tensor) -> Tensor:
         batch = x.shape[0]
@@ -51,17 +30,14 @@ class NeuralSplineLightning(pl.LightningModule):
             return z.view(num_samples, *self.cfg.input_shape)
         return z
 
-
     def training_step(self, batch, batch_idx):
         loss = self.forward_kld(batch).mean()
         if torch.isfinite(loss):
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
             return loss
-        else:
-            self.log("train_loss", torch.tensor(0.0), prog_bar=True)
-            self.logger.warning(f"Skipping NaN/Inf loss at step {batch_idx}")
-            return None
-
+        self.log("train_loss", torch.tensor(0.0), prog_bar=True)
+        self.logger.warning(f"Skipping NaN/Inf loss at step {batch_idx}")
+        return None
 
     def validation_step(self, batch, batch_idx):
         loss = self.forward_kld(batch).mean()
@@ -72,8 +48,66 @@ class NeuralSplineLightning(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
     def on_train_epoch_start(self):
-        # Put any logic you want here: custom metric resets, LR logging, sampling, etc.
-        # For demonstration, we log the current learning rate
         optimizer = self.optimizers()
-        lr = optimizer.param_groups[0]['lr']
-        self.log('lr', float(lr), on_epoch=True, prog_bar=True)
+        lr = optimizer.param_groups[0]["lr"]
+        self.log("lr", float(lr), on_epoch=True, prog_bar=True)
+
+    def load_from_path(self, path: str):
+        """
+        Load the model state and hyperparameters from file.
+        """
+        checkpoint = torch.load(path, map_location="cpu")
+        self.load_state_dict(checkpoint["state_dict"])
+        self.cfg = FlowConfig(**checkpoint["hyper_parameters"]["cfg"])
+
+    def save_to_path(self, path: str):
+        """
+        Save the model state and hyperparameters to file.
+        """
+        ckpt = {
+            "state_dict": self.state_dict(),
+            "hyper_parameters": {"cfg": self.cfg.dict()}
+        }
+        torch.save(ckpt, path)
+
+
+class RealNVPLightning(AbstractNFModel):
+    def __init__(self, cfg: FlowConfig):
+        super().__init__(cfg)
+
+        latent_dim = cfg.num_input_channels
+        flows = []
+        b = torch.tensor([1 if i % 2 == 0 else 0 for i in range(latent_dim)], dtype=torch.float32)
+
+        for _ in range(cfg.num_flows):
+            t_net = nf.nets.MLP([latent_dim, cfg.num_hidden_channels]*2 + [latent_dim], init_zeros=True)
+            s_net = nf.nets.MLP([latent_dim, cfg.num_hidden_channels]*2 + [latent_dim], init_zeros=True)
+            flows.append(nf.flows.MaskedAffineFlow(b, t=t_net, s=s_net))
+            flows.append(nf.flows.Permute(latent_dim, mode='swap'))
+
+        base = nf.distributions.base.DiagGaussian(latent_dim, trainable=False)
+        self.flow = nf.NormalizingFlow(q0=base, flows=flows)
+
+
+class NeuralSplineLightning(AbstractNFModel):
+    def __init__(self, cfg: FlowConfig):
+        super().__init__(cfg)
+
+        latent_dim = cfg.num_input_channels
+        flows = []
+        for _ in range(cfg.num_flows):
+            flows.append(nf.flows.AutoregressiveRationalQuadraticSpline(
+                num_input_channels=cfg.num_input_channels,
+                num_blocks=cfg.num_blocks,
+                num_hidden_channels=cfg.num_hidden_channels,
+                num_context_channels=cfg.num_context_channels,
+                num_bins=cfg.num_bins,
+                tail_bound=cfg.tail_bound,
+                activation=cfg.activation,
+                dropout_probability=cfg.dropout_probability,
+                permute_mask=cfg.permute,
+            ))
+            flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
+
+        base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
+        self.flow = nf.NormalizingFlow(q0=base, flows=flows)

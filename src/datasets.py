@@ -1,12 +1,13 @@
 import random
-from typing import Any
+from typing import Any, Optional
 
 import networkx as nx
 import torch
-from torch_geometric.data import Data, InMemoryDataset
-from torch_geometric.utils import to_undirected, degree
+from torch_geometric.data import Batch, Data, InMemoryDataset
+from torch_geometric.utils import degree, to_undirected
 
-
+from graph_hdc.utils import AbstractEncoder
+from src.encoding.pca_encoder import PCAEncoder
 
 IDX2COLOR = {
     0: ("R", "red"),
@@ -138,6 +139,7 @@ class ColorGraphDataset(InMemoryDataset):
 
         return colors, edges
 
+
 class AddNodeDegree:
     """
     A PyG style transform that computes each node's (undirected) degree
@@ -160,7 +162,7 @@ class AddNodeDegree:
         # If edge_index is symmetric (i↔j appears twice), then degree(col) already equals full degree.
         # If edge_index is not symmetric, you can do degree(row) + degree(col) to get full undirected degree.
         deg_out = degree(row, data.num_nodes, dtype=torch.float)
-        deg_in  = degree(col, data.num_nodes, dtype=torch.float)
+        deg_in = degree(col, data.num_nodes, dtype=torch.float)
         # Since the undirected edges would count twice
         node_deg = (deg_out + deg_in) // 2
 
@@ -176,3 +178,55 @@ class AddNodeDegree:
             data.x = torch.cat([data.x, node_deg], dim=1)  # → shape [num_nodes, orig_dim+1]
 
         return data
+
+
+import torch
+from torch.utils.data import Dataset
+
+
+class EncodedPCADataset(Dataset):
+    def __init__(
+        self,
+        base_dataset: Dataset,
+        graph_encoder: AbstractEncoder,
+        pca_encoder: PCAEncoder | None = None,
+    ):
+        """
+        Wraps a base PyG dataset, encodes each graph via `graph_encoder`, then
+        optionally reduces its embedding via `pca_encoder`.
+
+        :param base_dataset: any torch Dataset yielding PyG Data objects
+        :param graph_encoder: object with .forward(data=Batch) → dict of tensors
+        :param pca_encoder: optional PCAEncoder; if None, PCA is skipped
+        """
+        self.base_dataset = base_dataset
+        self.graph_encoder = graph_encoder
+        self.pca_encoder = pca_encoder
+
+    def __len__(self) -> int:
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        # 1) get a single graph and batch it
+        data = self.base_dataset[idx]
+        batch = Batch.from_data_list([data])
+
+        # 2) encode node/edge/graph terms
+        res = self.graph_encoder.forward(data=batch)
+        # squeeze out the batch dim
+        node_terms = res["node_terms"].squeeze(0)
+        edge_terms = res["edge_terms"].squeeze(0)
+        graph_embedding = res["graph_embedding"].squeeze(0)
+
+        # 3) stack into [3, D] tensor
+        x = torch.stack([node_terms, edge_terms, graph_embedding], dim=0)
+
+        # 4) optionally apply PCAEncoder
+        if self.pca_encoder is not None:
+            # PCAEncoder.transform returns a tensor of shape [..., new_dim]
+            # Here x has shape [3, D] → we want [3, D_pca]
+            x_reduced = self.pca_encoder.transform(x)
+            return x_reduced
+
+        # 5) fallback: return raw stack
+        return x

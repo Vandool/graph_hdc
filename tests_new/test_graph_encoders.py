@@ -9,7 +9,7 @@ from torch_geometric.data import Batch
 from src import evaluation_metrics
 from src.encoding.configs_and_constants import SupportedDataset
 from src.encoding.graph_encoders import HyperNet
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 from src.utils.utils import DataTransformer
 from tests.utils import ARTIFACTS_PATH
 

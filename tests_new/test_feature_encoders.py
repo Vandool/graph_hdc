@@ -5,7 +5,7 @@ import torch
 
 from src.encoding.configs_and_constants import FeatureConfig
 from src.encoding.feature_encoders import CategoricalIntegerEncoder, CombinatoricIntegerEncoder
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 
 
 @pytest.mark.parametrize(

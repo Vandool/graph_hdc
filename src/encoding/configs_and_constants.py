@@ -12,7 +12,7 @@ from src.encoding.feature_encoders import (
     CombinatoricIntegerEncoder,
     TrueFalseEncoder,
 )
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 
 IndexRange = tuple[int, int]
 

@@ -7,7 +7,7 @@ import torch
 import torchhd
 from torch import Tensor
 
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 from src.utils.utils import scatter_hd
 
 logging.basicConfig()

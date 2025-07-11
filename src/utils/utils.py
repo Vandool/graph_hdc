@@ -5,6 +5,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, Union
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 import torchhd
 from torch import Tensor
@@ -14,7 +18,7 @@ from torchhd import VSATensor
 from torchhd.tensors.hrr import HRRTensor
 from torchhd.tensors.map import MAPTensor
 
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 
 # ========= Paths =========
 PATH = Path(__file__).parent.parent.absolute()
@@ -22,9 +26,13 @@ ARTIFACTS_PATH = PATH / "artifacts"
 ASSETS_PATH = ARTIFACTS_PATH / "assets"
 DATASET_TEST_PATH = ARTIFACTS_PATH / "datasets"
 
+
 # ========= Utils =========
 def set_seed(seed: int) -> None:
-    import random, numpy as np
+    import random
+
+    import numpy as np
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -32,6 +40,56 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def plot_vector_distributions(vectors: np.ndarray, kind: str = "hist", bins: int = 32):
+    """
+    Plot the per-dimension distribution of a set of vectors.
+
+    Parameters:
+    - vectors (np.ndarray): shape (num_vectors, dim)
+    - kind (str): one of {"hist", "box", "violin"}
+    """
+    num_vectors, dim = vectors.shape
+    print(f"Shape: {num_vectors} vectors of dimension {dim}")
+
+    if kind == "hist":
+        cols = 8
+        rows = int(np.ceil(dim / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2, rows * 2), sharex=True, sharey=True)
+        axes = axes.flatten()
+        for i in range(dim):
+            axes[i].hist(vectors[:, i], bins=bins, color="skyblue", edgecolor="black")
+            axes[i].set_title(f"Dim {i}", fontsize=8)
+            axes[i].tick_params(axis="both", labelsize=6)
+        for j in range(dim, len(axes)):
+            axes[j].axis("off")
+        fig.suptitle("Histogram per Dimension", fontsize=14)
+        plt.tight_layout()
+        plt.show()
+
+    elif kind == "box":
+        plt.figure(figsize=(max(10, dim // 2), 5))
+        plt.boxplot(vectors.T, showfliers=False)
+        plt.xlabel("Dimension")
+        plt.ylabel("Value")
+        plt.title("Boxplot of Dimensions")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    elif kind == "violin":
+        df = pd.DataFrame(vectors, columns=[f"dim_{i}" for i in range(dim)])
+        df_melt = df.melt(var_name="dimension", value_name="value")
+        plt.figure(figsize=(max(10, dim // 2), 5))
+        sns.violinplot(data=df_melt, x="dimension", y="value", inner="quartile", cut=0)
+        plt.xticks(rotation=90)
+        plt.title("Violin Plot of Dimensions")
+        plt.tight_layout()
+        plt.show()
+
+    else:
+        raise ValueError("Invalid kind. Choose from {'hist', 'box', 'violin'}.")
 
 
 # ========= Torchhd Utils =========
@@ -224,6 +282,7 @@ def unbind(composite: VSATensor, factor: VSATensor) -> VSATensor:
     # factor.inverse() will return the proper inverse for each model
     return torchhd.bind(composite, factor.inverse())
 
+
 # ========= Utils =========
 class TupleIndexer:
     def __init__(self, sizes: Sequence[int]) -> None:
@@ -297,8 +356,10 @@ def get_deep_size(obj, seen_ids=None):
 
     return size
 
+
 def flatten_counter(c: Counter) -> list:
     return [k for k, v in c.items() for _ in range(v)]
+
 
 class DataTransformer:
     @staticmethod
@@ -313,16 +374,9 @@ class DataTransformer:
         into local indices 0..(N-1) before encoding.
         """
         # 1) Mask to edges belonging to this graph
-        edge_mask = (
-                            data.batch[data.edge_index[0]] == batch
-                    ) & (
-                            data.batch[data.edge_index[1]] == batch
-                    )
+        edge_mask = (data.batch[data.edge_index[0]] == batch) & (data.batch[data.edge_index[1]] == batch)
         # 2) Extract the global edge index pairs
-        truth_edges_global = [
-            tuple(pair)
-            for pair in data.edge_index[:, edge_mask].t().tolist()
-        ]
+        truth_edges_global = [tuple(pair) for pair in data.edge_index[:, edge_mask].t().tolist()]
 
         # 3) Build mapping from global node index -> local (0..N-1)
         nodes_global = data.batch.eq(batch).nonzero(as_tuple=False).flatten().tolist()
@@ -346,7 +400,6 @@ class DataTransformer:
         # 6) Count and return
         return Counter(truth_edge_idxs)
 
-
     @staticmethod
     def get_edge_counter(data: Data, batch) -> Counter[tuple[int, ...]]:
         """
@@ -355,16 +408,9 @@ class DataTransformer:
         into local indices 0..(N-1) before encoding.
         """
         # 1) Mask to edges belonging to this graph
-        edge_mask = (
-                            data.batch[data.edge_index[0]] == batch
-                    ) & (
-                            data.batch[data.edge_index[1]] == batch
-                    )
+        edge_mask = (data.batch[data.edge_index[0]] == batch) & (data.batch[data.edge_index[1]] == batch)
         # 2) Extract the global edge index pairs
-        truth_edges_global = [
-            tuple(pair)
-            for pair in data.edge_index[:, edge_mask].t().tolist()
-        ]
+        truth_edges_global = [tuple(pair) for pair in data.edge_index[:, edge_mask].t().tolist()]
 
         # 3) Build mapping from global node index -> local (0..N-1)
         nodes_global = data.batch.eq(batch).nonzero(as_tuple=False).flatten().tolist()
@@ -384,11 +430,6 @@ class DataTransformer:
         # 6) Count and return
         return Counter(truth_edge_idxs)
 
-
-
-
-
-
     @staticmethod
     def get_x_from_batch(batch: int, data: Data) -> Tensor:
         x = data.x.squeeze(-1).int()
@@ -401,4 +442,3 @@ class DataTransformer:
             ## When we have multiple features like in ZINC_D
             return Counter([tuple(n) for n in node_list])
         return Counter([(n,) for n in node_list])
-

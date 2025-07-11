@@ -1,15 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = "<=3.11"
-# dependencies = [
-#     "torch<2.6.0",
-#     "torch-geometric<=2.6.1",
-#     "numpy<2.0.0",
-#     "matplotlib<4.0.0",
-#     "networkx<3.4.0",
-#     "pytorch-lightning<2.6.0",
-# ]
-# ///
 """
 Conditional Graph Neural Network Implementation for Graph Link Prediction
 

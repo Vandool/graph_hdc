@@ -14,11 +14,11 @@ from torch import nn
 from torch.nn import GELU, LeakyReLU, ReLU
 
 from src.encoding.configs_and_constants import SupportedDataset
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 
 
 @dataclass
-class SpiralFlowConfig:
+class FlowConfig:
     """
     Configuration for constructing a Neural Spline Flow model.
 
@@ -102,7 +102,7 @@ def get_flow(
     )
 
 
-def get_flow_cli_args() -> SpiralFlowConfig:
+def get_flow_cli_args() -> FlowConfig:
     parser = argparse.ArgumentParser(description="Neural Spline Flow CLI")
 
     ## General Config
@@ -201,9 +201,18 @@ def get_flow_cli_args() -> SpiralFlowConfig:
     )
 
     args = parser.parse_args()
-    flow_config = SpiralFlowConfig(**vars(parser.parse_args()))
+    flow_config = FlowConfig(**vars(parser.parse_args()))
 
     flow_config.activation = args.activation if isinstance(args.activation, type) else get_activation(args.activation)
     flow_config.flow_type = args.flow_type if isinstance(args.flow_type, type) else get_flow(args.flow_type)
 
     return flow_config
+
+
+if __name__ == '__main__':
+    @dataclass
+    class A:
+        a: int
+
+    a = A(3)
+    print(a.__dict__)

@@ -24,7 +24,7 @@ from src.encoding.feature_encoders import (
     CombinatoricIntegerEncoder,
     TrueFalseEncoder,
 )
-from src.encoding.types import VSAModel
+from src.encoding.the_types import VSAModel
 from src.utils.utils import TupleIndexer, cartesian_bind_tensor, flatten_counter, scatter_hd
 
 # === HYPERDIMENSIONAL MESSAGE PASSING NETWORKS ===
@@ -732,7 +732,6 @@ class HyperNet(AbstractGraphEncoder):
             assert len(node_idxs) > 0
             pairs = list(itertools.product(node_idxs, node_idxs))
             cand_idxs = torch.tensor(self.edges_indexer.get_idxs(pairs), dtype=torch.long)
-            print(cand_idxs.shape)
             assert cand_idxs.shape[0] == len(node_idxs) ** 2
 
             found = set()

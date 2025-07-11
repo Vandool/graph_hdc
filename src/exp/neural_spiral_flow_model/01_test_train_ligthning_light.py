@@ -17,7 +17,7 @@ from torch_geometric.datasets import ZINC
 
 from src.datasets import AddNodeDegree
 from src.encoding.graph_encoders import HyperNet
-from src.normalizing_flow.config import SpiralFlowConfig, get_flow_cli_args
+from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
 from src.normalizing_flow.neural_spiral_network import NeuralSplineLightning
 
 
@@ -112,7 +112,7 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
-def run_experiment(cfg: SpiralFlowConfig):
+def run_experiment(cfg: FlowConfig):
     print("Running experiment")
     print(pprint(cfg.__dict__, indent=2))
     exp_dir, models_dir, evals_dir = setup_exp(cfg.base_dir)
