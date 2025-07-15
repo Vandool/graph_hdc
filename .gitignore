@@ -21,3 +21,8 @@ results/
 .pixi
 *.egg-info
 .gitattributes
+
+# Wandb
+
+/wandb/
+wandb/

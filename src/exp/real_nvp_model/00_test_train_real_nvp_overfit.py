@@ -17,7 +17,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from sklearn.decomposition import PCA
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
@@ -278,8 +278,15 @@ def run_experiment(cfg: FlowConfig):
 
     wandb_logger = WandbLogger(log_model=True, experiment=run)
 
-    train_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True)[:64]
-    validation_dataset = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="val", subset=True)[:8]
+    train_data = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="train", subset=True)[:1]
+    train_dataset = Subset(train_data, indices=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    print(f"Train length = {len(train_dataset)}")  # → 4
+    print(train_dataset[0])
+    # validation_data = ZINC(root=str(global_dataset_dir), pre_transform=AddNodeDegree(), split="val", subset=True)[:1]
+    validation_dataset = Subset(train_data, indices=[0, 0, 0, 0])
+    print(f"{len(validation_dataset)=}")
+    print(validation_dataset[0])
+
 
     device = get_device()
     ds = cfg.dataset
@@ -291,6 +298,17 @@ def run_experiment(cfg: FlowConfig):
     ds.default_cfg.graph_feature_configs = {}
 
     encoder = load_or_create_hypernet(path=global_model_dir, cfg=ds.default_cfg, depth=3)
+
+    # Print decoded counters of one data point
+    data_batch = Batch.from_data_list(train_data)
+    encoded_data = encoder.forward(data_batch)
+    lvl0_counter = encoder.decode_order_zero_counter(encoded_data['node_terms'])
+    print(f"Decoded level zero counter = {lvl0_counter[0]}")
+    print(f"Decoded level zero counter total = {lvl0_counter[0].total()}")
+    lvl1_counter = encoder.decode_order_one_counter_explain_away_faster(encoded_data['edge_terms'])
+    print(f"Decoded level one counter = {lvl1_counter[0]}")
+    print(f"Decoded level one counter total = {lvl1_counter[0].total()}")
+
 
     n_components = 0.998
     pca_path = global_model_dir / f"hypervec_pca_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_c{str(n_components)[2:]}.joblib"

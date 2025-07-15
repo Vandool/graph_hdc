@@ -35,6 +35,7 @@ class Features(enum.Enum):
     NODE_DEGREE = ("node_degree", 1)
     ATOMIC_NUMBER = ("atom_number", 5)  # unique values [1.0, 6.0, 7.0, 8.0, 9.0]
     AROMATIC = ("aromatic", 6)
+    NHA = ("nha", 3) # unique values [1.0, 2.0, 3.0]
 
     # three hybridization flags
     SP = ("todo", 7)
@@ -57,16 +58,20 @@ class DatasetConfig:
     Configuration for hyperdimensional base encoding of a dataset.
     """
 
+    name: str
     hv_dim: int = 10000
     vsa: VSAModel = field(default_factory=lambda: VSAModel.MAP)
     node_feature_configs: dict[Features, FeatureConfig] = field(default_factory=OrderedDict)
-    edge_feature_configs: Optional[dict[Features, FeatureConfig]] = field(default_factory=OrderedDict)
-    graph_feature_configs: Optional[dict[Features, FeatureConfig]] = field(default_factory=OrderedDict)
+    edge_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
+    graph_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
     device: str = "cpu"
-    seed: Optional[int] = None
+    seed: int | None = None
+    nha_bins: int | None = None
+    nha_depth: int | None = None
 
 
 ZINC_CONFIG: DatasetConfig = DatasetConfig(
+    name="ZINC",
     hv_dim=10000,
     node_feature_configs=OrderedDict(
         [
@@ -94,6 +99,7 @@ ZINC_CONFIG: DatasetConfig = DatasetConfig(
 
 # ZINC_ND has added node degrees as an extra feature to the original ZINC located in data.x
 ZINC_ND_CONFIG: DatasetConfig = deepcopy(ZINC_CONFIG)
+ZINC_ND_CONFIG.name = "ZINC_ND"
 ZINC_ND_CONFIG.node_feature_configs[Features.NODE_DEGREE] = FeatureConfig(
     count=6,  # Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
     encoder_cls=CategoricalIntegerEncoder,
@@ -102,13 +108,24 @@ ZINC_ND_CONFIG.node_feature_configs[Features.NODE_DEGREE] = FeatureConfig(
 
 # ZINC_ND has added node degrees as an extra feature to the original ZINC located in data.x
 ZINC_ND_COMB_CONFIG: DatasetConfig = deepcopy(ZINC_CONFIG)
+ZINC_ND_COMB_CONFIG.name = "ZINC_ND_COMB"
 ZINC_ND_COMB_CONFIG.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
     count=28 * 6,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
     encoder_cls=CombinatoricIntegerEncoder,
     index_range=IndexRange((0, 2)),
 )
 
+ZINC_ND_COMB_CONFIG_NHA: DatasetConfig = deepcopy(ZINC_CONFIG)
+ZINC_ND_COMB_CONFIG_NHA.name = "ZINC_ND_COMB_NHA"
+ZINC_ND_COMB_CONFIG_NHA.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+    # Added Neighbourhood awareness encodings (3 distinct values)
+    count=28 * 6 * 3,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
+    encoder_cls=CombinatoricIntegerEncoder,
+    index_range=IndexRange((0, 3)),
+)
+
 QM9_CONFIG: DatasetConfig = DatasetConfig(
+    name="QM9",
     hv_dim=10000,
     node_feature_configs=OrderedDict(
         [
@@ -197,6 +214,8 @@ class SupportedDataset(enum.Enum):
     ZINC = ("ZINC", ZINC_CONFIG)
     ZINC_NODE_DEGREE = ("ZINC_ND", ZINC_ND_CONFIG)
     ZINC_NODE_DEGREE_COMB = ("ZINC_ND_COMB", ZINC_ND_COMB_CONFIG)
+    # NHA: Neighbourhood Aware
+    ZINC_NODE_DEGREE_COMB_NHA = ("ZINC_ND_COMB_NHA", ZINC_ND_COMB_CONFIG_NHA)
     QM9 = ("QM9", QM9_CONFIG)
 
     def __new__(cls, value: str, default_cfg: DatasetConfig):

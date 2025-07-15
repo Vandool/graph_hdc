@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import normflows as nf
+import numpy as np
 import pytorch_lightning as pl
 import torch
 from torch import Tensor
@@ -26,22 +27,25 @@ class AbstractNFModel(pl.LightningModule):
         return self.flow.forward_kld(flat)
 
     def sample(self, num_samples: int) -> Tensor:
-        z, _ = self.flow.sample(num_samples)
+        z, logs = self.flow.sample(num_samples)
         if self.cfg.input_shape is not None:
-            return z.view(num_samples, *self.cfg.input_shape)
-        return z
+            return z.view(num_samples, *self.cfg.input_shape), logs
+        return z, logs
 
     def training_step(self, batch, batch_idx):
         loss = self.forward_kld(batch).mean()
         if torch.isfinite(loss):
-            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+            # We log the scalar, otherwise the if the loss is subclass of Tensor (i.e. HRRTensor) the deepcopy fails
+            loss_scalar = loss.item()
+            self.log("train_loss", loss_scalar, on_step=True, on_epoch=True, prog_bar=True)
             return loss
         print(f"Skipping NaN/Inf loss at step {batch_idx}")
         return None
 
     def validation_step(self, batch, batch_idx):
         loss = self.forward_kld(batch).mean()
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
+        loss_scalar = loss.item()
+        self.log("val_loss", loss_scalar, on_epoch=True, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
@@ -52,13 +56,13 @@ class AbstractNFModel(pl.LightningModule):
         lr = optimizer.param_groups[0]["lr"]
         self.log("lr", float(lr), on_epoch=True, prog_bar=True)
 
-    def load_from_path(self, path: str):
-        """
-        Load the model state and hyperparameters from file.
-        """
+    @classmethod
+    def load_from_path(cls, path: str) -> 'AbstractNFModel':
         checkpoint = torch.load(path, map_location="cpu")
-        self.load_state_dict(checkpoint["state_dict"])
-        self.cfg = FlowConfig(**checkpoint["hyper_parameters"]["cfg"])
+        cfg = FlowConfig(**checkpoint["hyper_parameters"]["cg"])
+        model = cls(cfg)
+        model.load_state_dict(checkpoint["state_dict"])
+        return model
 
     def save_to_path(self, path: str):
         """
@@ -66,7 +70,7 @@ class AbstractNFModel(pl.LightningModule):
         """
         ckpt = {
             "state_dict": self.state_dict(),
-            "hyper_parameters": {"cfg": self.cfg.dict()}
+            "hyper_parameters": {"cfg": self.cfg.__dict__()}
         }
         torch.save(ckpt, path)
 
@@ -84,7 +88,7 @@ class RealNVPLightning(AbstractNFModel):
             [1 if i % 2 == 0 else 0 for i in range(latent_dim)],
             dtype=torch.float32
         )
-        self.register_buffer('mask', mask)
+        self.register_buffer("mask", mask)
 
         flows = []
         for _ in range(cfg.num_flows):
@@ -101,7 +105,7 @@ class RealNVPLightning(AbstractNFModel):
                 nf.flows.MaskedAffineFlow(self.mask, t=t_net, s=s_net)
             )
             flows.append(
-                nf.flows.Permute(latent_dim, mode='swap')
+                nf.flows.Permute(latent_dim, mode="swap")
             )
 
         base = nf.distributions.DiagGaussian(latent_dim, trainable=False)

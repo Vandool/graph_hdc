@@ -15,7 +15,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.utils import scatter
 
 from graph_hdc.utils import shallow_dict_equal
-from src.encoding.configs_and_constants import DatasetConfig, Features, IndexRange
+from src.encoding.configs_and_constants import DatasetConfig, Features, IndexRange, SupportedDataset
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -292,6 +292,13 @@ class HyperNet(AbstractGraphEncoder):
         # Contains hypervectors that represents an edge including the nodes and edge features
         self.edges_codebook: Tensor | None = None
         self.edges_indexer: TupleIndexer | None = None
+
+    def to(self, device):
+        self.populate_codebooks()
+        self.nodes_codebook = self.nodes_codebook.to(device)
+        self.edges_codebook = self.edges_codebook.to(device)
+        # self.graph_codebook = self.graph_codebook.to(device)
+        return self
 
     def _validate_vsa(self, vsa: VSAModel) -> VSAModel:
         if vsa in self.__allowed_vsa_models__:
@@ -1289,3 +1296,23 @@ class HyperNet(AbstractGraphEncoder):
 
     def use_graph_features(self) -> bool:
         return len(self.graph_encoder_map) > 0
+
+def load_or_create_hypernet(path: Path, ds: SupportedDataset, depth: int = 1) -> HyperNet:
+    cfg = ds.default_cfg
+    ds_name = ds.name
+    if cfg.nha_depth:
+        ds_name = f"{ds_name}-nha-d{cfg.nha_depth}"
+    if cfg.nha_bins:
+        ds_name = f"{ds_name}-nha-b{cfg.nha_bins}"
+    path = path / f"hypernet_ds{ds_name}_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_dpth{depth}.pt"
+    if path.exists():
+        print(f"Loading existing HyperNet from {path}")
+        encoder = HyperNet(config=cfg, depth=depth)
+        encoder.load(path)
+    else:
+        print("Creating new HyperNet instance.")
+        encoder = HyperNet(config=cfg, depth=depth)
+        encoder.populate_codebooks()
+        encoder.save_to_path(path)
+        print(f"Saved new HyperNet to {path}")
+    return encoder

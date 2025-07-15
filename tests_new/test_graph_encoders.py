@@ -1,14 +1,17 @@
 import logging
 import time
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 import pytest
 from torch_geometric.data import Batch
-
+from torch_geometric.datasets import ZINC
 from src import evaluation_metrics
-from src.encoding.configs_and_constants import SupportedDataset
-from src.encoding.graph_encoders import HyperNet
+from src.datasets import Compose, AddNodeDegree, AddNeighbourhoodEncodings
+from src.encoding.configs_and_constants import SupportedDataset, Features, FeatureConfig, IndexRange
+from src.encoding.feature_encoders import CombinatoricIntegerEncoder
+from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.utils.utils import DataTransformer
 from tests.utils import ARTIFACTS_PATH
@@ -101,7 +104,9 @@ def test_hypernet_forward_works_combinatorial_encoder(batch_data, vsa):
         # False
     ],
 )
-@pytest.mark.parametrize("normalize", [True, False])
+@pytest.mark.parametrize("normalize", [
+    # True,
+    False])
 @pytest.mark.parametrize(
     "depth",
     [
@@ -114,8 +119,9 @@ def test_hypernet_forward_works_combinatorial_encoder(batch_data, vsa):
     "dataset",
     [
         # SupportedDataset.ZINC,
-        SupportedDataset.ZINC_NODE_DEGREE,
-        SupportedDataset.ZINC_NODE_DEGREE_COMB,
+        # SupportedDataset.ZINC_NODE_DEGREE,
+        # SupportedDataset.ZINC_NODE_DEGREE_COMB,
+        SupportedDataset.ZINC_NODE_DEGREE_COMB_NHA,
     ],
 )
 @pytest.mark.parametrize("vsa", [VSAModel.HRR, VSAModel.MAP])
@@ -126,9 +132,17 @@ def test_hypernet_forward_works_combinatorial_encoder(batch_data, vsa):
         80 * 80,
     ],
 )
+@pytest.mark.parametrize(
+    "nha_depth",
+    [
+        1,
+        2,
+        3
+    ],
+)
 @pytest.mark.parametrize("use_explain_away", [True, False])
 def test_hypernet_decode_order_one_is_good_enough_counter(
-    batch_data, dataset, depth, vsa, hv_dim, use_explain_away, normalize, separate_levels
+    batch_data, dataset, depth, vsa, hv_dim, use_explain_away, normalize, separate_levels, nha_depth
 ):
     import time  # add to the top if not already there
 
@@ -210,6 +224,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter(
         "vsa": vsa.value,
         "hv_dim": hv_dim,
         "depth": depth,
+        "nha_depth": nha_depth,
         "normalize": normalize,
         "separate_levels": separate_levels,
         "use_explain_away": use_explain_away,
@@ -222,7 +237,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter(
 
     # --- new code starts here ---
     # --- save metrics to disk ---
-    asset_dir = ARTIFACTS_PATH / "nodes_and_edges" / "run6_with_P"
+    asset_dir = ARTIFACTS_PATH / "nodes_and_edges" / "run7_nha"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "results_faster_no_break.parquet"
@@ -440,3 +455,154 @@ def test_hypernet_reconstruct_works(
     metrics_df.to_csv(csv_path, index=False)
 
 
+@pytest.mark.parametrize(
+    "dataset",
+    [
+        SupportedDataset.ZINC_NODE_DEGREE_COMB_NHA,
+    ],
+)
+@pytest.mark.parametrize("vsa", [VSAModel.HRR, VSAModel.MAP])
+@pytest.mark.parametrize(
+    "nha_depth",
+    [
+        1,
+        2,
+        3,
+        4
+    ],
+)
+@pytest.mark.parametrize(
+    "nha_bins",
+    [
+        3,
+    ],
+)
+@pytest.mark.parametrize(
+    "hv_dim",
+    [
+        80 * 80,
+        96 * 96,
+    ],
+)
+@pytest.mark.parametrize("use_explain_away", [True, False])
+def test_hypernet_decode_order_one_is_good_enough_counter_nha(
+    dataset, vsa, hv_dim, use_explain_away, nha_depth, nha_bins
+):
+    import time  # add to the top if not already there
+
+    global_model_dir = "/Users/arvandkaveh/Projects/kit/graph_hdc/_models"
+    global_dataset_dir = "/Users/arvandkaveh/Projects/kit/graph_hdc/_datasets"
+
+    ds = dataset
+    ds.default_cfg.vsa = vsa
+    # Disable edge and graph features
+    ds.default_cfg.edge_feature_configs = {}
+    ds.default_cfg.graph_feature_configs = {}
+    ds.default_cfg.hv_dim = hv_dim
+    ds.default_cfg.nha_bins = nha_bins
+    ds.default_cfg.nha_depth = nha_depth
+    ds.default_cfg.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+        # Added Neighbourhood awareness encodings (n distinct values)
+        count=28 * 6 * nha_bins,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
+        encoder_cls=CombinatoricIntegerEncoder,
+        index_range=IndexRange((0, 3)),
+    )
+
+    hypernet = load_or_create_hypernet(path=Path(global_model_dir), ds=ds)
+
+    assert not hypernet.use_edge_features()
+    assert not hypernet.use_graph_features()
+
+    batch_size = 16
+    # Construct the composed transform
+    pre_transform = Compose([
+        AddNodeDegree(),
+        AddNeighbourhoodEncodings(depth=nha_depth, bins=nha_bins),
+    ])
+
+    # Use it in your dataset
+    dataset = ZINC(root=global_dataset_dir, pre_transform=pre_transform)
+    data_list = [dataset[i] for i in range(batch_size)]
+    data = Batch.from_data_list(data_list)
+
+    encoded_data = hypernet.forward(data)
+
+    start_time = time.perf_counter()
+    ## ---- Order 0
+    nodes_decoded_counter = hypernet.decode_order_zero_counter(encoded_data['node_terms'])
+    # Build ground‐truth Counters per graph
+    ground_truth_counters = {}
+    for g in range(batch_size):
+        ground_truth_counters[g] = DataTransformer.get_node_counter_from_batch(batch=g, data=data)
+
+    # Compute accuracy per graph:
+    order_zero_f1s = []
+    order_zero_precisions = []
+    for g in range(batch_size):
+        decoded_ctr = nodes_decoded_counter.get(g, Counter())
+        truth_ctr = ground_truth_counters[g]
+
+        p, _, f1 = evaluation_metrics.calculate_p_a_f1(pred=decoded_ctr, true=truth_ctr)
+        order_zero_f1s.append(f1)
+        order_zero_precisions.append(p)
+    avg_F1_node = sum(order_zero_f1s) / batch_size
+    avg_pr_node = sum(order_zero_precisions) / batch_size
+
+    ## ---- Order 1
+    unique_nodes_decoded = [sorted(nodes_decoded_counter[b].keys()) for b in range(batch_size)]
+
+    edges_decoded_counter = hypernet.decode_order_one_counter_explain_away_faster(encoded_data["edge_terms"], unique_nodes_decoded)
+    order_one_f1s = []
+    order_one_precisions = []
+    for b in range(batch_size):
+        truth_counter = DataTransformer.get_edge_existence_counter(batch=b, data=data, indexer=hypernet.nodes_indexer)
+        truth_counter = {k: 1 for k, _ in truth_counter.items()}
+        pred_countre = edges_decoded_counter[b]
+        p, _, f1 = evaluation_metrics.calculate_p_a_f1(pred=pred_countre, true=truth_counter)
+        order_one_f1s.append(f1)
+        order_one_precisions.append(p)
+
+    avg_F1_edge = sum(order_one_f1s) / batch_size
+    avg_pr_edge = sum(order_one_precisions) / batch_size
+
+    run_time_order_one = time.perf_counter() - start_time
+
+    logger.info(
+        f"\n<-- [{ds=}] | [n_samples: {batch_size}] | [{vsa.name=}] | [{hv_dim=}] | [{use_explain_away=}] -->"
+    )
+    logger.info(f"\tAverage node (order 0) f1:  {avg_F1_node:.2f}")
+    logger.info(f"\tAverage edge (order 1) f1:  {avg_F1_edge:.2f}\n")
+
+    ### Save metrics
+    run_metrics = {
+        "dataset": ds.value,
+        "n_samples": batch_size,
+        "vsa": vsa.value,
+        "hv_dim": hv_dim,
+        "nha_depth": nha_depth,
+        "nha_bins": nha_bins,
+        "use_explain_away": use_explain_away,
+        "runtime_order_one_s": run_time_order_one,
+        "P_order_zero": avg_pr_node,
+        "F1_order_zero": avg_F1_node,
+        "P_order_one": avg_pr_edge,
+        "F1_order_one": avg_F1_edge,
+    }
+
+    # --- new code starts here ---
+    # --- save metrics to disk ---
+    asset_dir = ARTIFACTS_PATH / "nodes_and_edges" / "run7_nha"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = asset_dir / "results_faster_no_break.parquet"
+    csv_path = asset_dir / "results_faster_no_break.csv"
+
+    metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
+
+    # append current row
+    new_row = pd.DataFrame([run_metrics])
+    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+
+    # write back out
+    metrics_df.to_parquet(parquet_path, index=False)
+    metrics_df.to_csv(csv_path, index=False)

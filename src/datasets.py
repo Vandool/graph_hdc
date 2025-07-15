@@ -1,10 +1,10 @@
 import random
-from typing import Any, Optional
-
+from typing import Any, Optional, Callable
+import hashlib
 import networkx as nx
 import torch
 from torch_geometric.data import Batch, Data, InMemoryDataset
-from torch_geometric.utils import degree, to_undirected
+from torch_geometric.utils import degree, to_undirected, k_hop_subgraph
 
 from graph_hdc.utils import AbstractEncoder
 from src.encoding.pca_encoder import PCAEncoder
@@ -180,6 +180,51 @@ class AddNodeDegree:
         return data
 
 
+
+def stable_hash(tensor: torch.Tensor, bins: int) -> int:
+    """
+    Map a feature tensor to a stable integer in [0, bins-1], such that small changes in features produce different
+    (but deterministic) outputs. This is better than a naive .sum() since it’s less prone to collisions.
+
+    :param tensor:
+    :param bins:
+    :return:
+    """
+    byte_str = tensor.numpy().tobytes()
+    h = hashlib.sha256(byte_str).hexdigest()
+    return int(h, 16) % bins
+
+class AddNeighbourhoodEncodings:
+    """
+    A PyG-style transform that adds neighborhood encoding to data.x.
+    Each node receives a hash derived from the summed features of its k-hop neighbors,
+    hashed and modded into `bins` buckets to provide permutation-invariant node IDs.
+    """
+
+    def __init__(self, depth: int = 3, bins: int = 3):
+        self.depth = depth
+        self.bins = bins
+
+    def __call__(self, data: Data) -> Data:
+        x = data.x
+        edge_index = data.edge_index
+        num_nodes = data.num_nodes
+
+        hash_features = []
+        for node_idx in range(num_nodes):
+            node_ids, _, _, _ = k_hop_subgraph(
+                node_idx, self.depth, edge_index, relabel_nodes=False
+            )
+            neighbor_feats = x[node_ids].sum(dim=0)  # Aggregate neighborhood
+            hashed_value = stable_hash(neighbor_feats.cpu(), self.bins)
+            hash_features.append([hashed_value])
+
+        nha = torch.tensor(hash_features, dtype=torch.float32)  # [num_nodes, 1]
+
+        data.x = torch.cat([data.x, nha], dim=1)
+
+        return data
+
 import torch
 from torch.utils.data import Dataset
 
@@ -230,3 +275,12 @@ class EncodedPCADataset(Dataset):
 
         # 5) fallback: return raw stack
         return x
+
+class Compose:
+    def __init__(self, transforms: list[Callable]):
+        self.transforms = transforms
+
+    def __call__(self, data: Data) -> Data:
+        for t in self.transforms:
+            data = t(data)
+        return data

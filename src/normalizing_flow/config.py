@@ -53,9 +53,10 @@ class FlowConfig:
     ## Spiral Flow Config
     num_input_channels: int
     num_flows: int
-    num_blocks: int
     num_hidden_channels: int
+    num_blocks: int = 2 
     num_context_channels: int | None = None
+    exp_dir: Path | None = None
     num_bins: int = 8
     tail_bound: int = 3
     flow_type: type[
