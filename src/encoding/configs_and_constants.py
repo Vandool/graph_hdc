@@ -64,7 +64,7 @@ class DatasetConfig:
     node_feature_configs: dict[Features, FeatureConfig] = field(default_factory=OrderedDict)
     edge_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
     graph_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
-    device: str = "cpu"
+    device: str = "mps"
     seed: int | None = None
     nha_bins: int | None = None
     nha_depth: int | None = None

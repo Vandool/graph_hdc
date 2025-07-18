@@ -249,29 +249,41 @@ class HyperNet(AbstractGraphEncoder):
         depth: int = 3,
         *,
         use_explain_away: bool = True,
+        use_edge_codebook: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
         self.use_explain_away = use_explain_away
+        self.use_edge_codebook = use_edge_codebook
         self.depth = depth
         self.vsa = self._validate_vsa(config.vsa)
         self.hv_dim = config.hv_dim
         self.node_encoder_map: EncoderMap = {
             feat: (
-                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset),
+                cfg.encoder_cls(
+                    num_categories=cfg.count,
+                    dim=config.hv_dim,
+                    vsa=config.vsa.value,
+                    idx_offset=cfg.idx_offset,
+                    indexer=TupleIndexer([28, 6]) if not config.nha_bins else TupleIndexer([28, 6, config.nha_bins]),
+                ),
                 cfg.index_range,
             )
             for feat, cfg in config.node_feature_configs.items()
         }
         self.edge_encoder_map: EncoderMap = {
             feat: (
-                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset),
+                cfg.encoder_cls(
+                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset
+                ),
                 cfg.index_range,
             )
             for feat, cfg in config.edge_feature_configs.items()
         }
         self.graph_encoder_map: EncoderMap = {
             feat: (
-                cfg.encoder_cls(num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset),
+                cfg.encoder_cls(
+                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset
+                ),
                 cfg.index_range,
             )
             for feat, cfg in config.graph_feature_configs.items()
@@ -316,9 +328,9 @@ class HyperNet(AbstractGraphEncoder):
         self._populate_nodes_indexer()
         self.populate_edge_feature_codebook()
         self._populate_edge_feature_indexer()
-        self.populate_edges_codebook()
-        self._populate_edges_indexer()
-
+        if self.use_edge_codebook:
+            self.populate_edges_codebook()
+            self._populate_edges_indexer()
 
     # -- encoding
     # These methods handle the encoding of the graph structures into the graph embedding vector
@@ -995,7 +1007,6 @@ class HyperNet(AbstractGraphEncoder):
             "CategoricalLevelEncoder": CategoricalLevelEncoder,
         }
 
-
         def _ensure_enum(x: str | VSAModel) -> VSAModel:
             """Return *x* as VSAModel (idempotent)."""
             return x if isinstance(x, VSAModel) else VSAModel(x)
@@ -1032,7 +1043,6 @@ class HyperNet(AbstractGraphEncoder):
                 result[_feat_key_to_enum(feat_key)] = (encoder, entry["index_range"])
             return result
 
-
         # With weights_only=True the “safe” un-pickler only accepts tensors, primitive types and whatever you
         # explicitly allow-list. We set it to False to allow unsafe un-pickler.
         state = torch.load(path, map_location="cpu", weights_only=False)
@@ -1043,7 +1053,7 @@ class HyperNet(AbstractGraphEncoder):
         self.graph_encoder_map = deserialize_encoder_map(state["graph_encoder_map"])
 
     @classmethod
-    def load(cls, path: str | Path) -> 'HyperNet':
+    def load(cls, path: str | Path) -> "HyperNet":
         """
         Given the absolute string ``path`` to an existing file, this will load the saved state that
         has been saved using the "save_to_path" method. This will overwrite the values of the
@@ -1297,21 +1307,24 @@ class HyperNet(AbstractGraphEncoder):
     def use_graph_features(self) -> bool:
         return len(self.graph_encoder_map) > 0
 
-def load_or_create_hypernet(path: Path, ds: SupportedDataset, depth: int = 1) -> HyperNet:
+
+def load_or_create_hypernet(
+    path: Path, ds: SupportedDataset, depth: int = 1, use_edge_codebook: bool = False
+) -> HyperNet:
     cfg = ds.default_cfg
     ds_name = ds.name
     if cfg.nha_depth:
-        ds_name = f"{ds_name}-nha-d{cfg.nha_depth}"
+        ds_name = f"{ds_name}-d{cfg.nha_depth}"
     if cfg.nha_bins:
-        ds_name = f"{ds_name}-nha-b{cfg.nha_bins}"
-    path = path / f"hypernet_ds{ds_name}_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_dpth{depth}.pt"
+        ds_name = f"{ds_name}-b{cfg.nha_bins}"
+    path = path / f"hypernet_ds{ds_name}_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_dpth{depth}_ecb{int(use_edge_codebook)}.pt"
     if path.exists():
         print(f"Loading existing HyperNet from {path}")
-        encoder = HyperNet(config=cfg, depth=depth)
+        encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
         encoder.load(path)
     else:
         print("Creating new HyperNet instance.")
-        encoder = HyperNet(config=cfg, depth=depth)
+        encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
         encoder.populate_codebooks()
         encoder.save_to_path(path)
         print(f"Saved new HyperNet to {path}")

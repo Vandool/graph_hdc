@@ -16,6 +16,7 @@ class AbstractFeatureEncoder(ABC):
         seed: int | None = None,
         num_categories: int | None = None,
         idx_offset: int = 0,
+        indexer = None
     ):
         self.dim = dim
         self.vsa = vsa

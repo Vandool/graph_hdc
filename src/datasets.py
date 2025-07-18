@@ -215,7 +215,12 @@ class AddNeighbourhoodEncodings:
             node_ids, _, _, _ = k_hop_subgraph(
                 node_idx, self.depth, edge_index, relabel_nodes=False
             )
-            neighbor_feats = x[node_ids].sum(dim=0)  # Aggregate neighborhood
+            # Remove self
+            mask = node_ids != node_idx
+            node_ids = node_ids[mask]
+            # neighbor_feats = x[node_ids].sum(dim=0)  # Aggregate neighborhood
+            # We're hashing
+            neighbor_feats = x[node_ids]  # Aggregate neighborhood
             hashed_value = stable_hash(neighbor_feats.cpu(), self.bins)
             hash_features.append([hashed_value])
 
