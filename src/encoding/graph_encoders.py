@@ -1309,7 +1309,7 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    path: Path, ds: SupportedDataset, depth: int = 1, use_edge_codebook: bool = False
+    path: Path, ds: SupportedDataset, depth: int = 1, *, use_edge_codebook: bool = False
 ) -> HyperNet:
     cfg = ds.default_cfg
     ds_name = ds.name
