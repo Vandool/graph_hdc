@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
+import torchhd
 from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
@@ -593,6 +594,552 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha(dataset, vsa, hv_d
 
     parquet_path = asset_dir / "res.parquet"
     csv_path = asset_dir / "res.csv"
+
+    metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
+
+    # append current row
+    new_row = pd.DataFrame([run_metrics])
+    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+
+    # write back out
+    metrics_df.to_parquet(parquet_path, index=False)
+    metrics_df.to_csv(csv_path, index=False)
+
+
+@pytest.mark.parametrize(
+    "dataset",
+    [
+        SupportedDataset.ZINC_NODE_DEGREE_COMB_NHA,
+    ],
+)
+@pytest.mark.parametrize(
+    "vsa",
+    [VSAModel.HRR, VSAModel.MAP],
+)
+@pytest.mark.parametrize(
+    "nha_depth",
+    [1, 2, 3, 4],
+)
+@pytest.mark.parametrize(
+    "nha_bins",
+    [
+        # 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+        16,
+        17,
+        18,
+        19,
+        20,
+    ],
+)
+@pytest.mark.parametrize(
+    "hv_dim",
+    [80 * 80, 88 * 88, 96 * 96, 112 * 112],
+)
+def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict(dataset, vsa, hv_dim, nha_depth, nha_bins):
+    import time  # add to the top if not already there
+
+    import torch.nn.functional as F
+    from pytorch_lightning import seed_everything
+
+    seed_everything(42)
+
+    global_model_dir = "/Users/arvandkaveh/Projects/kit/graph_hdc/_models"
+    global_dataset_dir = Path("/Users/arvandkaveh/Projects/kit/graph_hdc/_datasets")
+
+    ds = dataset
+    ds.default_cfg.vsa = vsa
+    # Disable edge and graph features
+    ds.default_cfg.edge_feature_configs = {}
+    ds.default_cfg.graph_feature_configs = {}
+    ds.default_cfg.hv_dim = hv_dim
+    ds.default_cfg.seed = 42
+    ds.default_cfg.nha_bins = nha_bins
+    ds.default_cfg.nha_depth = nha_depth
+    ds.default_cfg.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+        # Added Neighbourhood awareness encodings (n distinct values)
+        count=28
+        * 6
+        * nha_bins,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
+        encoder_cls=CombinatoricIntegerEncoder,
+        index_range=IndexRange((0, 3)),
+    )
+
+    hypernet = load_or_create_hypernet(path=Path(global_model_dir), ds=ds, use_edge_codebook=False)
+
+    assert not hypernet.use_edge_features()
+    assert not hypernet.use_graph_features()
+
+    batch_size = 512
+    # Construct the composed transform
+    pre_transform = Compose(
+        [
+            AddNodeDegree(),
+            AddNeighbourhoodEncodings(depth=nha_depth, bins=nha_bins),
+        ]
+    )
+
+    # Use it in your dataset
+    zinc = ZINC(
+        root=global_dataset_dir / f"zinc_nd_comb_nha_d{nha_depth}_b{nha_bins}", pre_transform=pre_transform, subset=True
+    )
+    data_list = [zinc[i] for i in range(batch_size)]
+    data = Batch.from_data_list(data_list)
+
+    # Encode the whole graph in one HV
+    encoded_data = hypernet.forward(data)
+    node_term = encoded_data["node_terms"]
+    graph_term = encoded_data["graph_embedding"]
+    v_n = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
+    v_g = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
+    node_term_key_value = v_n.bind(node_term)
+    graph_term_key_value = v_g.bind(graph_term)
+
+    stacked = torch.stack([node_term_key_value, graph_term_key_value], dim=0).transpose(0, 1)
+    g_hv = torchhd.multiset(stacked)
+
+    # Extract the node_terms from Graph Hyper Vector
+    node_term_decoded = torchhd.bind(v_n.inverse(), g_hv)
+    graph_term_decoded = torchhd.bind(v_g.inverse(), g_hv)
+
+    print("Similarity metrics after decoding")
+    node_term_sims = F.cosine_similarity(node_term_decoded, node_term, dim=1)
+    graph_term_sims = F.cosine_similarity(graph_term_decoded, graph_term, dim=1)
+
+    avg_node_term_sims = torch.mean(node_term_sims, dim=0).item()
+    avg_graph_term_sims = torch.mean(graph_term_sims, dim=0).item()
+
+    start_time = time.perf_counter()
+    ## ---- Order 0
+    nodes_decoded_counter = hypernet.decode_order_zero_counter(node_term_decoded)
+    # Build ground‐truth Counters per graph
+    ground_truth_counters = {}
+    for g in range(batch_size):
+        ground_truth_counters[g] = DataTransformer.get_node_counter_from_batch(batch=g, data=data)
+
+    # Compute accuracy per graph:
+    order_zero_f1s = []
+    order_zero_precisions = []
+    for g in range(batch_size):
+        decoded_ctr = nodes_decoded_counter.get(g, Counter())
+        truth_ctr = ground_truth_counters[g]
+
+        p, _, f1 = evaluation_metrics.calculate_p_a_f1(pred=decoded_ctr, true=truth_ctr)
+        order_zero_f1s.append(f1)
+        order_zero_precisions.append(p)
+    avg_F1_node = sum(order_zero_f1s) / batch_size
+    avg_pr_node = sum(order_zero_precisions) / batch_size
+
+    # Count graphs with unique nodes
+    unique_count = 0
+    for g in zinc:
+        t = g.x
+        flattened = t.view(t.size(0), -1)
+        unique_rows = torch.unique(flattened, dim=0)
+        unique_count += int(unique_rows.size(0) == t.size(0))
+    unique_proportion = unique_count / len(data_list)
+
+    run_time_order_one = time.perf_counter() - start_time
+
+    logger.info(f"\n<-- [{ds=}] | [n_samples: {batch_size}] | [{vsa.name=}] | [{hv_dim=}]] -->")
+    logger.info(f"\tAverage node (order 0) f1:  {avg_F1_node:.2f}")
+
+    ### Save metrics
+    run_metrics = {
+        "dataset": ds.value,
+        "n_samples": batch_size,
+        "vsa": vsa.value,
+        "hv_dim": hv_dim,
+        "nha_depth": nha_depth,
+        "nha_bins": nha_bins,
+        "unique_node_count": unique_count,
+        "unique_proportion": unique_proportion,
+        "runtime_order_one_s": run_time_order_one,
+        "avg_node_term_sim": avg_node_term_sims,
+        "avg_graph_term_sim": avg_graph_term_sims,
+        "P_order_zero": avg_pr_node,
+        "F1_order_zero": avg_F1_node,
+    }
+
+    # --- new code starts here ---
+    # --- save metrics to disk ---
+    asset_dir = ARTIFACTS_PATH / "nodes_and_edges" / "run8_hash_table1"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = asset_dir / "res.parquet"
+    csv_path = asset_dir / "res.csv"
+
+    metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
+
+    # append current row
+    new_row = pd.DataFrame([run_metrics])
+    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+
+    # write back out
+    metrics_df.to_parquet(parquet_path, index=False)
+    metrics_df.to_csv(csv_path, index=False)
+
+
+@pytest.mark.parametrize(
+    "dataset",
+    [
+        SupportedDataset.ZINC_NODE_DEGREE_COMB_NHA,
+    ],
+)
+@pytest.mark.parametrize(
+    "vsa",
+    [VSAModel.HRR, VSAModel.MAP],
+)
+@pytest.mark.parametrize(
+    "nha_depth",
+    [1, 2, 3, 4],
+)
+@pytest.mark.parametrize(
+    "nha_bins",
+    [
+        3,
+        5,
+        7,
+        9,
+        10,
+        13,
+        17,
+        20,
+    ],
+)
+@pytest.mark.parametrize(
+    "hv_dim",
+    [
+        # 80 * 80, 88 * 88, 96 * 96, 112 * 112,
+        120 * 120,
+        128 * 128,
+        136 * 136,
+    ],
+)
+def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__three_levels(
+    dataset, vsa, hv_dim, nha_depth, nha_bins
+):
+    import time  # add to the top if not already there
+
+    import torch.nn.functional as F
+    from pytorch_lightning import seed_everything
+
+    seed_everything(42)
+
+    global_model_dir = "/Users/arvandkaveh/Projects/kit/graph_hdc/_models"
+    global_dataset_dir = Path("/Users/arvandkaveh/Projects/kit/graph_hdc/_datasets")
+
+    ds = dataset
+    ds.default_cfg.vsa = vsa
+    # Disable edge and graph features
+    ds.default_cfg.edge_feature_configs = {}
+    ds.default_cfg.graph_feature_configs = {}
+    ds.default_cfg.hv_dim = hv_dim
+    ds.default_cfg.seed = 42
+    ds.default_cfg.nha_bins = nha_bins
+    ds.default_cfg.nha_depth = nha_depth
+    ds.default_cfg.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+        # Added Neighbourhood awareness encodings (n distinct values)
+        count=28
+        * 6
+        * nha_bins,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
+        encoder_cls=CombinatoricIntegerEncoder,
+        index_range=IndexRange((0, 3)),
+    )
+
+    hypernet = load_or_create_hypernet(path=Path(global_model_dir), ds=ds, use_edge_codebook=False)
+
+    assert not hypernet.use_edge_features()
+    assert not hypernet.use_graph_features()
+
+    batch_size = 512
+    # Construct the composed transform
+    pre_transform = Compose(
+        [
+            AddNodeDegree(),
+            AddNeighbourhoodEncodings(depth=nha_depth, bins=nha_bins),
+        ]
+    )
+
+    # Use it in your dataset
+    zinc = ZINC(
+        root=global_dataset_dir / f"zinc_nd_comb_nha_d{nha_depth}_b{nha_bins}", pre_transform=pre_transform, subset=True
+    )
+    data_list = [zinc[i] for i in range(batch_size)]
+    data = Batch.from_data_list(data_list)
+
+    # Encode the whole graph in one HV
+    encoded_data = hypernet.forward(data)
+    node_term = encoded_data["node_terms"]
+    edge_term = encoded_data["edge_terms"]
+    graph_term = encoded_data["graph_embedding"]
+    v_n = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
+    v_e = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
+    v_g = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
+    node_term_key_value = v_n.bind(node_term)
+    edge_term_key_value = v_e.bind(edge_term)
+    graph_term_key_value = v_g.bind(graph_term)
+
+    stacked = torch.stack([node_term_key_value, edge_term_key_value, graph_term_key_value], dim=0).transpose(0, 1)
+    g_hv = torchhd.multiset(stacked)
+
+    # Extract the node_terms from Graph Hyper Vector
+    node_term_extract = torchhd.bind(v_n.inverse(), g_hv)
+    edge_term_extract = torchhd.bind(v_e.inverse(), g_hv)
+    graph_term_extract = torchhd.bind(v_g.inverse(), g_hv)
+
+    print("Similarity metrics after decoding")
+    node_term_sims = F.cosine_similarity(node_term_extract, node_term, dim=1)
+    edge_term_sims = F.cosine_similarity(edge_term_extract, edge_term, dim=1)
+    graph_term_sims = F.cosine_similarity(graph_term_extract, graph_term, dim=1)
+
+    avg_node_term_sims = torch.mean(node_term_sims, dim=0).item()
+    avg_edge_term_sims = torch.mean(edge_term_sims, dim=0).item()
+    avg_graph_term_sims = torch.mean(graph_term_sims, dim=0).item()
+
+    start_time = time.perf_counter()
+    ## ---- Order 0
+    nodes_decoded_counter = hypernet.decode_order_zero_counter(node_term_extract)
+    # Build ground‐truth Counters per graph
+    ground_truth_counters = {}
+    for g in range(batch_size):
+        ground_truth_counters[g] = DataTransformer.get_node_counter_from_batch(batch=g, data=data)
+
+    # Compute accuracy per graph:
+    order_zero_f1s = []
+    order_zero_precisions = []
+    for g in range(batch_size):
+        decoded_ctr = nodes_decoded_counter.get(g, Counter())
+        truth_ctr = ground_truth_counters[g]
+
+        p, _, f1 = evaluation_metrics.calculate_p_a_f1(pred=decoded_ctr, true=truth_ctr)
+        order_zero_f1s.append(f1)
+        order_zero_precisions.append(p)
+    avg_F1_node = sum(order_zero_f1s) / batch_size
+    avg_pr_node = sum(order_zero_precisions) / batch_size
+
+    # Count graphs with unique nodes
+    unique_count = 0
+    for g in zinc:
+        t = g.x
+        flattened = t.view(t.size(0), -1)
+        unique_rows = torch.unique(flattened, dim=0)
+        unique_count += int(unique_rows.size(0) == t.size(0))
+    unique_proportion = unique_count / len(data_list)
+
+    run_time_order_one = time.perf_counter() - start_time
+
+    logger.info(f"\n<-- [{ds=}] | [n_samples: {batch_size}] | [{vsa.name=}] | [{hv_dim=}]] -->")
+    logger.info(f"\tAverage node (order 0) f1:  {avg_F1_node:.2f}")
+
+    ### Save metrics
+    run_metrics = {
+        "dataset": ds.value,
+        "n_samples": batch_size,
+        "vsa": vsa.value,
+        "hv_dim": hv_dim,
+        "nha_depth": nha_depth,
+        "nha_bins": nha_bins,
+        "unique_node_count": unique_count,
+        "unique_proportion": unique_proportion,
+        "runtime_order_one_s": run_time_order_one,
+        "avg_node_term_sim": avg_node_term_sims,
+        "avg_edge_term_sim": avg_edge_term_sims,
+        "avg_graph_term_sim": avg_graph_term_sims,
+        "P_order_zero": avg_pr_node,
+        "F1_order_zero": avg_F1_node,
+    }
+
+    # --- new code starts here ---
+    # --- save metrics to disk ---
+    asset_dir = ARTIFACTS_PATH / "nodes_and_edges" / "run8_hash_table_three_lvl"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = asset_dir / "res.parquet"
+    csv_path = asset_dir / "res.csv"
+
+    metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
+
+    # append current row
+    new_row = pd.DataFrame([run_metrics])
+    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+
+    # write back out
+    metrics_df.to_parquet(parquet_path, index=False)
+    metrics_df.to_csv(csv_path, index=False)
+
+
+@pytest.mark.parametrize(
+    "dataset",
+    [
+        SupportedDataset.ZINC_NODE_DEGREE_COMB_NHA,
+    ],
+)
+@pytest.mark.parametrize(
+    "vsa",
+    [VSAModel.HRR, VSAModel.MAP],
+)
+@pytest.mark.parametrize(
+    "nha_depth",
+    [
+        1,
+        2,
+        3,
+    ],
+)
+@pytest.mark.parametrize(
+    "nha_bins",
+    [
+        3,
+        5,
+        7,
+        9,
+        10,
+        13,
+        17,
+        20,
+    ],
+)
+@pytest.mark.parametrize(
+    "hv_dim",
+    [80 * 80, 88 * 88, 96 * 96, 112 * 112, 120 * 120, 128 * 128, 136 * 136],
+)
+def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__three_levels_hashtable(
+    dataset, vsa, hv_dim, nha_depth, nha_bins
+):
+    import time  # add to the top if not already there
+
+    import torch.nn.functional as F
+    from pytorch_lightning import seed_everything
+
+    seed_everything(42)
+
+    global_model_dir = "/Users/arvandkaveh/Projects/kit/graph_hdc/_models"
+    global_dataset_dir = Path("/Users/arvandkaveh/Projects/kit/graph_hdc/_datasets")
+
+    ds = dataset
+    ds.default_cfg.vsa = vsa
+    # Disable edge and graph features
+    ds.default_cfg.edge_feature_configs = {}
+    ds.default_cfg.graph_feature_configs = {}
+    ds.default_cfg.hv_dim = hv_dim
+    ds.default_cfg.seed = 42
+    ds.default_cfg.nha_bins = nha_bins
+    ds.default_cfg.nha_depth = nha_depth
+    ds.default_cfg.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+        # Added Neighbourhood awareness encodings (n distinct values)
+        count=28
+        * 6
+        * nha_bins,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
+        encoder_cls=CombinatoricIntegerEncoder,
+        index_range=IndexRange((0, 3)),
+    )
+
+    hypernet = load_or_create_hypernet(path=Path(global_model_dir), ds=ds, use_edge_codebook=False)
+
+    assert not hypernet.use_edge_features()
+    assert not hypernet.use_graph_features()
+
+    batch_size = 4
+    # Construct the composed transform
+    pre_transform = Compose(
+        [
+            AddNodeDegree(),
+            AddNeighbourhoodEncodings(depth=nha_depth, bins=nha_bins),
+        ]
+    )
+
+    # Use it in your dataset
+    zinc = ZINC(
+        root=global_dataset_dir / f"zinc_nd_comb_nha_d{nha_depth}_b{nha_bins}", pre_transform=pre_transform, subset=True
+    )
+    data_list = [zinc[i] for i in range(batch_size)]
+    data = Batch.from_data_list(data_list)
+
+    from torchhd import structures
+
+    # Encode the whole graph in one HV
+    encoded_data = hypernet.forward(data)
+    node_term = encoded_data["node_terms"]
+    edge_term = encoded_data["edge_terms"]
+    graph_term = encoded_data["graph_embedding"]
+
+    ## Create a HashTable
+    graph_hash_table = structures.HashTable(dim_or_input=hv_dim, vsa=vsa.value)
+    var = torchhd.random(3, hv_dim, vsa=vsa.value)
+    graph_hash_table.add(key=var[0], value=node_term)
+    graph_hash_table.add(key=var[1], value=edge_term)
+    graph_hash_table.add(key=var[2], value=graph_term)
+
+    # Extract the node_terms from Graph Hyper Vector
+    node_term_extract = graph_hash_table.get(var[0])
+    edge_term_extract = graph_hash_table.get(var[1])
+    graph_term_extract = graph_hash_table.get(var[2])
+
+    print("Similarity metrics after decoding")
+    node_term_sim = F.cosine_similarity(node_term_extract, node_term, dim=1).mean().item()
+    edge_term_sim = F.cosine_similarity(edge_term_extract, edge_term, dim=1).mean().item()
+    graph_term_sim = F.cosine_similarity(graph_term_extract, graph_term, dim=1).mean().item()
+
+    start_time = time.perf_counter()
+    ## ---- Order 0
+    nodes_decoded_counter = hypernet.decode_order_zero_counter(node_term_extract)
+    # Build ground‐truth Counters per graph
+    ground_truth_counters = {}
+    for g in range(batch_size):
+        ground_truth_counters[g] = DataTransformer.get_node_counter_from_batch(batch=g, data=data)
+
+    # Compute accuracy per graph:
+    order_zero_f1s = []
+    order_zero_precisions = []
+    for g in range(batch_size):
+        decoded_ctr = nodes_decoded_counter.get(g, Counter())
+        truth_ctr = ground_truth_counters[g]
+
+        p, _, f1 = evaluation_metrics.calculate_p_a_f1(pred=decoded_ctr, true=truth_ctr)
+        order_zero_f1s.append(f1)
+        order_zero_precisions.append(p)
+    avg_F1_node = sum(order_zero_f1s) / batch_size
+    avg_pr_node = sum(order_zero_precisions) / batch_size
+
+    # Count graphs with unique nodes
+    unique_count = 0
+    for g in zinc:
+        t = g.x
+        flattened = t.view(t.size(0), -1)
+        unique_rows = torch.unique(flattened, dim=0)
+        unique_count += int(unique_rows.size(0) == t.size(0))
+    unique_proportion = unique_count / len(data_list)
+
+    run_time_order_one = time.perf_counter() - start_time
+
+    logger.info(f"\tAverage node (order 0) f1:  {avg_F1_node:.2f}")
+    logger.info(f"\n<-- [{ds=}] | [n_samples: {batch_size}] | [{vsa.name=}] | [{hv_dim=}]] -->")
+
+    ### Save metrics
+    run_metrics = {
+        "dataset": ds.value,
+        "n_samples": batch_size,
+        "vsa": vsa.value,
+        "hv_dim": hv_dim,
+        "nha_depth": nha_depth,
+        "nha_bins": nha_bins,
+        "unique_node_count": unique_count,
+        "unique_proportion": unique_proportion,
+        "runtime_order_one_s": run_time_order_one,
+        "avg_node_term_cos_sim": node_term_sim,
+        "avg_edge_term_coos_sim": edge_term_sim,
+        "avg_graph_term_cos_sim": graph_term_sim,
+        "P_order_zero": avg_pr_node,
+        "F1_order_zero": avg_F1_node,
+    }
+
+    # --- new code starts here ---
+    # --- save metrics to disk ---
+    asset_dir = ARTIFACTS_PATH / "nodes_and_edges" / "run8_hash_table_three_lvl"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = asset_dir / "torchhd_hash_table.parquet"
+    csv_path = asset_dir / "torchhd_hach_table.csv"
 
     metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 
