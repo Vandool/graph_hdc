@@ -810,7 +810,9 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict(datas
     "hv_dim",
     [
         # 80 * 80, 88 * 88, 96 * 96, 112 * 112,
-        120 * 120, 128 * 128, 136 * 136
+        120 * 120,
+        128 * 128,
+        136 * 136,
     ],
 )
 def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__three_levels(
@@ -965,6 +967,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
     metrics_df.to_parquet(parquet_path, index=False)
     metrics_df.to_csv(csv_path, index=False)
 
+
 @pytest.mark.parametrize(
     "dataset",
     [
@@ -977,7 +980,11 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
 )
 @pytest.mark.parametrize(
     "nha_depth",
-    [1, 2, 3, 4],
+    [
+        1,
+        2,
+        3,
+    ],
 )
 @pytest.mark.parametrize(
     "nha_bins",
@@ -994,10 +1001,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
 )
 @pytest.mark.parametrize(
     "hv_dim",
-    [
-        # 80 * 80, 88 * 88, 96 * 96, 112 * 112,
-        120 * 120, 128 * 128, 136 * 136
-    ],
+    [80 * 80, 88 * 88, 96 * 96, 112 * 112, 120 * 120, 128 * 128, 136 * 136],
 )
 def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__three_levels_hashtable(
     dataset, vsa, hv_dim, nha_depth, nha_bins
@@ -1035,7 +1039,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
     assert not hypernet.use_edge_features()
     assert not hypernet.use_graph_features()
 
-    batch_size = 512
+    batch_size = 4
     # Construct the composed transform
     pre_transform = Compose(
         [
@@ -1060,12 +1064,11 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
     graph_term = encoded_data["graph_embedding"]
 
     ## Create a HashTable
-    graph_hash_table = structures.HashTable(dimensions=hv_dim, vsa=vsa.value)
+    graph_hash_table = structures.HashTable(dim_or_input=hv_dim, vsa=vsa.value)
     var = torchhd.random(3, hv_dim, vsa=vsa.value)
     graph_hash_table.add(key=var[0], value=node_term)
     graph_hash_table.add(key=var[1], value=edge_term)
     graph_hash_table.add(key=var[2], value=graph_term)
-
 
     # Extract the node_terms from Graph Hyper Vector
     node_term_extract = graph_hash_table.get(var[0])
@@ -1073,13 +1076,9 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
     graph_term_extract = graph_hash_table.get(var[2])
 
     print("Similarity metrics after decoding")
-    node_term_sims = torchhd.dot(node_term_extract, node_term, dim=1)
-    edge_term_sims = F.cosine_similarity(edge_term_extract, edge_term, dim=1)
-    graph_term_sims = F.cosine_similarity(graph_term_extract, graph_term, dim=1)
-
-    avg_node_term_sims = torch.mean(node_term_sims, dim=0).item()
-    avg_edge_term_sims = torch.mean(edge_term_sims, dim=0).item()
-    avg_graph_term_sims = torch.mean(graph_term_sims, dim=0).item()
+    node_term_sim = F.cosine_similarity(node_term_extract, node_term, dim=1).mean().item()
+    edge_term_sim = F.cosine_similarity(edge_term_extract, edge_term, dim=1).mean().item()
+    graph_term_sim = F.cosine_similarity(graph_term_extract, graph_term, dim=1).mean().item()
 
     start_time = time.perf_counter()
     ## ---- Order 0
@@ -1127,9 +1126,9 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
         "unique_node_count": unique_count,
         "unique_proportion": unique_proportion,
         "runtime_order_one_s": run_time_order_one,
-        "avg_node_term_cos_sim": avg_node_term_sims,
-        "avg_edge_term_coos_sim": avg_edge_term_sims,
-        "avg_graph_term_cos_sim": avg_graph_term_sims,
+        "avg_node_term_cos_sim": node_term_sim,
+        "avg_edge_term_coos_sim": edge_term_sim,
+        "avg_graph_term_cos_sim": graph_term_sim,
         "P_order_zero": avg_pr_node,
         "F1_order_zero": avg_F1_node,
     }
