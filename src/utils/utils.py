@@ -21,10 +21,16 @@ from torchhd.tensors.map import MAPTensor
 from src.encoding.the_types import VSAModel
 
 # ========= Paths =========
-PATH = Path(__file__).parent.parent.absolute()
-ARTIFACTS_PATH = PATH / "artifacts"
-ASSETS_PATH = ARTIFACTS_PATH / "assets"
-DATASET_TEST_PATH = ARTIFACTS_PATH / "datasets"
+ROOT = Path(__file__)
+while ROOT.stem != "graph_hdc":
+    ROOT = ROOT.parent
+ROOT = ROOT.absolute()
+
+GLOBAL_DATASET_PATH = ROOT / "_datasets"
+GLOBAL_MODEL_PATH = ROOT / "_models"
+
+TEST_ARTIFACTS_PATH = ROOT / "tests_new/artifacts"
+TEST_ASSETS_PATH = ROOT / "tests_new/assets"
 
 
 # ========= Utils =========
@@ -442,3 +448,8 @@ class DataTransformer:
             ## When we have multiple features like in ZINC_D
             return Counter([tuple(n) for n in node_list])
         return Counter([(n,) for n in node_list])
+
+
+if __name__ == "__main__":
+
+    print(ROOT)

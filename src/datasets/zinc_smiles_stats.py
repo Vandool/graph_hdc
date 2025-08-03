@@ -17,6 +17,20 @@ files: list[Path] = [
 ]
 N: int = 100  # target count
 
+def atom_key(a):
+    """
+    Create the categorical 'atom type' key similar to the one
+    used in the PyG ZINC pickles: element + formal charge +
+    aromatic flag + #implicit Hs.
+
+    -> Its not fully aligned with ZINC yet since it generates 45 categories, where ZINC250 has 28 distinct atom types
+    """
+    return (
+        a.GetSymbol(),              # element
+        a.GetFormalCharge(),        # e.g. +1 in [NH3+]
+        a.GetIsAromatic(),          # boolean
+        a.GetTotalNumHs(includeNeighbors=True),
+    )
 
 def iter_smiles(file: Path):
     """Yield SMILES strings from each file, skipping an optional header."""
