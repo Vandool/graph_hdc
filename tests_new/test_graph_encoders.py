@@ -11,7 +11,7 @@ from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
 from src import evaluation_metrics
-from src.datasets import AddNeighbourhoodEncodings, AddNodeDegree, Compose
+from src.datasets.utils import Compose, AddNodeDegree, AddNeighbourhoodEncodings
 from src.encoding.configs_and_constants import FeatureConfig, Features, IndexRange, SupportedDataset
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet

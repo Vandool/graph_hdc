@@ -59,12 +59,21 @@ ZINC_SMILE_ATOM_TO_IDX: dict[str, int] = {
 ZINC_SMILE_IDX_TO_ATOM: dict[int, str] = {v: k for k, v in ZINC_SMILE_ATOM_TO_IDX.items()}
 
 def mol_to_data(mol: Chem.Mol) -> Data:
-    """Very small node/edge feature recipe, tweak as you like."""
+    """
+        Atom types size: 9
+        Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
+        Degrees size: 5
+        Degrees: {1, 2, 3, 4, 5}
+        Formal Charges size: 3
+        Formal Charges: {0, 1, -1}
+        Explicit Hs size: 4
+        Explicit Hs: {0, 1, 2, 3}
+    """
     x = [
         [
             float(ZINC_SMILE_ATOM_TO_IDX[atom.GetSymbol()]),
-            float(atom.GetDegree()),
-            float(atom.GetFormalCharge()),
+            float(atom.GetDegree() - 1), # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
+            float(atom.GetFormalCharge() if atom.GetFormalCharge() >= 0 else 2), # [0, 1, -1] -> [0, 1, 2]
             float(atom.GetTotalNumHs()),
         ]
         for atom in mol.GetAtoms()

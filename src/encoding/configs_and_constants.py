@@ -27,6 +27,7 @@ class FeatureConfig:
     encoder_cls: type[AbstractFeatureEncoder]
     index_range: IndexRange = (0, 1)  # feature slice indices (start, end)
     idx_offset: int = 0
+    bins: list[int] | None = None
 
 
 class Features(enum.Enum):

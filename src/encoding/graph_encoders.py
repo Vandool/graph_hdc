@@ -264,7 +264,7 @@ class HyperNet(AbstractGraphEncoder):
                     dim=config.hv_dim,
                     vsa=config.vsa.value,
                     idx_offset=cfg.idx_offset,
-                    indexer=TupleIndexer([28, 6]) if not config.nha_bins else TupleIndexer([28, 6, config.nha_bins]),
+                    indexer=TupleIndexer(sizes=cfg.bins) if cfg.bins else TupleIndexer(sizes=[28,6, config.nha_bins]),
                 ),
                 cfg.index_range,
             )
@@ -1309,7 +1309,7 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    path: Path, ds: SupportedDataset, depth: int = 1, use_edge_codebook: bool = False
+    path: Path, ds: SupportedDataset, depth: int = 3, use_edge_codebook: bool = False
 ) -> HyperNet:
     cfg = ds.default_cfg
     ds_name = ds.name
