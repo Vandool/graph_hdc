@@ -12,6 +12,7 @@
 #SBATCH --cpus-per-task=8        # 8 CPU cores for your Python job
 #SBATCH --mem=64G                # ~32 GB RAM is a sensible default
 
+module load devel/cuda/11.8
 
 # ========== Experiment Path Configuration ==========
 PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"

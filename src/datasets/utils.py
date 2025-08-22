@@ -7,6 +7,7 @@ from torch_geometric.data import Batch, Data, InMemoryDataset
 from torch_geometric.utils import degree, to_undirected, k_hop_subgraph
 
 from graph_hdc.utils import AbstractEncoder
+from src.encoding.graph_encoders import AbstractGraphEncoder
 from src.encoding.pca_encoder import PCAEncoder
 
 IDX2COLOR = {
@@ -288,4 +289,15 @@ class Compose:
     def __call__(self, data: Data) -> Data:
         for t in self.transforms:
             data = t(data)
+        return data
+
+class AddHDCEncodings:
+
+    def __init__(self, encoder: AbstractGraphEncoder):
+        self.encoder = encoder
+
+    def __call__(self, data: Data) -> Data:
+        encodings = self.encoder.forward(data=data)
+        data.graph_terms = encodings["graph_embedding"]
+        data.node_terms = encodings["node_terms"]
         return data

@@ -76,7 +76,6 @@ def make_subgraph_data(full: Data, node_indices: Sequence[int], *,
         else induced_edge_index_from_node_set(full.edge_index, node_indices)
     out = Data(x=x_sub, edge_index=ei_sub)
     out.parent_size = torch.tensor([full.num_nodes], dtype=torch.long)
-    out.idx_map = torch.tensor(node_indices, dtype=torch.long)  # “edge-source” node ids
     return out
 
 
@@ -111,27 +110,6 @@ def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
         cur = H.degree[v]
         res[v] = tgt - cur
     return res
-
-
-# ───────────────────────── residual-degree utilities ──────────────────────────
-def target_degree_from_label(label: tuple[int, ...]) -> int:
-    """degree_idx is stored as 0..4 for degrees 1..5 → return target degree."""
-    return int(label[1]) + 1
-
-
-def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
-    """
-    residual(v) = target_degree_in_final(v) - current_degree_in_subgraph(v), for v in S.
-    Target from node label; current from G.subgraph(S).
-    """
-    H = G.subgraph(S)
-    res = {}
-    for v in S:
-        tgt = target_degree_from_label(G.nodes[v]["label"])
-        cur = H.degree[v]
-        res[v] = tgt - cur
-    return res
-
 
 # ────────────────────────────── positive samplers ─────────────────────────────
 def sample_connected_bfs(G: nx.Graph, k: int, *, rng: random.Random) -> Optional[list[int]]:
@@ -370,8 +348,6 @@ class PairData(Data):
             return self.x1.size(0)
         if key == "edge_index2":
             return self.x2.size(0)
-        if key in {"idx_map1", "idx_map_edges", "idx_map_feats"}:
-            return 0  # global ids/metadata; do not shift
         return super().__inc__(key, value, *args, **kwargs)
 
     def __cat_dim__(self, key, value, *args, **kwargs):
@@ -598,7 +574,6 @@ class ZincPairs(InMemoryDataset):
                         neg_type=torch.tensor([0]),                 # 0 marks positive
                         parent_idx=torch.tensor([parent_idx]),
                     )
-                    pair_pos.idx_map1 = g1_pos.idx_map             # original node ids (metadata)
 
                     # Apply optional hooks and keep
                     if self.pre_filter is None or self.pre_filter(pair_pos):
@@ -702,13 +677,6 @@ class ZincPairs(InMemoryDataset):
                             neg_type=torch.tensor([neg_code]),          # 1/2/3 = local variants
                             parent_idx=torch.tensor([parent_idx]),
                         )
-                        # Propagate any available index maps (metadata)
-                        if hasattr(g1_neg, "idx_map"):
-                            pair_neg.idx_map1 = g1_neg.idx_map
-                        if hasattr(g1_neg, "idx_map_edges"):
-                            pair_neg.idx_map_edges = g1_neg.idx_map_edges
-                        if hasattr(g1_neg, "idx_map_feats"):
-                            pair_neg.idx_map_feats = g1_neg.idx_map_feats
 
                         if self.pre_filter is None or self.pre_filter(pair_neg):
                             if self.pre_transform:
@@ -725,7 +693,6 @@ class ZincPairs(InMemoryDataset):
                     neg_type=torch.tensor([0]),
                     parent_idx=torch.tensor([parent_idx]),
                 )
-                pair_full_pos.idx_map1 = torch.arange(N, dtype=torch.long)
                 if self.pre_filter is None or self.pre_filter(pair_full_pos):
                     if self.pre_transform:
                         pair_full_pos = self.pre_transform(pair_full_pos)
@@ -774,171 +741,23 @@ class ZincPairs(InMemoryDataset):
                         neg_type=torch.tensor([4 if op == "add" else 5]),  # 4:add, 5:remove
                         parent_idx=torch.tensor([parent_idx]),
                     )
-                    pair_full_neg.idx_map1 = g1_neg.idx_map
                     if self.pre_filter is None or self.pre_filter(pair_full_neg):
                         if self.pre_transform:
                             pair_full_neg = self.pre_transform(pair_full_neg)
                         data_list.append(pair_full_neg)
 
+        if data_list:
+            keys0 = set(data_list[0].keys)
+            for i, d in enumerate(data_list):
+                if set(d.keys) != keys0:
+                    missing = keys0 - set(d.keys)
+                    extra = set(d.keys) - keys0
+                    raise RuntimeError(f"Non-uniform attributes at item {i}: missing={missing}, extra={extra}")
+
         # Collate to in-memory tensors and persist
         data, slices = self.collate(data_list)
         Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
         torch.save((data, slices), self.processed_paths[0])
-
-# ---- small helpers -----------------------------------------------------------
-def _undirected_edge_set(edge_index: torch.Tensor) -> set[tuple[int, int]]:
-    if edge_index.numel() == 0:
-        return set()
-    s = set()
-    src, dst = edge_index.tolist()
-    for u, v in zip(src, dst):
-        if u == v:
-            continue
-        a, b = (u, v) if u < v else (v, u)
-        s.add((a, b))
-    return s
-
-
-def _palette_for_atom_ids(n_colors: int = 12):
-    # tab20 has many distinct colors; 9 atom types in your ZINC setup is fine.
-    cmap = plt.get_cmap("tab20")
-    return [cmap(i) for i in range(n_colors)]
-
-
-def _node_colors_from_x(x: torch.Tensor) -> list:
-    # feature layout: [atom_id, degree_idx, charge_idx, num_Hs]
-    atom_ids = x[:, 0].long().tolist()
-    pal = _palette_for_atom_ids()
-    return [pal[i % len(pal)] for i in atom_ids]
-
-
-# ---- main plotting -----------------------------------------------------------
-def draw_full_and_pairs(
-        full_data,  # PyG Data (parent)
-        pairs: Sequence,  # list of PairData for the same parent
-        *,
-        max_pairs_per_class: int = 24,
-        cols: int = 6,
-        figsize=(16, 10),
-        title: str | None = None,
-        out_path: str | None = None,
-):
-    """
-    Draw the full graph and a selection of subgraph pairs in one figure.
-
-    Layout:
-      [ Full graph ] [ sample 1 ] [ sample 2 ] ... (grid)
-
-    For negatives, edges present in the candidate but not in the true induced
-    subgraph are green; edges missing vs. induced are red.
-    Node colors follow atom type (first feature channel).
-    """
-    # Build NX for full graph + layout once
-    G_full = pyg_to_nx(full_data)
-    pos_full = nx.kamada_kawai_layout(G_full, weight=None)  # deterministic-enough layout
-
-    # Partition pairs: positives first, then negatives
-    pos_samples = [p for p in pairs if int(p.y) == 1]
-    if max_pairs_per_class is not None:
-        pos_samples = pos_samples[:int(max_pairs_per_class / 2)]
-
-    neg_samples = [p for p in pairs if int(p.y) == 0]
-    if max_pairs_per_class is not None:
-        neg_samples = neg_samples[:int(max_pairs_per_class / 2)]
-    ordered = pos_samples + neg_samples
-    if max_pairs_per_class is not None:
-        ordered = ordered[:max_pairs_per_class]
-
-    # grid sizing (1 for full + N pairs)
-    total = 1 + len(ordered)
-    rows = math.ceil(total / cols)
-
-    fig, axes = plt.subplots(rows, cols, figsize=figsize)
-    axes = axes.flatten() if isinstance(axes, (list, np.ndarray)) else [axes]
-
-    # --- draw full graph on axes[0]
-    ax0 = axes[0]
-    node_colors_full = _node_colors_from_x(full_data.x)
-    nx.draw_networkx(
-        G_full, pos=pos_full, ax=ax0,
-        with_labels=False, node_size=200, node_color=node_colors_full, width=1.5
-    )
-    ax0.set_title("Full graph")
-    ax0.axis("off")
-
-    # Precompute undirected edge set for parent
-    full_ei = full_data.edge_index
-    # Deduplicate to undirected set for induced computations later:
-    # we'll recompute induced per S, so not needed here beyond the Data itself.
-
-    # --- draw each pair
-    for i, pair in enumerate(ordered, start=1):
-        ax = axes[i]
-        k = int(pair.k)
-        neg_code = int(pair.neg_type)  # 0=positive, 1=edge-flip, 2=feat-perm
-
-        # Positions: map local subgraph nodes (0..k-1) to their original indices
-        S = pair.idx_map1.tolist()  # original node ids
-        pos_sub = {local: pos_full[orig] for local, orig in enumerate(S)}
-
-        # Colors from x1 atom ids
-        node_colors = _node_colors_from_x(pair.x1)
-
-        # Build undirected edge sets (local indices)
-        edges_candidate = _undirected_edge_set(pair.edge_index1)
-
-        # For negatives: compute "true induced" edges from the parent and compare
-        edges_induced = _undirected_edge_set(
-            induced_edge_index_from_node_set(full_data.edge_index, S)
-        )
-
-        # Common + diffs
-        common = edges_candidate & edges_induced
-        extra = edges_candidate - edges_induced  # green
-        missing = edges_induced - edges_candidate  # red
-
-        # Draw nodes
-        nx.draw_networkx_nodes(
-            nx.Graph(), pos_sub, ax=ax,
-            nodelist=list(pos_sub.keys()),
-            node_color=node_colors, node_size=200,
-        )
-
-        # Draw edges by category
-        def _draw_edge_list(edge_list, color, width=1.8):
-            if not edge_list:
-                return
-            nx.draw_networkx_edges(
-                nx.Graph(),
-                pos_sub,
-                ax=ax,
-                edgelist=[(u, v) for (u, v) in edge_list],
-                edge_color=color,
-                width=width,
-            )
-
-        # Common edges (black)
-        _draw_edge_list(list(common), color="k", width=1.8)
-        # Extras (green), Missings (red)
-        if neg_code != 0:
-            _draw_edge_list(list(extra), color="green", width=2.2)
-            _draw_edge_list(list(missing), color="red", width=2.2)
-
-        ax.set_title(
-            f"k={k} | {'pos' if neg_code == 0 else ('neg-edge' if neg_code == 1 else 'neg-feat')}"
-        )
-        ax.axis("off")
-
-    # clean empty axes
-    for j in range(1 + len(ordered), len(axes)):
-        axes[j].axis("off")
-
-    if title:
-        fig.suptitle(title, y=0.995)
-    fig.tight_layout()
-    if out_path:
-        fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    return fig
 
 
 if __name__ == '__main__':

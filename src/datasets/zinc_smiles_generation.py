@@ -20,17 +20,15 @@ Example
 #>>> len(ds), ds[0]
 """
 
-
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Callable, Optional
 
 import torch
 from rdkit import Chem
-from rdkit.Chem import Atom, ValenceType
 from torch_geometric.data import Data, InMemoryDataset
+from tqdm.auto import tqdm
 
 from src.utils.utils import GLOBAL_DATASET_PATH
 
@@ -45,6 +43,17 @@ def iter_smiles(fp: Path):
             if line := line.strip().split()[0]:
                 yield line
 
+def _count_smiles_lines(fp: Path) -> int:
+    """Count non-empty SMILES lines, skipping an optional first-line header 'smiles'."""
+    total = 0
+    with fp.open() as fh:
+        for i, line in enumerate(fh):
+            if i == 0 and line.strip().lower() == "smiles":
+                continue
+            if line.strip():
+                total += 1
+    return total
+
 ZINC_SMILE_ATOM_TO_IDX: dict[str, int] = {
     "Br": 0,
     "C": 1,
@@ -57,6 +66,7 @@ ZINC_SMILE_ATOM_TO_IDX: dict[str, int] = {
     "S": 8,
 }
 ZINC_SMILE_IDX_TO_ATOM: dict[int, str] = {v: k for k, v in ZINC_SMILE_ATOM_TO_IDX.items()}
+
 
 def mol_to_data(mol: Chem.Mol) -> Data:
     """
@@ -72,8 +82,8 @@ def mol_to_data(mol: Chem.Mol) -> Data:
     x = [
         [
             float(ZINC_SMILE_ATOM_TO_IDX[atom.GetSymbol()]),
-            float(atom.GetDegree() - 1), # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
-            float(atom.GetFormalCharge() if atom.GetFormalCharge() >= 0 else 2), # [0, 1, -1] -> [0, 1, 2]
+            float(atom.GetDegree() - 1),  # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
+            float(atom.GetFormalCharge() if atom.GetFormalCharge() >= 0 else 2),  # [0, 1, -1] -> [0, 1, 2]
             float(atom.GetTotalNumHs()),
         ]
         for atom in mol.GetAtoms()
@@ -90,6 +100,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         smiles=Chem.MolToSmiles(mol, canonical=True),
     )
 
+
 class ZincSmiles(InMemoryDataset):
     """
     Minimal `InMemoryDataset` that reads ``<split>_smile.txt`` from *root/raw/*
@@ -99,12 +110,12 @@ class ZincSmiles(InMemoryDataset):
     """
 
     def __init__(
-        self,
-        root: str | Path = GLOBAL_DATASET_PATH / "ZincSmiles",
-        split: str = "train",
-        transform: Optional[Callable] = None,
-        pre_transform: Optional[Callable] = None,
-        pre_filter: Optional[Callable] = None,
+            self,
+            root: str | Path = GLOBAL_DATASET_PATH / "ZincSmilesHRR7744",
+            split: str = "train",
+            transform: Optional[Callable] = None,
+            pre_transform: Optional[Callable] = None,
+            pre_filter: Optional[Callable] = None,
     ):
         self.split = split.lower()
         assert self.split in {"train", "valid", "test"}
@@ -131,7 +142,15 @@ class ZincSmiles(InMemoryDataset):
     def process(self):
         data_list: list[Data] = []
 
-        for s in iter_smiles(Path(self.raw_paths[0])):
+        src = Path(self.raw_paths[0])
+        total = _count_smiles_lines(src)
+        for s in tqdm(
+                iter_smiles(src),
+                total=total,
+                desc=f"ZincSmiles[{self.split}]",
+                unit="mol",
+                dynamic_ncols=True,
+        ):
             if (mol := Chem.MolFromSmiles(s)) is None:
                 continue
             data = mol_to_data(mol)
@@ -145,9 +164,9 @@ class ZincSmiles(InMemoryDataset):
         Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
         torch.save((data, slices), self.processed_paths[0])
 
+
 if __name__ == '__main__':
     train_ds = ZincSmiles(split="train")
     valid_ds = ZincSmiles(split="valid")
     test_ds = ZincSmiles(split="test")
 
-    print(len(train_ds), len(valid_ds), len(test_ds))

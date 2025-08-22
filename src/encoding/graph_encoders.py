@@ -1393,15 +1393,9 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    path: Path, ds: SupportedDataset, depth: int = 3, *, use_edge_codebook: bool = False
+    path: Path, ds_name: str, cfg: DatasetConfig, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
-    cfg = ds.default_cfg
-    ds_name = ds.name
-    if cfg.nha_depth:
-        ds_name = f"{ds_name}-d{cfg.nha_depth}"
-    if cfg.nha_bins:
-        ds_name = f"{ds_name}-b{cfg.nha_bins}"
-    path = path / f"hypernet_ds{ds_name}_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_dpth{depth}_ecb{int(use_edge_codebook)}.pt"
+    path = path / f"hypernet_ds_{ds_name}_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}.pt"
     if path.exists():
         print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
