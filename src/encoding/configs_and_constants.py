@@ -211,12 +211,25 @@ QM9_CONFIG: DatasetConfig = DatasetConfig(
 )
 
 
+ZINC_SMILES_CONFIG: DatasetConfig = DatasetConfig(
+        name="ZINC_SMILES",
+        node_feature_configs=OrderedDict(
+            [
+                (
+                    Features.ATOM_TYPE,
+                    FeatureConfig(count=1, encoder_cls=CombinatoricIntegerEncoder), # Place holder
+                ),
+            ]
+        ),
+    )
+
 class SupportedDataset(enum.Enum):
     ZINC = ("ZINC", ZINC_CONFIG)
     ZINC_NODE_DEGREE = ("ZINC_ND", ZINC_ND_CONFIG)
     ZINC_NODE_DEGREE_COMB = ("ZINC_ND_COMB", ZINC_ND_COMB_CONFIG)
     # NHA: Neighbourhood Aware
     ZINC_NODE_DEGREE_COMB_NHA = ("ZINC_ND_COMB_NHA", ZINC_ND_COMB_CONFIG_NHA)
+    ZINC_SMILES = ("ZINC_SMILES", ZINC_SMILES_CONFIG)
     QM9 = ("QM9", QM9_CONFIG)
 
     def __new__(cls, value: str, default_cfg: DatasetConfig):
