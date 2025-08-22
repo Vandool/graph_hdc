@@ -1,0 +1,15 @@
+
+============================= JOB FEEDBACK =============================
+
+NodeName=uc3n069
+Job ID: 1228459
+Cluster: uc3
+User/Group: ka_zi9629/ka_iti
+State: FAILED (exit code 1)
+Nodes: 1
+Cores per node: 8
+CPU Utilized: 00:00:17
+CPU Efficiency: 5.18% of 00:05:28 core-walltime
+Job Wall-clock time: 00:00:41
+Memory Utilized: 576.74 MB
+Memory Efficiency: 0.88% of 64.00 GB (64.00 GB/node)

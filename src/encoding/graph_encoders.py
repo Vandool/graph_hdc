@@ -264,7 +264,7 @@ class HyperNet(AbstractGraphEncoder):
                     dim=config.hv_dim,
                     vsa=config.vsa.value,
                     idx_offset=cfg.idx_offset,
-                    indexer=TupleIndexer([28, 6]) if not config.nha_bins else TupleIndexer([28, 6, config.nha_bins]),
+                    indexer=TupleIndexer(sizes=cfg.bins) if cfg.bins else TupleIndexer(sizes=[28,6, config.nha_bins]),
                 ),
                 cfg.index_range,
             )
@@ -807,6 +807,90 @@ class HyperNet(AbstractGraphEncoder):
 
         return results
 
+    def decode_order_one_counter_explain_away_faster_lazy(
+        self,
+        embedding: torch.Tensor,  # [B, D] or [D]
+        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
+        max_iters: int = 50,
+        threshold: float = 0.5,
+        *,
+        use_break: bool = False,
+    ) -> list[Counter]:
+        # Use no edge codebook
+        self.populate_nodes_codebooks()
+        self._populate_nodes_indexer()
+
+        # 1) ensure batch dimension
+        if embedding.dim() == 1:
+            embedding = embedding.unsqueeze(0)
+        B, D = embedding.shape
+
+        results = []
+        for b in range(B):
+            graph_hv = embedding[b].clone()
+
+            # 2) build the list of candidate edge *flat* indices once
+            node_idxs = self.nodes_indexer.get_idxs(unique_decode_nodes_batch[b])
+            assert len(node_idxs) > 0
+            pairs = list(itertools.product(node_idxs, node_idxs))
+            bound_hvs = torch.stack(
+                [self.nodes_codebook[u].bind(self.nodes_codebook[v]) for u, v in pairs],
+                dim=0,
+            )  # [E, D]
+            active = torch.ones(len(pairs), dtype=torch.bool, device=bound_hvs.device)
+
+            found = set()
+            iteration, should_break = 1, False
+
+            while iteration <= max_iters and active.any() and not should_break:
+                cand_hvs = bound_hvs[active]  # [E_active, D]
+                sims = cand_hvs.matmul(graph_hv)  # [E_active]
+                if self.vsa == VSAModel.MAP:
+                    sims = sims / D
+
+                top_val = sims.max()
+                if top_val <= 0:  # step 3 – nothing left
+                    break
+
+                idxs_sorted = sims.argsort(descending=True)  # step 4
+                # Map back to *global* pair indices
+                global_idxs = active.nonzero(as_tuple=False).flatten()
+
+                active_modified = False
+                for loc_idx in idxs_sorted[::2].tolist():  # inner loop
+                    g_idx = global_idxs[loc_idx].item()
+                    score = sims[loc_idx].item()
+                    u, v = pairs[g_idx]
+
+                    if score > threshold:
+                        # record & explain-away
+                        found.update({(u, v), (v, u)})
+                        graph_hv = (
+                            graph_hv
+                            - bound_hvs[g_idx]  # (u, v)
+                            - bound_hvs[pairs.index((v, u))]  # (v, u)
+                        )
+                        # mark both directions as inactive
+                        active[g_idx] = False
+                        active[pairs.index((v, u))] = False
+                        active_modified = True
+                        if use_break:
+                            break
+                    #
+                    elif 0 < score <= threshold:
+                        if not active_modified:
+                            should_break = True
+                        break
+                    else:
+                        should_break = True
+                        break
+                iteration += 1
+
+            results.append(Counter(found))
+
+        return results
+
+
     def decode_order_one_counter(
         self,
         embedding: torch.Tensor,
@@ -1309,7 +1393,7 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    path: Path, ds: SupportedDataset, depth: int = 1, *, use_edge_codebook: bool = False
+    path: Path, ds: SupportedDataset, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
     cfg = ds.default_cfg
     ds_name = ds.name

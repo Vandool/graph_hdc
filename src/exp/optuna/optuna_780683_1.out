@@ -1,0 +1,16 @@
+
+============================= JOB FEEDBACK =============================
+
+NodeName=uc3n002
+Job ID: 780685
+Array Job ID: 780683_1
+Cluster: uc3
+User/Group: ka_zi9629/ka_iti
+State: COMPLETED (exit code 0)
+Nodes: 1
+Cores per node: 2
+CPU Utilized: 00:00:03
+CPU Efficiency: 7.14% of 00:00:42 core-walltime
+Job Wall-clock time: 00:00:21
+Memory Utilized: 9.94 MB
+Memory Efficiency: 0.97% of 1.00 GB (1.00 GB/node)
