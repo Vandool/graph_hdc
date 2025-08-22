@@ -308,7 +308,8 @@ class HyperNet(AbstractGraphEncoder):
     def to(self, device):
         self.populate_codebooks()
         self.nodes_codebook = self.nodes_codebook.to(device)
-        self.edges_codebook = self.edges_codebook.to(device)
+        if self.use_edge_codebook:
+            self.edges_codebook = self.edges_codebook.to(device)
         # self.graph_codebook = self.graph_codebook.to(device)
         return self
 

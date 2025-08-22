@@ -1,19 +1,20 @@
+#!/usr/bin/env python3
+from collections import OrderedDict
 from math import prod
+from pathlib import Path
 
 import torch
 from pytorch_lightning import seed_everything
 
-from src.datasets.utils import AddHDCEncodings
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.zinc_smiles_generation import ZincSmiles, precompute_encodings
 from src.encoding.configs_and_constants import DatasetConfig, Features, FeatureConfig, IndexRange
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
-from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
+from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
-from collections import Counter, OrderedDict
-
 from src.utils.utils import GLOBAL_MODEL_PATH
 
-def get_device():
+
+def get_device() -> torch.device:
     if torch.cuda.is_available():
         count = torch.cuda.device_count()
         print(f"CUDA is available. Detected {count} GPU device{'s' if count != 1 else ''}.")
@@ -25,30 +26,23 @@ def get_device():
 def generate():
     seed = 42
     seed_everything(seed)
+
     ds_name = "ZincSmilesHRR7744"
     zinc_feature_bins = [9, 6, 3, 4]
+    device = get_device()
+
     dataset_config = DatasetConfig(
         seed=seed,
         name=ds_name,
         vsa=VSAModel.HRR,
-        hv_dim=88*88,
-        device=get_device(),
+        hv_dim=88 * 88,  # 7744
+        device=device,
         node_feature_configs=OrderedDict(
             [
                 (
                     Features.ATOM_TYPE,
                     FeatureConfig(
-                        # Atom types size: 9
-                        # Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
-                        # Degrees size: 5
-                        # Degrees: {1, 2, 3, 4, 5}
-                        # Formal Charges size: 3
-                        # Formal Charges: {0, 1, -1}
-                        # Explicit Hs size: 4
-                        # Explicit Hs: {0, 1, 2, 3}
-                        count=prod(
-                            zinc_feature_bins
-                        ),  # 9 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
+                        count=prod(zinc_feature_bins),  # 9 * 6 * 3 * 4
                         encoder_cls=CombinatoricIntegerEncoder,
                         index_range=IndexRange((0, 4)),
                         bins=zinc_feature_bins,
@@ -57,10 +51,26 @@ def generate():
             ]
         ),
     )
+
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config)
-    ZincSmiles(split="train", pre_transform=AddHDCEncodings(encoder=hypernet))
-    ZincSmiles(split="valid", pre_transform=AddHDCEncodings(encoder=hypernet))
-    ZincSmiles(split="test", pre_transform=AddHDCEncodings(encoder=hypernet))
+
+    # Precompute and cache encodings for each split
+    for split in [
+            "train",
+            "valid",
+            "test"
+    ]:
+        ds = ZincSmiles(split=split)
+        # Writes processed/data_<split>_<out_suffix>.pt (e.g., data_train_HRR7744.pt)
+        out_path: Path = precompute_encodings(
+            base_ds=ds,
+            hypernet=hypernet,
+            batch_size=1028,
+            device=device,
+            out_suffix="HRR7744",
+        )
+        print(f"{split}: wrote {out_path}")
+
 
 if __name__ == "__main__":
     generate()

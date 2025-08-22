@@ -28,6 +28,7 @@ from typing import Callable, Optional
 import torch
 from rdkit import Chem
 from torch_geometric.data import Data, InMemoryDataset
+from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
 from src.utils.utils import GLOBAL_DATASET_PATH
@@ -43,6 +44,7 @@ def iter_smiles(fp: Path):
             if line := line.strip().split()[0]:
                 yield line
 
+
 def _count_smiles_lines(fp: Path) -> int:
     """Count non-empty SMILES lines, skipping an optional first-line header 'smiles'."""
     total = 0
@@ -53,6 +55,7 @@ def _count_smiles_lines(fp: Path) -> int:
             if line.strip():
                 total += 1
     return total
+
 
 ZINC_SMILE_ATOM_TO_IDX: dict[str, int] = {
     "Br": 0,
@@ -111,7 +114,7 @@ class ZincSmiles(InMemoryDataset):
 
     def __init__(
             self,
-            root: str | Path = GLOBAL_DATASET_PATH / "ZincSmilesHRR7744",
+            root: str | Path = GLOBAL_DATASET_PATH / "ZincSmiles",
             split: str = "train",
             transform: Optional[Callable] = None,
             pre_transform: Optional[Callable] = None,
@@ -165,8 +168,68 @@ class ZincSmiles(InMemoryDataset):
         torch.save((data, slices), self.processed_paths[0])
 
 
+@torch.no_grad()
+def precompute_encodings(
+        base_ds: ZincSmiles,
+        hypernet,
+        *,
+        batch_size: int = 1024,
+        device: Optional[torch.device] = None,
+        out_suffix: str = "enc",  # writes data_<split>_enc.pt
+) -> Path:
+    """Batch-encode all graphs and write an augmented processed file."""
+    device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+    loader = DataLoader(base_ds, batch_size=batch_size, shuffle=False)
+    hypernet = hypernet.to(device)
+
+    # Collect augmented Data objects
+    aug: list[Data] = []
+    for batch in tqdm(loader, desc=f"encode[{base_ds.split}]", unit="batch", dynamic_ncols=True):
+        batch = batch.to(device)
+        out = hypernet.forward(batch)  # expects batch.batch
+
+        graph_terms = out["graph_embedding"].detach().cpu()
+        node_terms = out["node_terms"].detach().cpu()
+
+        # Unbatch the underlying Data objects and attach encodings
+        # `batch.to_data_list()` returns per-graph Data in batch order
+        per_graph = batch.to_data_list()
+        assert len(per_graph) == graph_terms.size(0)
+        for i, d in enumerate(per_graph):
+            d = d.clone()
+            d.graph_terms = graph_terms[i]  # [Dg]
+            d.node_terms = node_terms[i]  # [Ni, Dn]
+            aug.append(d)
+
+    # Collate and save under a distinct processed filename
+    data, slices = InMemoryDataset.collate(aug)
+    out_path = Path(base_ds.processed_dir) / f"data_{base_ds.split}_{out_suffix}.pt"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save((data, slices), out_path)
+    return out_path
+
+
+class ZincSmilesEnc(ZincSmiles):
+    """Loader for the augmented file written by `precompute_encodings`."""
+
+    def __init__(self, split: str = "train", root: Path | str = None):
+        super().__init__(split=split, root=root or self.default_root())
+
+        # Load the augmented artifact instead of the default file
+        enc_path = Path(self.processed_dir) / f"data_{self.split}_enc.pt"
+        if not enc_path.exists():
+            raise FileNotFoundError(f"Missing {enc_path}. Run precompute_encodings first.")
+        with open(enc_path, "rb") as f:
+            self.data, self.slices = torch.load(f, map_location="cpu", weights_only=False)
+
+    @staticmethod
+    def default_root() -> Path:
+        # keep in sync with your ZincSmiles default root
+        from src.utils.utils import GLOBAL_DATASET_PATH
+        return GLOBAL_DATASET_PATH / "ZincSmilesHRR7744"
+
+
 if __name__ == '__main__':
     train_ds = ZincSmiles(split="train")
     valid_ds = ZincSmiles(split="valid")
     test_ds = ZincSmiles(split="test")
-
