@@ -5,14 +5,13 @@
 #
 
 #SBATCH --job-name=zincpairs
-#SBATCH --partition=dev_cpu          # standard CPU partition (no GPUs)
-#SBATCH --time=00:10:00           # reasonable walltime (adjust as needed)
+#SBATCH --partition=cpu          # standard CPU partition (no GPUs)
+#SBATCH --time=04:00:00          # reasonable walltime (adjust as needed)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8         # 8 CPU cores for your Python job
-#SBATCH --mem=64G                 # ~32 GB RAM is a sensible default
-#SBATCH --output=%x-%j.out
-#SBATCH --error=%x-%j.err
+#SBATCH --cpus-per-task=8        # 8 CPU cores for your Python job
+#SBATCH --mem=64G                # ~32 GB RAM is a sensible default
+
 
 # ========== Experiment Path Configuration ==========
 PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
