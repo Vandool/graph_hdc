@@ -563,15 +563,28 @@ class ZincPairs(InMemoryDataset):
                             break
 
                 # ---- Stochastic top-up to reach the target count per k ----
-                while len(pos_sets) < cfg.pos_per_k:
-                    S = sample_connected_bfs(G, k, rng=rng) or sample_uniform_connected_kset(G, k, rng=rng)
-                    if S is None:
-                        break
-                    key = tuple(sorted(S))
-                    if key in pos_seen:
-                        continue
-                    pos_sets.append(S)
-                    pos_seen.add(key)
+                # Guard against duplicate-heavy sampling: cap attempts.
+                needed = cfg.pos_per_k - len(pos_sets)
+                if needed > 0:
+                    max_topup_tries = 50 * needed  # tuneable; 50–200x usually plenty
+                    tries = 0
+                    while len(pos_sets) < cfg.pos_per_k and tries < max_topup_tries:
+                        tries += 1
+                        S = (sample_connected_bfs(G, k, rng=rng)
+                             or sample_uniform_connected_kset(G, k, rng=rng))
+                        if S is None:
+                            break
+                        key = tuple(sorted(S))
+                        if key in pos_seen:
+                            continue
+                        pos_sets.append(S)
+                        pos_seen.add(key)
+
+                    # (optional) show fill ratio for this k
+                    try:
+                        k_iter.set_postfix_str(f"pos={len(pos_sets)}/{cfg.pos_per_k}, tries={tries}")
+                    except Exception:
+                        pass
 
                 # ---- Materialize positives and their negatives ----
                 for S in pos_sets:
@@ -599,13 +612,15 @@ class ZincPairs(InMemoryDataset):
 
                         # --------- (1) Try cross-graph negative with small probability ---------
                         # To prevent the classifier from overfitting to “one-edge flips only.
-                        if getattr(cfg, "cross_graph_neg_prob", 0.0) > 0.0 and rng.random() < cfg.cross_graph_neg_prob:
+                        cross_ok = getattr(cfg, "cross_graph_neg_prob", 0.0) > 0.0 and len(self.base) > 1
+                        if cross_ok and rng.random() < cfg.cross_graph_neg_prob:
                             attempts = 0
-                            while attempts < getattr(cfg, "cross_graph_max_attempts", 5):
+                            max_attempts = getattr(cfg, "cross_graph_max_attempts", 5)
+                            while attempts < max_attempts:
                                 attempts += 1
                                 other_idx = rng.randrange(len(self.base))
                                 if other_idx == parent_idx:
-                                    continue
+                                    continue  # don't use the same parent
 
                                 other_full: Data = self.base[other_idx]
                                 G_other = nx_views[other_idx]
@@ -927,7 +942,7 @@ def draw_full_and_pairs(
 
 
 if __name__ == '__main__':
-    base = ZincSmiles(split="test")
+    base = ZincSmiles(split="test")[:1]
     pairs = ZincPairs(
         base_dataset=base,
         split="test",
