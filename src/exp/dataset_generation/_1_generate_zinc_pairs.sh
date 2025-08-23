@@ -6,7 +6,7 @@
 
 #SBATCH --job-name=zincpairs
 #SBATCH --partition=cpu          # standard CPU partition (no GPUs)
-#SBATCH --time=04:00:00          # reasonable walltime (adjust as needed)
+#SBATCH --time=11:00:00          # reasonable walltime (adjust as needed)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8        # 8 CPU cores for your Python job
@@ -16,7 +16,7 @@ module load devel/cuda/11.8
 
 # ========== Experiment Path Configuration ==========
 PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
-EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/zinc_pairs"
+EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/dataset_generation"
 SCRIPT_NAME="generate_zinc_pairs.py"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 

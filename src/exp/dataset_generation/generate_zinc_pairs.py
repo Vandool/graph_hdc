@@ -9,10 +9,10 @@ from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
 from src.datasets.zinc_pairs import (
-    ZincPairs,
     PairConfig,
-    pyg_to_nx,
+    ZincPairs,
     is_induced_subgraph_feature_aware,
+    pyg_to_nx,
 )
 from src.datasets.zinc_smiles_generation import ZincSmiles
 
@@ -98,22 +98,26 @@ def main():
     # Build pair datasets (processed files will be cached under root/processed)
     cfg = PairConfig()
     test_pairs = ZincPairs(base_dataset=test_ds, split="test", cfg=cfg)
-    valid_pairs = ZincPairs(base_dataset=valid_ds, split="valid", cfg=cfg)
-    train_pairs = ZincPairs(base_dataset=train_ds, split="train", cfg=cfg)
-
-    print(f"base graphs: train={len(train_ds)}, valid={len(valid_ds)}, test={len(test_ds)}")
-    print(f"pair samples: train={len(train_pairs)}, valid={len(valid_pairs)}, test={len(test_pairs)}")
+    # valid_pairs = ZincPairs(base_dataset=valid_ds, split="valid", cfg=cfg)
 
     # Global label mix + neg_type mix
-    summarize_split(train_pairs, "train")
-    summarize_split(valid_pairs, "valid")
+    # summarize_split(valid_pairs, "valid")
     summarize_split(test_pairs, "test")
 
     # Run sanity checks (random samples each)
     sanity_check_samples = 10_000
-    sanity_check_split(train_pairs, "train", n_samples=sanity_check_samples, seed=0)
-    sanity_check_split(valid_pairs, "valid", n_samples=sanity_check_samples, seed=1)
+    # sanity_check_split(valid_pairs, "valid", n_samples=sanity_check_samples, seed=1)
     sanity_check_split(test_pairs, "test", n_samples=sanity_check_samples, seed=2)
+
+    # Build train pairs last (takes longest)
+    train_pairs = ZincPairs(base_dataset=train_ds, split="train", cfg=cfg)
+
+    # Global label mix + neg_type mix
+    summarize_split(train_pairs, "train")
+
+    # Run sanity checks (random samples each)
+    sanity_check_split(train_pairs, "train", n_samples=sanity_check_samples, seed=0)
+
 
 
 if __name__ == "__main__":
