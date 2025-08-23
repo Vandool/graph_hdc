@@ -389,7 +389,7 @@ class PairConfig:
     use_enumeration_up_to_k: int = 5
     enum_cap_per_k: int = 64
     include_full_graph: bool = True
-    full_graph_neg_per_parent: int = 6
+    full_graph_neg_per_parent: int = 16
     tail_anchor_fraction: float = 0.5
 
 
