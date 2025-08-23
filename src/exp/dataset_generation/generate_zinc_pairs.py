@@ -17,19 +17,15 @@ from src.datasets.zinc_pairs import (
 from src.datasets.zinc_smiles_generation import ZincSmiles
 
 
-def summarize_split(ds: ZincPairs, name: str) -> None:
+def compute_split_stats(ds: ZincPairs):
+    """Return (n, pos, neg, neg_hist Counter)."""
     n = len(ds)
-    if n == 0:
-        print(f"[{name}] size=0")
-        return
-
     pos = 0
     neg = 0
     neg_hist = collections.Counter()
 
     for i in range(n):
         item = ds[i]
-        # robust scalar extraction
         y = int(item.y.view(-1)[0].item())
         if y == 1:
             pos += 1
@@ -37,13 +33,26 @@ def summarize_split(ds: ZincPairs, name: str) -> None:
             neg += 1
             neg_type = int(item.neg_type.view(-1)[0].item())
             neg_hist[neg_type] += 1
+    return n, pos, neg, neg_hist
 
-    print(f"[{name}] size={n} | positives={pos} ({pos/n:.1%}) | negatives={neg} ({neg/n:.1%})")
+
+def print_split_summary(name: str, n: int, pos: int, neg: int, neg_hist: collections.Counter):
+    if n == 0:
+        print(f"[{name}] size=0")
+        return
+    pos_pct = f"{(pos / n):.1%}"
+    neg_pct = f"{(neg / n):.1%}"
+    print(f"[{name}] size={n} | positives={pos} ({pos_pct}) | negatives={neg} ({neg_pct})")
     if neg:
-        hist_str = ", ".join(
-            f"{t}:{c} ({c/neg:.1%})" for t, c in sorted(neg_hist.items())
-        )
+        hist_str = ", ".join(f"{t}:{c} ({c/neg:.1%})" for t, c in sorted(neg_hist.items()))
         print(f"[{name}] neg_type histogram: {hist_str}")
+
+
+def summarize_split(ds: ZincPairs, name: str):
+    """Compute + print summary; also return stats for aggregation."""
+    n, pos, neg, neg_hist = compute_split_stats(ds)
+    print_split_summary(name, n, pos, neg, neg_hist)
+    return n, pos, neg, neg_hist
 
 
 def sanity_check_split(pairs_ds: ZincPairs, split_name: str, n_samples: int = 500, seed: int = 0) -> None:
@@ -63,18 +72,15 @@ def sanity_check_split(pairs_ds: ZincPairs, split_name: str, n_samples: int = 50
     n_pos = 0
     n_neg = 0
     for i, batch in enumerate(tqdm(loader, total=len(subset), desc=f"VF2 sanity [{split_name}]")):
-        # batch_size=1 => scalars below are 0-d tensors
         y = int(batch.y.item())
         neg_code = int(batch.neg_type.item())
 
-        # Rebuild candidate (G1) and parent (G2)
         g1 = Data(x=batch.x1.cpu(), edge_index=batch.edge_index1.cpu())
         g2 = Data(x=batch.x2.cpu(), edge_index=batch.edge_index2.cpu())
 
-        # Feature-aware induced-subgraph test (label-preserving)
         is_sub = is_induced_subgraph_feature_aware(
-            pyg_to_nx(g1),  # small graph
-            pyg_to_nx(g2),  # big/parent graph
+            pyg_to_nx(g1),
+            pyg_to_nx(g2),
         )
 
         if y == 1:
@@ -89,38 +95,38 @@ def sanity_check_split(pairs_ds: ZincPairs, split_name: str, n_samples: int = 50
     print(f"[{split_name}] Sanity OK ✓  positives: {n_pos}, negatives: {n_neg}")
 
 
+def run_pipeline_for_split(split_name: str, cfg: PairConfig, sanity_n: int, seed: int):
+    print(f"\n=== Split: {split_name} ===")
+    base = ZincSmiles(split=split_name)[:10]
+    print(f"[{split_name}] base graphs: {len(base)}")
+
+    pairs = ZincPairs(base_dataset=base, split=split_name, cfg=cfg)
+    print(f"[{split_name}] pair samples: {len(pairs)}")
+
+    stats = summarize_split(pairs, split_name)
+    sanity_check_split(pairs, split_name, n_samples=sanity_n, seed=seed)
+    return stats  # (n, pos, neg, neg_hist)
+
+
 def main():
-    # Build base splits
-    train_ds = ZincSmiles(split="train")
-    valid_ds = ZincSmiles(split="valid")
-    test_ds = ZincSmiles(split="test")
-
-    # Build pair datasets (processed files will be cached under root/processed)
     cfg = PairConfig()
-    test_pairs = ZincPairs(base_dataset=test_ds, split="test", cfg=cfg)
-    # valid_pairs = ZincPairs(base_dataset=valid_ds, split="valid", cfg=cfg)
+    sanity_check_samples = 10_000  # capped by dataset size
 
-    # Global label mix + neg_type mix
-    # summarize_split(valid_pairs, "valid")
-    summarize_split(test_pairs, "test")
+    # Run all splits
+    t_n, t_pos, t_neg, t_hist = run_pipeline_for_split("test",  cfg, sanity_check_samples, seed=0)
+    v_n, v_pos, v_neg, v_hist = run_pipeline_for_split("valid", cfg, sanity_check_samples, seed=1)
+    tr_n, tr_pos, tr_neg, tr_hist = run_pipeline_for_split("train", cfg, sanity_check_samples, seed=2)
 
-    # Run sanity checks (random samples each)
-    sanity_check_samples = 10_000
-    # sanity_check_split(valid_pairs, "valid", n_samples=sanity_check_samples, seed=1)
-    sanity_check_split(test_pairs, "test", n_samples=sanity_check_samples, seed=2)
+    # Final aggregated summary
+    print("\n=== Aggregated summary (train+valid+test) ===")
+    total_n = tr_n + v_n + t_n
+    total_pos = tr_pos + v_pos + t_pos
+    total_neg = tr_neg + v_neg + t_neg
+    total_hist = tr_hist + v_hist + t_hist
 
-    # Build train pairs last (takes longest)
-    train_pairs = ZincPairs(base_dataset=train_ds, split="train", cfg=cfg)
-
-    # Global label mix + neg_type mix
-    summarize_split(train_pairs, "train")
-
-    # Run sanity checks (random samples each)
-    sanity_check_split(train_pairs, "train", n_samples=sanity_check_samples, seed=0)
-
+    print_split_summary("ALL", total_n, total_pos, total_neg, total_hist)
 
 
 if __name__ == "__main__":
-    # Optional: make torch deterministic-ish for reproducibility of any transforms
     torch.manual_seed(0)
     main()
