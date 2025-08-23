@@ -11,15 +11,18 @@ Positive Sampling:
 
 
 """
+import collections
 import random
 from pathlib import Path
-from typing import Callable,  Optional
+from typing import Optional
 from typing import Sequence
 
 import networkx as nx
 import torch
 from torch import Tensor
-from torch_geometric.data import Data, InMemoryDataset
+from torch_geometric.data import Data
+from torch_geometric.data import Dataset
+from torch_geometric.data import InMemoryDataset as _IMD
 from tqdm.auto import tqdm
 
 from src.datasets.zinc_smiles_generation import ZincSmiles
@@ -87,12 +90,15 @@ def nx_to_edge_index_on_ordered_nodes(H: nx.Graph, ordered_nodes: Sequence[int])
         d += [v, u]
     return torch.tensor([s, d], dtype=torch.long)
 
+
 def low_degree_anchor_order(G: nx.Graph) -> list[int]:
     """Nodes sorted by (target_degree_from_label, actual_degree) ascending."""
     return sorted(
         G.nodes(),
         key=lambda v: (target_degree_from_label(G.nodes[v]["label"]), G.degree[v]),
     )
+
+
 # ───────── helpers to guarantee negatives by construction ─────────
 
 def node_label(G: nx.Graph, v: int) -> tuple[int, ...]:
@@ -111,19 +117,18 @@ def unordered_label_pair(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[
     return (a, b) if a <= b else (b, a)
 
 
-
 def wrong_add_candidates_anywhere(
-    G_parent: nx.Graph,
-    S: Sequence[int],
-    parent_label_pairs: set[tuple[tuple[int,...], tuple[int,...]]],
-) -> list[tuple[int,int]]:
+        G_parent: nx.Graph,
+        S: Sequence[int],
+        parent_label_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+) -> list[tuple[int, int]]:
     """All non-edges (u,v) in G_parent[S] such that residual[u]>0, residual[v]>0,
     and unordered label pair (label(u),label(v)) DOES NOT occur as an edge anywhere in parent."""
     H = G_parent.subgraph(S)
     res = residual_capacity_vector(G_parent, S)
     # all unordered pairs in S that are non-edges
     S_list = list(S)
-    non_edges = [(S_list[i], S_list[j]) for i in range(len(S_list)) for j in range(i+1, len(S_list))
+    non_edges = [(S_list[i], S_list[j]) for i in range(len(S_list)) for j in range(i + 1, len(S_list))
                  if not H.has_edge(S_list[i], S_list[j])]
     bad = []
     for u, v in non_edges:
@@ -134,6 +139,8 @@ def wrong_add_candidates_anywhere(
         if unordered_label_pair(lu, lv) not in parent_label_pairs:
             bad.append((u, v))
     return bad
+
+
 # ───────────────────────── residual-degree utilities ──────────────────────────
 def target_degree_from_label(label: tuple[int, ...]) -> int:
     """degree_idx is stored as 0..4 for degrees 1..5 → return target degree."""
@@ -153,9 +160,10 @@ def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
         res[v] = tgt - cur
     return res
 
+
 def forbidden_pairs_k2(
-    G: nx.Graph,
-    parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+        G: nx.Graph,
+        parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
 ) -> list[tuple[int, int]]:
     """
     All unordered node pairs (u,v), u<v, such that:
@@ -169,7 +177,7 @@ def forbidden_pairs_k2(
         lu = node_label(G, u)
         if target_degree_from_label(lu) < 1:
             continue
-        for v in nodes[i+1:]:
+        for v in nodes[i + 1:]:
             if G.has_edge(u, v):
                 continue
             lv = node_label(G, v)
@@ -179,48 +187,8 @@ def forbidden_pairs_k2(
                 bad.append((u, v))
     return bad
 
+
 # ────────────────────────────── positive samplers ─────────────────────────────
-def sample_connected_bfs(G: nx.Graph, k: int, *, rng: random.Random) -> Optional[list[int]]:
-    if k <= 0 or k > G.number_of_nodes():
-        return None
-    if G.number_of_edges() > 0 and k >= 2:
-        u, v = rng.choice(list(G.edges()))
-        S = [u, v]
-    else:
-        u = rng.choice(list(G.nodes()))
-        S = [u]
-    frontier, visited = set(S), set(S)
-    while len(S) < k and frontier:
-        u = rng.choice(list(frontier))
-        nbrs = [w for w in G.neighbors(u) if w not in visited]
-        if not nbrs:
-            frontier.remove(u);
-            continue
-        w = rng.choice(nbrs)
-        S.append(w);
-        visited.add(w);
-        frontier.add(w)
-    if len(S) < k:
-        candidates = {w for u in S for w in G.neighbors(u)} - set(S)
-        while len(S) < k and candidates:
-            S.append(rng.choice(list(candidates)))
-            candidates = {w for u in S for w in G.neighbors(u)} - set(S)
-        if len(S) < k:
-            return None
-    return S if nx.is_connected(G.subgraph(S)) else None
-
-
-def sample_uniform_connected_kset(G: nx.Graph, k: int, *, rng: random.Random, max_tries: int = 50) -> Optional[
-    list[int]]:
-    nodes = list(G.nodes())
-    if k > len(nodes) or k <= 0:
-        return None
-    for _ in range(max_tries):
-        S = rng.sample(nodes, k)
-        if nx.is_connected(G.subgraph(S)):
-            return S
-    return None
-
 
 def sample_connected_kset_with_anchor(
         G: nx.Graph,
@@ -344,51 +312,135 @@ class PairData(Data):
 
 class PairConfig:
     seed: int = 42
-    k_min: int = 1
+    k_min: int = 2
     k_max: Optional[int] = None  # None ⇒ go up to N
-    pos_per_k: int = 16
-    neg_per_pos: int = 32
+    pos_per_k: int = 8
+    neg_per_pos: int = 8
     tail_anchor_fraction: float = 0.5
 
 
-class ZincPairs(InMemoryDataset):
-    def __init__(self,
-                 base_dataset,
-                 root: Path | str = GLOBAL_DATASET_PATH / "ZincPairs",
-                 split: str = "train",
-                 cfg: PairConfig | None = None,
-                 transform: Callable | None = None,
-                 pre_transform: Callable | None = None,
-                 pre_filter: Callable | None = None,
-                 force_reload: bool = False):
+class ZincPairs(Dataset):
+    def __init__(self, base_dataset, split="train",
+                 root=GLOBAL_DATASET_PATH / "ZincPairs",
+                 cfg=None, transform=None, pre_transform=None, pre_filter=None,
+                 shard_size=100_000, cache_shards=1, force_reprocess=False):
+        # --- set everything process() will need BEFORE super().__init__ ---
         self.base = base_dataset
         self.split = split
         self.cfg = cfg or PairConfig()
+        self.shard_size = shard_size
+        self.cache_shards = cache_shards
         self._rng = random.Random(self.cfg.seed)
 
-        # EITHER pass force_reload=True OR point root to a unique folder
-        # when your base dataset changes (recommended in tests).
-        super().__init__(root, transform, pre_transform, pre_filter,
-                         force_reload=force_reload)
+        # idx_path must exist for process() to use
+        self.idx_path = Path(root) / "processed" / f"index_{split}.pt"
 
-        # Load the processed tensors
-        with open(self.processed_paths[0], "rb") as f:
-            self.data, self.slices = torch.load(f, map_location="cpu", weights_only=False)
+        super().__init__(root, transform, pre_transform, pre_filter)
+
+        # build if missing or forced
+        if force_reprocess or not self.idx_path.exists():
+            self.process()
+
+        meta = torch.load(self.idx_path, map_location="cpu")
+        self._index = meta["index"]  # list[(shard_id, local_idx)]
+        self._shards = meta["shards"]  # list[str] relative to processed_dir
+
+        # LRU cache for shard tensors
+        self._cache = collections.OrderedDict()
 
     @property
-    def raw_file_names(self) -> list[str]:
+    def raw_file_names(self):
         return [f"depends_on_{type(self.base).__name__}.marker"]
 
     @property
-    def processed_file_names(self) -> list[str]:
-        return [f"pairs_{self.split}.pt"]
+    def processed_file_names(self):
+        # PyG requires something here; we point to the index file we write.
+        return [f"index_{self.split}.pt"]
 
     def download(self):
-        # Just ensure the raw dir exists & create a marker file (optional)
         Path(self.raw_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.raw_paths[0]).write_text(f"split={self.split}; base_len={len(self.base)}\n")
+        (Path(self.raw_dir) / self.raw_file_names[0]).write_text(
+            f"split={self.split}; base_len={len(self.base)}\n"
+        )
+
+    def len(self):
+        return len(self._index)
+
+    def get(self, idx: int):
+        shard_id, local_idx = self._index[idx]
+        data, slices = self._get_shard(shard_id)
+
+        out = PairData()  # keep batching semantics (__inc__/__cat_dim__)
+        ref = PairData()  # to query concat dims
+
+        for key in data.keys():  # NOTE: .keys()
+            val = data[key]
+            s = slices[key]
+            start = int(s[local_idx].item())
+            end = int(s[local_idx + 1].item())
+
+            if torch.is_tensor(val):
+                cat_dim = ref.__cat_dim__(key, val)
+                # Narrow along the correct axis (edge_index* is dim=1, others dim=0)
+                out[key] = val.narrow(cat_dim, start, end - start)
+            else:
+                out[key] = val  # non-tensor payloads (rare)
+
+        # Optional: quiet PyG "num_nodes" inference warning (use G1’s node count)
+        if hasattr(out, "x1") and torch.is_tensor(out.x1):
+            out.num_nodes = int(out.x1.size(0))
+
+        return out
+
+    def _get_shard(self, shard_id: int):
+        # LRU cache with capacity = self.cache_shards
+        if shard_id in self._cache:
+            self._cache.move_to_end(shard_id)
+            return self._cache[shard_id]
+        shard_path = Path(self.processed_dir) / self._shards[shard_id]
+        data, slices = torch.load(shard_path, map_location="cpu", weights_only=False)
+        self._cache[shard_id] = (data, slices)
+        while len(self._cache) > self.cache_shards:
+            self._cache.popitem(last=False)
+        return data, slices
 
     def process(self):
+        Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
+        shard_files, index = [], []
+        buffer, schema_keys = [], None
+        shard_id = 0
+
+        def flush():
+            nonlocal shard_id, buffer
+            if not buffer:
+                return
+            # IMPORTANT: call collate as a static utility (no self)
+            data, slices = _IMD.collate(buffer)
+            fname = f"pairs_{self.split}_shard_{shard_id:05d}.pt"
+            torch.save((data, slices), Path(self.processed_dir) / fname)
+            index.extend((shard_id, i) for i in range(len(buffer)))
+            shard_files.append(fname)
+            buffer = []
+            shard_id += 1
+
+        for pair in self._generate_pairs_stream():
+            # enforce uniform schema
+            if schema_keys is None:
+                schema_keys = set(pair.keys())
+            elif set(pair.keys()) != schema_keys:
+                raise RuntimeError(f"Non-uniform keys: got {set(pair.keys())} vs {schema_keys}")
+
+            if self.pre_filter is None or self.pre_filter(pair):
+                if self.pre_transform:
+                    pair = self.pre_transform(pair)
+                buffer.append(pair)
+                if len(buffer) >= self.shard_size:
+                    flush()
+
+        flush()
+        torch.save({"shards": shard_files, "index": index}, self.idx_path)
+
+    def _generate_pairs_stream(self):
         r"""
         Build and serialize pair samples for **feature-aware induced-subgraph** containment.
 
@@ -426,10 +478,8 @@ class ZincPairs(InMemoryDataset):
         rng, cfg = self._rng, self.cfg
         data_list: list[PairData] = []
 
-
         # Precompute NX views to avoid repeated conversions during verification
         nx_views = [pyg_to_nx(self.base[i]) for i in range(len(self.base))]
-
 
         # Iterate parent molecules; this is the grouping unit for splits
         parent_iter = tqdm(
@@ -521,10 +571,7 @@ class ZincPairs(InMemoryDataset):
                         neg_type=torch.tensor([0]),
                         parent_idx=torch.tensor([parent_idx]),
                     )
-                    if self.pre_filter is None or self.pre_filter(pair_pos):
-                        if self.pre_transform:
-                            pair_pos = self.pre_transform(pair_pos)
-                        data_list.append(pair_pos)
+                    yield pair_pos
 
                     # -------------------- NEGATIVES (guaranteed-by-construction) --------------------
                     bad_pairs = wrong_add_candidates_anywhere(G, S, parent_pairs)
@@ -543,11 +590,8 @@ class ZincPairs(InMemoryDataset):
                                 neg_type=torch.tensor([1]),  # local wrong-add by construction
                                 parent_idx=torch.tensor([parent_idx]),
                             )
-                            if self.pre_filter is None or self.pre_filter(pair_neg):
-                                if self.pre_transform:
-                                    pair_neg = self.pre_transform(pair_neg)
-                                data_list.append(pair_neg)
-                    # If there are no bad_pairs for this S, we emit fewer (possibly zero) negatives.
+                            yield pair_neg
+                        # If there are no bad_pairs for this S, we emit fewer (possibly zero) negatives.
 
                 # --- Extra: k=2 negatives (decoder start) ---
                 if k == 2:
@@ -573,24 +617,7 @@ class ZincPairs(InMemoryDataset):
                                 neg_type=torch.tensor([1]),  # same code: local wrong-add (k=2 construction)
                                 parent_idx=torch.tensor([parent_idx]),
                             )
-                            if self.pre_filter is None or self.pre_filter(pair_neg):
-                                if self.pre_transform:
-                                    pair_neg = self.pre_transform(pair_neg)
-                                data_list.append(pair_neg)
-
-        if data_list:
-            keys0 = set(data_list[0].keys())
-            for i, d in enumerate(data_list):
-                dk = set(d.keys())
-                if dk != keys0:
-                    missing = keys0 - dk
-                    extra = dk - keys0
-                    raise RuntimeError(f"Non-uniform attributes at item {i}: missing={missing}, extra={extra}")
-
-        # Collate to in-memory tensors and persist
-        data, slices = self.collate(data_list)
-        Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
-        torch.save((data, slices), self.processed_paths[0])
+                            yield pair_neg
 
 
 if __name__ == '__main__':
@@ -600,8 +627,7 @@ if __name__ == '__main__':
     pairs = ZincPairs(
         base_dataset=base,
         split="test",
-        cfg=PairConfig(),   # use your current config
-        force_reload=True
+        cfg=PairConfig(),  # use your current config
     )
 
     print(f"base graphs: {len(base)}")
@@ -625,8 +651,8 @@ if __name__ == '__main__':
 
         # Label-aware induced subgraph check (VF2)
         is_sub = is_induced_subgraph_feature_aware(
-            pyg_to_nx(g1),   # small / candidate
-            pyg_to_nx(g2),   # big / parent
+            pyg_to_nx(g1),  # small / candidate
+            pyg_to_nx(g2),  # big / parent
         )
 
         if y == 1:
