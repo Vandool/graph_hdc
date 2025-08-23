@@ -153,6 +153,31 @@ def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
         res[v] = tgt - cur
     return res
 
+def forbidden_pairs_k2(
+    G: nx.Graph,
+    parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+) -> list[tuple[int, int]]:
+    """
+    All unordered node pairs (u,v), u<v, such that:
+      - (u,v) is NOT an edge in G, and
+      - the unordered label pair (label(u), label(v)) NEVER occurs as an edge anywhere in G, and
+      - both nodes can support at least one incident edge in a 2-node start (target degree >= 1).
+    """
+    nodes = list(G.nodes())
+    bad = []
+    for i, u in enumerate(nodes):
+        lu = node_label(G, u)
+        if target_degree_from_label(lu) < 1:
+            continue
+        for v in nodes[i+1:]:
+            if G.has_edge(u, v):
+                continue
+            lv = node_label(G, v)
+            if target_degree_from_label(lv) < 1:
+                continue
+            if unordered_label_pair(lu, lv) not in parent_pairs:
+                bad.append((u, v))
+    return bad
 
 # ────────────────────────────── positive samplers ─────────────────────────────
 def sample_connected_bfs(G: nx.Graph, k: int, *, rng: random.Random) -> Optional[list[int]]:
@@ -298,7 +323,7 @@ class PairData(Data):
 
       neg_type codes:
       • 0 = positive
-      • 1 = local wrong-add (forbidden label-pair inside S; residual respected)
+      • 1 = local wrong-add (forbidden label-pair inside S; residual respected; for k=2 this is the forbidden-pair construction)
     """
 
     def __inc__(self, key, value, *args, **kwargs):
@@ -319,7 +344,7 @@ class PairData(Data):
 
 class PairConfig:
     seed: int = 42
-    k_min: int = 2
+    k_min: int = 1
     k_max: Optional[int] = None  # None ⇒ go up to N
     pos_per_k: int = 16
     neg_per_pos: int = 32
@@ -523,6 +548,35 @@ class ZincPairs(InMemoryDataset):
                                     pair_neg = self.pre_transform(pair_neg)
                                 data_list.append(pair_neg)
                     # If there are no bad_pairs for this S, we emit fewer (possibly zero) negatives.
+
+                # --- Extra: k=2 negatives (decoder start) ---
+                if k == 2:
+                    # Total budget tied to positives we just emitted for k=2:
+                    k2_neg_budget = len(pos_sets) * cfg.neg_per_pos
+                    bad_pairs2 = forbidden_pairs_k2(G, parent_pairs)
+                    if bad_pairs2 and k2_neg_budget > 0:
+                        # Sample without replacement to avoid duplicates
+                        take = min(len(bad_pairs2), k2_neg_budget)
+                        for (u, v) in rng.sample(bad_pairs2, take):
+                            S2 = [u, v]
+                            H2 = nx.Graph()
+                            H2.add_nodes_from(S2)
+                            H2.add_edge(u, v)  # the forbidden edge
+                            ei2 = nx_to_edge_index_on_ordered_nodes(H2, S2)
+
+                            g1_neg = make_subgraph_data(full, S2, edge_index_override=ei2)
+                            pair_neg = PairData(
+                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
+                                x2=full.x, edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([2]),
+                                neg_type=torch.tensor([1]),  # same code: local wrong-add (k=2 construction)
+                                parent_idx=torch.tensor([parent_idx]),
+                            )
+                            if self.pre_filter is None or self.pre_filter(pair_neg):
+                                if self.pre_transform:
+                                    pair_neg = self.pre_transform(pair_neg)
+                                data_list.append(pair_neg)
 
         if data_list:
             keys0 = set(data_list[0].keys())
