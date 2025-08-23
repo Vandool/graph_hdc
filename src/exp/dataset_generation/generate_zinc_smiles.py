@@ -7,7 +7,7 @@ import torch
 from pytorch_lightning import seed_everything
 
 from src.datasets.zinc_smiles_generation import ZincSmiles, precompute_encodings
-from src.encoding.configs_and_constants import DatasetConfig, Features, FeatureConfig, IndexRange
+from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
@@ -52,7 +52,7 @@ def generate():
         ),
     )
 
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config)
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(device)
 
     # Precompute and cache encodings for each split
     for split in [

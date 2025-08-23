@@ -332,6 +332,14 @@ def is_induced_subgraph_feature_aware(G_small: nx.Graph, G_big: nx.Graph) -> boo
     GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
     return GM.subgraph_is_isomorphic()
 
+# helpers (place near your VF2 utilities)
+def has_label_duplicates(G: nx.Graph, S: Sequence[int]) -> bool:
+    labels = [G.nodes[v]["label"] for v in S]
+    # count duplicates
+    return len(labels) != len(set(labels))
+
+def is_present_anywhere_pyg(g_small: Data, G_big: nx.Graph) -> bool:
+    return is_induced_subgraph_feature_aware(pyg_to_nx(g_small), G_big)
 
 # ─────────────────────────────── pair container ───────────────────────────────
 class PairData(Data):
@@ -372,6 +380,9 @@ class PairConfig:
     include_full_graph: bool = True
     full_graph_neg_per_parent: int = 6
     anchor_neg_prob: float = 0.8
+    verify_local_negatives: bool = True
+    verify_local_negatives_ambiguous_only: bool = True   # only when labels duplicate
+    local_neg_max_attempts: int = 6
 
 
 class ZincPairs(InMemoryDataset):
@@ -668,6 +679,46 @@ class ZincPairs(InMemoryDataset):
                                 ei_neg = nx_to_edge_index_on_ordered_nodes(H, S)
                                 g1_neg = make_subgraph_data(full, S, edge_index_override=ei_neg)
                                 neg_code = 1
+
+                        # --- FIX: verify that the local negative does NOT occur anywhere in G (feature-aware, induced)
+                        if getattr(cfg, "verify_local_negatives", True):
+                            ok = not is_induced_subgraph_feature_aware(pyg_to_nx(g1_neg), G)
+                            tries = 0
+                            max_local = getattr(cfg, "local_neg_max_attempts", 6)
+                            while (not ok) and tries < max_local:
+                                tries += 1
+                                if use_anchor:
+                                    # try anchored again; fallback to generic then permutation
+                                    H2 = edge_flip_negative_adjacent_to_anchor_residual_aware(G, S, anchor=anchor, rng=rng)
+                                    if H2 is None:
+                                        H2 = edge_flip_negative_within_S(G, S, rng=rng)
+                                        if H2 is None:
+                                            g1_neg = feature_permutation_negative_S(full, S, rng=rng)
+                                            neg_code = 2
+                                        else:
+                                            ei2 = nx_to_edge_index_on_ordered_nodes(H2, S)
+                                            g1_neg = make_subgraph_data(full, S, edge_index_override=ei2)
+                                            neg_code = 1
+                                    else:
+                                        ei2 = nx_to_edge_index_on_ordered_nodes(H2, S)
+                                        g1_neg = make_subgraph_data(full, S, edge_index_override=ei2)
+                                        neg_code = 3
+                                else:
+                                    # generic path: generic flip → permutation
+                                    H2 = edge_flip_negative_within_S(G, S, rng=rng)
+                                    if H2 is None:
+                                        g1_neg = feature_permutation_negative_S(full, S, rng=rng)
+                                        neg_code = 2
+                                    else:
+                                        ei2 = nx_to_edge_index_on_ordered_nodes(H2, S)
+                                        g1_neg = make_subgraph_data(full, S, edge_index_override=ei2)
+                                        neg_code = 1
+                                ok = not is_induced_subgraph_feature_aware(pyg_to_nx(g1_neg), G)
+
+                            if not ok:
+                                # could not realize a strict negative → skip this one
+                                continue
+                        # --- END FIX
 
                         pair_neg = PairData(
                             x1=g1_neg.x, edge_index1=g1_neg.edge_index,

@@ -257,6 +257,9 @@ class HyperNet(AbstractGraphEncoder):
         self.depth = depth
         self.vsa = self._validate_vsa(config.vsa)
         self.hv_dim = config.hv_dim
+
+        self._cfg_device = torch.device(getattr(config, "device", "cpu"))
+
         self.node_encoder_map: EncoderMap = {
             feat: (
                 cfg.encoder_cls(
@@ -264,6 +267,7 @@ class HyperNet(AbstractGraphEncoder):
                     dim=config.hv_dim,
                     vsa=config.vsa.value,
                     idx_offset=cfg.idx_offset,
+                    device=self._cfg_device,
                     indexer=TupleIndexer(sizes=cfg.bins) if cfg.bins else TupleIndexer(sizes=[28,6, config.nha_bins]),
                 ),
                 cfg.index_range,
@@ -273,7 +277,7 @@ class HyperNet(AbstractGraphEncoder):
         self.edge_encoder_map: EncoderMap = {
             feat: (
                 cfg.encoder_cls(
-                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset
+                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset, device=self._cfg_device
                 ),
                 cfg.index_range,
             )
@@ -282,13 +286,14 @@ class HyperNet(AbstractGraphEncoder):
         self.graph_encoder_map: EncoderMap = {
             feat: (
                 cfg.encoder_cls(
-                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset
+                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset, device=self._cfg_device
                 ),
                 cfg.index_range,
             )
             for feat, cfg in config.graph_feature_configs.items()
         }
         self.seed = config.seed
+
 
         ### Attributes that will be populated after initialisation
         self.nodes_indexer: TupleIndexer | None = None
@@ -306,11 +311,27 @@ class HyperNet(AbstractGraphEncoder):
         self.edges_indexer: TupleIndexer | None = None
 
     def to(self, device):
-        self.populate_codebooks()
-        self.nodes_codebook = self.nodes_codebook.to(device)
-        if self.use_edge_codebook:
+        # normalize + store; also move nn.Module state if any
+        device = torch.device(device)
+        super().to(device)  # safe even if there are no nn.Parameters
+
+        self.populate_codebooks()  # ensure they exist before moving
+
+        # move codebooks (non-parameter buffers)
+        if self.nodes_codebook is not None:
+            self.nodes_codebook = self.nodes_codebook.to(device)
+        if getattr(self, "edge_feature_codebook", None) is not None:
+            self.edge_feature_codebook = self.edge_feature_codebook.to(device)
+        if self.use_edge_codebook and self.edges_codebook is not None:
             self.edges_codebook = self.edges_codebook.to(device)
-        # self.graph_codebook = self.graph_codebook.to(device)
+
+        # move encoder codebooks & record their device
+        for enc_map in (self.node_encoder_map, self.edge_encoder_map, self.graph_encoder_map):
+            for enc, _ in enc_map.values():
+                enc.device = device
+                if getattr(enc, "codebook", None) is not None:
+                    enc.codebook = enc.codebook.to(device)
+
         return self
 
     def _validate_vsa(self, vsa: VSAModel) -> VSAModel:
@@ -389,7 +410,7 @@ class HyperNet(AbstractGraphEncoder):
             slices.append(encoder.encode(feat))  # [..., N?, D]
 
         if not slices:
-            return torch.zeros(fallback_count, self.hv_dim, device=self.device)
+            return torch.zeros(fallback_count, self.hv_dim, device=tensor.device)
 
         # stack on new “property” axis and bind
         stacked = torch.stack(slices, dim=0)  # [P, N, D]
@@ -435,18 +456,18 @@ class HyperNet(AbstractGraphEncoder):
         # later be transformed into a [0, 1] range using the sigmoid function!
 
         ## We don't have edge_weights, candidate for deletion (keep the default behaviour??)
-        if hasattr(data, "edge_weight") and data.edge_weight is not None:
-            edge_weight = data.edge_weight
-        else:
-            # If the given graphs do not define any edge weights we set the default values to 10 for all edges
-            # because sigmoid(10) ~= 1.0 which will effectively be the same as discrete edges.
-            # edge_weight should have the same dtype as the hypervectors
-            edge_weight = 100 * torch.ones(
-                data.edge_index.shape[1],
-                1,
-                device=self.device,
-                # dtype=data.node_hv.dtype
-            )
+        # if hasattr(data, "edge_weight") and data.edge_weight is not None:
+        #     edge_weight = data.edge_weight
+        # else:
+        #     # If the given graphs do not define any edge weights we set the default values to 10 for all edges
+        #     # because sigmoid(10) ~= 1.0 which will effectively be the same as discrete edges.
+        #     # edge_weight should have the same dtype as the hypervectors
+        #     edge_weight = 100 * torch.ones(
+        #         data.edge_index.shape[1],
+        #         1,
+        #         device=self.device,
+        #         # dtype=data.node_hv.dtype
+        #     )
 
         # ~ handling edge bi-directionality
         # If the bidirectional flag is given we will duplicate each edge in the input graphs and reverse the
@@ -456,11 +477,8 @@ class HyperNet(AbstractGraphEncoder):
         # "directions".
 
         ## We don't have edge_weights
-        if bidirectional:
-            edge_index = torch.cat([data.edge_index, data.edge_index[[1, 0]]], dim=1)
-            edge_weight = torch.cat([edge_weight, edge_weight], dim=0)
-        else:
-            edge_index = data.edge_index
+        edge_index = torch.cat([data.edge_index, data.edge_index[[1, 0]]], dim=1) if bidirectional else data.edge_index
+        # edge_weight = torch.cat([edge_weight, edge_weight], dim=0) if bidirectional else edge_weight
 
         srcs, dsts = edge_index
 
@@ -468,7 +486,7 @@ class HyperNet(AbstractGraphEncoder):
         # depths.
         # node_hv_stack: (num_layers + 1, batch_size * num_nodes, hv_dim)
         node_dim = data.x.size(0)
-        node_hv_stack = data.node_hv.new_zeros(size=(self.depth + 1, node_dim, self.hv_dim), device=self.device)
+        node_hv_stack = data.node_hv.new_zeros(size=(self.depth + 1, node_dim, self.hv_dim))
         node_hv_stack[0] = data.node_hv  # Level 0 HV: Nodes are binding of their features
 
         # ~ message passing
@@ -476,7 +494,8 @@ class HyperNet(AbstractGraphEncoder):
         node_terms = None
         for layer_index in range(self.depth):
             # messages are gated with the corresponding edge weights! Pick the neighbours
-            messages = node_hv_stack[layer_index][dsts] * sigmoid(edge_weight)
+            # messages = node_hv_stack[layer_index][dsts] * sigmoid(edge_weight)
+            messages = node_hv_stack[layer_index][dsts]
 
             # aggregate (bundle) neighbor messages back into each node slot
             aggregated = scatter_hd(messages, srcs, dim_size=node_dim, op="bundle")
@@ -1215,6 +1234,7 @@ class HyperNet(AbstractGraphEncoder):
         The edge weights are randomly initialized between low and high and, after optimization,
         are discretized. The candidate with the best similarity to graph_hv is selected.
         """
+        dev = graph_hv.device
         log = False
         # ~ Decode node constraints
         node_terms = node_terms if node_terms is not None else graph_hv
@@ -1243,11 +1263,11 @@ class HyperNet(AbstractGraphEncoder):
 
         # node_counters counts the number of nodes per batch
         # We have no batch of graph, the incoming data belongs to one graph
-        __x__ = self.get_data_x(node_counters[0], self.node_encoder_map)
+        __x__ = self.get_data_x(node_counters[0], self.node_encoder_map).to(device=dev)
         edge_indices = self.get_edge_index_list(edge_counter=edge_counters[0], node_counter=node_counters[0])
 
         data = Data()
-        data.edge_index = torch.tensor(list(edge_indices), dtype=torch.long).t()
+        data.edge_index = torch.tensor(list(edge_indices), dtype=torch.long, device=dev).t()
         data.batch = torch.tensor([0] * __x__.shape[0], dtype=torch.long, device=__x__.device)
         # data.x = torch.zeros(__x__.shape[0], self.hv_dim)
         data.x = __x__
@@ -1263,11 +1283,11 @@ class HyperNet(AbstractGraphEncoder):
             assert edges_per_graph % 2 == 0, "Expected each undirected edge twice"
             num_unique = edges_per_graph // 2
             raw_weights = torch.nn.Parameter(
-                torch.empty(batch_size * num_unique, 1, device=self.device).uniform_(low, high)
+                torch.empty(batch_size * num_unique, 1, device=dev).uniform_(low, high)
             )
         else:
             raw_weights = torch.nn.Parameter(
-                torch.empty(batch_size * edges_per_graph, 1, device=self.device).uniform_(low, high)
+                torch.empty(batch_size * edges_per_graph, 1, device=dev).uniform_(low, high)
             )
         optimizer = torch.optim.Adam([raw_weights], lr=learning_rate)
 
@@ -1374,7 +1394,7 @@ class HyperNet(AbstractGraphEncoder):
             final_degrees = scatter_src + scatter_dst
         else:
             # No edges: degrees are zero for all nodes
-            final_degrees = torch.zeros(num_nodes_final, device=self.device)
+            final_degrees = torch.zeros(num_nodes_final, device=dev)
 
         if log:
             print(f"Final batch.edge_weight (flattened): {batch.edge_weight.flatten()}")

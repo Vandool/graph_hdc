@@ -119,6 +119,7 @@ class ZincSmiles(InMemoryDataset):
             transform: Optional[Callable] = None,
             pre_transform: Optional[Callable] = None,
             pre_filter: Optional[Callable] = None,
+            self.enc_suffix = enc_suffix
     ):
         self.split = split.lower()
         assert self.split in {"train", "valid", "test"}
@@ -135,7 +136,8 @@ class ZincSmiles(InMemoryDataset):
 
     @property
     def processed_file_names(self) -> list[str]:
-        return [f"data_{self.split}.pt"]
+        suffix = f"_{self.enc_suffix}" if self.enc_suffix else ""
+        return [f"data_{self.split}{suffix}.pt"]
 
     # ---------- no remote download needed --------------------------------------
     def download(self):
@@ -208,25 +210,6 @@ def precompute_encodings(
     torch.save((data, slices), out_path)
     return out_path
 
-
-class ZincSmilesEnc(ZincSmiles):
-    """Loader for the augmented file written by `precompute_encodings`."""
-
-    def __init__(self, split: str = "train", root: Path | str = None):
-        super().__init__(split=split, root=root or self.default_root())
-
-        # Load the augmented artifact instead of the default file
-        enc_path = Path(self.processed_dir) / f"data_{self.split}_enc.pt"
-        if not enc_path.exists():
-            raise FileNotFoundError(f"Missing {enc_path}. Run precompute_encodings first.")
-        with open(enc_path, "rb") as f:
-            self.data, self.slices = torch.load(f, map_location="cpu", weights_only=False)
-
-    @staticmethod
-    def default_root() -> Path:
-        # keep in sync with your ZincSmiles default root
-        from src.utils.utils import GLOBAL_DATASET_PATH
-        return GLOBAL_DATASET_PATH / "ZincSmilesHRR7744"
 
 
 if __name__ == '__main__':
