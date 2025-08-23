@@ -119,9 +119,10 @@ class ZincSmiles(InMemoryDataset):
             transform: Optional[Callable] = None,
             pre_transform: Optional[Callable] = None,
             pre_filter: Optional[Callable] = None,
-            self.enc_suffix = enc_suffix
+            enc_suffix: str = ""
     ):
         self.split = split.lower()
+        self.enc_suffix = enc_suffix
         assert self.split in {"train", "valid", "test"}
         super().__init__(root, transform, pre_transform, pre_filter)
 
