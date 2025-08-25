@@ -1,4 +1,5 @@
 import itertools
+import os
 import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -26,8 +27,9 @@ while ROOT.stem != "graph_hdc":
     ROOT = ROOT.parent
 ROOT = ROOT.absolute()
 
-GLOBAL_DATASET_PATH = ROOT / "_datasets"
-GLOBAL_MODEL_PATH = ROOT / "_models"
+GLOBAL_DATASET_PATH = Path(os.getenv("GLOBAL_DATASETS", ROOT / "_datasets"))
+GLOBAL_MODEL_PATH = Path(os.getenv("GLOBAL_MODELS", ROOT / "_models"))
+GLOBAL_DATA_PATH = Path(os.getenv("GLOBAL_DATA", ROOT / ""))
 
 TEST_ARTIFACTS_PATH = ROOT / "tests_new/artifacts"
 TEST_ASSETS_PATH = ROOT / "tests_new/assets"

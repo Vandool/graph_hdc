@@ -137,7 +137,7 @@ def collate_pairs(batch):  # <<< CHANGED: collate returns PyG Batch (not lists)
     return g1_b, g2_b, torch.stack(k1k2, 0), torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
 
 
-6from collections import OrderedDict
+from collections import OrderedDict
 
 
 class ParentH2Cache:
