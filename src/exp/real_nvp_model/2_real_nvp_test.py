@@ -309,7 +309,7 @@ def run_experiment(cfg: FlowConfig):
 
     # ----- W&B -----
     run = wandb.run or wandb.init(
-        project="realnvp-hdc-overfit",
+        project="realnvp-test",
         config=cfg.__dict__,
         name=f"run_{cfg.hv_dim}_{cfg.seed}",
         reinit=True
@@ -319,18 +319,18 @@ def run_experiment(cfg: FlowConfig):
     wandb_logger = WandbLogger(log_model=True, experiment=run)
 
     # ----- datasets / loaders -----
-    train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")[:64]
-    validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")[:64]
+    train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")[:128]
+    # validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")[:]
 
     train_dataloader = DataLoader(
         train_dataset, batch_size=cfg.batch_size, shuffle=True,
         num_workers=2, pin_memory=torch.cuda.is_available(), drop_last=True,
     )
-    validation_dataloader = DataLoader(
-        validation_dataset, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=2, pin_memory=torch.cuda.is_available(), drop_last=False,
-    )
-    log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
+    # validation_dataloader = DataLoader(
+    #     validation_dataset, batch_size=cfg.batch_size, shuffle=False,
+    #     num_workers=2, pin_memory=torch.cuda.is_available(), drop_last=False,
+    # )
+    # log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # ----- model / trainer -----
     model = RealNVPLightning(cfg)
@@ -360,7 +360,7 @@ def run_experiment(cfg: FlowConfig):
     )
 
     # ----- train -----
-    trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader)
+    trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=train_dataloader)
 
     # ----- curves to parquet / png -----
     metrics_path = Path(csv_logger.log_dir) / "metrics.csv"
@@ -398,7 +398,7 @@ def run_experiment(cfg: FlowConfig):
     best_model.to(device).eval()
 
     # ---- per-sample NLL (really the KL objective) on validation ----
-    val_nll = _evaluate_loader_nll(best_model, validation_dataloader, device)
+    val_nll = _evaluate_loader_nll(best_model, train_dataloader, device)
     pd.DataFrame({"nll": val_nll}).to_parquet(evals_dir / "val_nll.parquet", index=False)
     _hist(artefacts_dir / "val_nll_hist.png", val_nll, "Validation NLL", "NLL")
     wandb.log({

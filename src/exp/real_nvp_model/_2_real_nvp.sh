@@ -1,6 +1,6 @@
 #!/bin/bash
 ENTITY="arvand-kaveh-karlsruhe-institute-of-technology"
-PROJECT="realnvp-hdc"
+PROJECT="realnvp-test"
 SWEEP_YAML="sweep_7744_test.yml"
 EXPERIMENTS_PATH="${GHDC_HOME}/src/exp/real_nvp_model"
 
@@ -11,7 +11,7 @@ SWEEP_ID=$(pixi run wandb sweep "${SWEEP_YAML}" --entity "${ENTITY}" --project "
 
 # 2) Submit agent
 sbatch \
-  --job-name="sweep_hdc7744" \
+  --job-name="sweep_hdc7744_test" \
   --partition=dev_gpu_h100 \
   --time=00:20:00 \
   --gres=gpu:1 \

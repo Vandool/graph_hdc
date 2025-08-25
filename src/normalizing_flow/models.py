@@ -1,15 +1,11 @@
+from dataclasses import asdict
+
 import normflows as nf
-import numpy as np
 import pytorch_lightning as pl
 import torch
-from torch import Tensor
 
 from src.normalizing_flow.config import FlowConfig
 
-
-import torch
-import pytorch_lightning as pl
-from dataclasses import asdict
 
 class AbstractNFModel(pl.LightningModule):
     def __init__(self, cfg):
@@ -47,10 +43,11 @@ class AbstractNFModel(pl.LightningModule):
     def save_to_path(self, path: str):
         ckpt = {
             "state_dict": self.state_dict(),
-            "hyper_parameters": {"cfg": asdict(self.cfg) if hasattr(self.cfg, "__dataclass_fields__") else dict(self.cfg.__dict__)},
+            "hyper_parameters": {
+                "cfg": asdict(self.cfg) if hasattr(self.cfg, "__dataclass_fields__") else dict(self.cfg.__dict__)
+            },
         }
         torch.save(ckpt, path)
-
 
 
 class NeuralSplineLightning(AbstractNFModel):
