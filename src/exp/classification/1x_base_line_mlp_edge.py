@@ -22,9 +22,9 @@ from pprint import pprint
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
-import torch.nn as nn
 from pytorch_lightning import seed_everything
 from sklearn.metrics import average_precision_score, roc_auc_score
+from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from torch_geometric.data import Batch, Data
 from tqdm.auto import tqdm
@@ -82,28 +82,27 @@ def setup_exp() -> dict:
 # ---------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------
-class LogisticPairBaseline(nn.Module):
-    def __init__(self, dim: int = 7744, use_cosine: bool = True):
+# MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
+class MLPClassifier(nn.Module):
+    def __init__(self, hv_dim: int, hidden_dims: list[int]):
+        """
+        hv_dim: dimension of each HRR vector (e.g., 7744)
+        hidden_dims: e.g., [4096, 2048, 512, 128]
+        """
         super().__init__()
-        self.dim = dim
-        self.use_cosine = use_cosine
-        extra = 6 if use_cosine else 5  # [n1, n2, dot, (cos), k1, k2]
-        self.linear = nn.Linear(2 * dim + extra, 1)
+        d_in = hv_dim * 2
+        layers: list[nn.Module] = []
+        last = d_in
+        for h in hidden_dims:
+            layers += [nn.Linear(last, h), nn.GELU()]
+            last = h
+        layers += [nn.Linear(last, 1)]
+        self.net = nn.Sequential(*layers)
 
-    def forward(self, h1, h2, k1k2):  # h1,h2: [B,D], k1k2: [B,2]
-        d = torch.abs(h1 - h2)
-        m = h1 * h2
-        n1 = torch.linalg.vector_norm(h1, dim=-1, keepdim=True)
-        n2 = torch.linalg.vector_norm(h2, dim=-1, keepdim=True)
-        dot = (h1 * h2).sum(dim=-1, keepdim=True)
-        if self.use_cosine:
-            cos = dot / (n1 * n2 + 1e-8)
-            scalars = torch.cat([n1, n2, dot, cos, k1k2.float()], dim=-1)
-        else:
-            scalars = torch.cat([n1, n2, dot, k1k2.float()], dim=-1)
-        z = torch.cat([d, m, scalars], dim=-1)
-        return self.linear(z).squeeze(-1)  # logits
-
+    def forward(self, h1: torch.Tensor, h2: torch.Tensor) -> torch.Tensor:
+        # h1,h2: [B, hv_dim]
+        x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
+        return self.net(x).squeeze(-1)   # [B]
 
 # ---------------------------------------------------------------------
 # Dataset wrapper that returns graphs (we encode in the training loop)
@@ -123,21 +122,18 @@ class PairsGraphsDataset(Dataset):
         item = self.ds[idx]
         g1 = Data(x=item.x1, edge_index=item.edge_index1)
         g2 = Data(x=item.x2, edge_index=item.edge_index2)
-        k1 = g1.x.size(0)
-        k2 = g2.x.size(0)
         y = float(item.y.view(-1)[0].item())
         parent_idx = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
-        return g1, g2, torch.tensor([k1, k2], dtype=torch.float32), torch.tensor(y, dtype=torch.float32), parent_idx
+        return g1, g2, torch.tensor(y, dtype=torch.float32), parent_idx
 
 
-def collate_pairs(batch):  # <<< CHANGED: collate returns PyG Batch (not lists)
-    g1_list, g2_list, k1k2, y, parent_idx = zip(*batch)
+def collate_pairs(batch):
+    g1_list, g2_list, y, parent_idx = zip(*batch, strict=False)
     g1_b = Batch.from_data_list(list(g1_list))
     g2_b = Batch.from_data_list(list(g2_list))
-    return g1_b, g2_b, torch.stack(k1k2, 0), torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
+    return g1_b, g2_b, torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
 
 
-6from collections import OrderedDict
 
 
 class ParentH2Cache:
@@ -171,9 +167,7 @@ def encode_g2_with_cache(
     parent_ids: torch.Tensor,  # shape [B], Long
     device: torch.device,
     cache: ParentH2Cache,
-    hv_dim: int,
     micro_bs: int,
-    hv_scale: float | None,
 ) -> torch.Tensor:
     """
     Returns h2 for the whole batch [B, D], encoding each parent only once.
@@ -206,10 +200,6 @@ def encode_g2_with_cache(
         for j in range(0, len(uniq_graphs), micro_bs):
             chunk = Batch.from_data_list(uniq_graphs[j : j + micro_bs]).to(device)
             out = encoder.forward(chunk)["graph_embedding"]  # [b, D] on device
-            # scale if needed
-            scale = hv_scale if hv_scale is not None else (1.0 / math.sqrt(hv_dim))
-            if scale != 1.0:
-                out = out * scale
             encoded.append(out.to("cpu"))
             del chunk
             if device.type == "cuda":
@@ -217,7 +207,7 @@ def encode_g2_with_cache(
         encoded = torch.cat(encoded, dim=0)  # [U, D]
 
         # fill cache
-        for pid, vec in zip(uniq_pids, encoded):
+        for pid, vec in zip(uniq_pids, encoded, strict=False):
             cache.set(pid, vec)
 
     # 3) assemble batch h2 by gathering from cache (then move to device)
@@ -232,8 +222,6 @@ def _encode_batch(
     *,
     device: torch.device,
     micro_bs: int,
-    hv_dim: int,
-    hv_scale: float | None,
 ) -> torch.Tensor:
     """
     Encode a big PyG Batch in micro-chunks to avoid OOM.
@@ -252,11 +240,6 @@ def _encode_batch(
         del chunk
         torch.cuda.empty_cache() if device.type == "cuda" else None
     H = torch.cat(outs, dim=0)  # [B, D]
-
-    # >>> CHANGED: numerics — scale by 1/sqrt(D) unless overridden
-    scale = hv_scale if hv_scale is not None else (1.0 / math.sqrt(hv_dim))
-    if scale != 1.0:
-        H = H * scale
     return H
 
 
@@ -272,6 +255,8 @@ class Config:
     batch_size: int = 256
     train_parents: int = 2000
     valid_parents: int = 500
+
+    hidden_dims: list[int] = (4096, 2048, 512, 128)
 
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
@@ -312,6 +297,12 @@ def get_args() -> Config:
     parser.add_argument("--pin_memory", action="store_true", default=False)
     parser.add_argument("--micro_bs", type=int, default=64)
     parser.add_argument("--hv_scale", type=float, default=None)
+    # Add hidden_dims as a comma-separated list
+    parser.add_argument(
+        "--hidden_dims", type=lambda s: [int(item) for item in s.split(",")],
+        default="4096,2048,512,128",
+        help="Comma-separated list of hidden layer sizes, e.g., '4096,2048,512,128'"
+    )
     return Config(**vars(parser.parse_args()))
 
 
@@ -327,40 +318,42 @@ def _gpu_mem(device: torch.device) -> str:
 # Eval + Train
 # ---------------------------------------------------------------------
 @torch.no_grad()
-def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache):
+def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool=False):
     model.eval()
     encoder.eval()
-    ys, ps = [], []
+    ys, ps, ls = [], [], []  # labels, probs, logits
     total_loss, total_n = 0.0, 0
 
-    for g1_b, g2_b, k1k2, y, parent_ids in loader:
-        # NOTE: keep batches on CPU; _encode_batch moves micro-chunks to GPU
-        k1k2 = k1k2.to(device)
+    for g1_b, g2_b, y, parent_ids in loader:
         y = y.to(device)
 
+        h1 = _encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs)
+        h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, h2_cache, cfg.micro_bs)
 
-        h1 = _encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs,
-                        hv_dim=cfg.hv_dim, hv_scale=cfg.hv_scale)
-        h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device,
-                                h2_cache, cfg.hv_dim, cfg.micro_bs, cfg.hv_scale)
-
-        logits = model(h1, h2, k1k2)
+        logits = model(h1, h2)
         loss = criterion(logits, y)
 
         prob = torch.sigmoid(logits).detach().cpu()
         ys.append(y.detach().cpu())
         ps.append(prob)
+        if return_details:
+            ls.append(logits.detach().cpu())
 
         total_loss += float(loss.item()) * y.size(0)
         total_n += y.size(0)
 
     y = torch.cat(ys).numpy()
     p = torch.cat(ps).numpy()
-    return {
+    out = {
         "auc": roc_auc_score(y, p),
         "ap": average_precision_score(y, p),
         "loss": total_loss / max(1, total_n),
     }
+    if return_details:
+        out["y"] = y
+        out["p"] = p
+        out["logits"] = torch.cat(ls).numpy()
+    return out
 
 
 def make_loader(ds, batch_size, shuffle, cfg, collate_fn):
@@ -393,6 +386,57 @@ def _sanitize_for_parquet(d: dict) -> dict:
             out[k] = v
     return out
 
+@torch.no_grad()
+def probe_encoder_edge_sensitivity(encoder, pairs_ds, device, max_pairs=1000):
+    """
+    For matched (pos,neg) with same parent + k + node multiset, compare enc(G1).
+    If cosine~1.0 and L2~0 → the graph_embedding is effectively edge-insensitive *for these negatives*.
+    """
+    from collections import defaultdict
+    from torch_geometric.data import Data, Batch
+
+    def label_multiset_hash(x_tensor):
+        # order-invariant hash of node feature rows
+        rows = [tuple(int(v) for v in row.tolist()) for row in x_tensor]
+        return hash(tuple(sorted(rows)))
+
+    groups = defaultdict(lambda: {"pos": [], "neg": []})
+    for i in range(len(pairs_ds)):
+        item = pairs_ds[i]
+        pid = int(item.parent_idx) if hasattr(item, "parent_idx") else -1
+        kk  = int(item.k) if hasattr(item, "k") else item.x1.size(0)
+        mhash = label_multiset_hash(item.x1)
+        y = int(item.y)
+        key = (pid, kk, mhash)
+        (groups[key]["pos"] if y==1 else groups[key]["neg"]).append(i)
+
+    pairs = []
+    for key, bucket in groups.items():
+        if bucket["pos"] and bucket["neg"]:
+            pairs.append((bucket["pos"][0], bucket["neg"][0]))
+            if len(pairs) >= max_pairs:
+                break
+    if not pairs:
+        print("[probe] No matched (pos,neg) pairs found.")
+        return
+
+    cos_list, l2_list = [], []
+    for pi, ni in pairs:
+        ip = pairs_ds[pi]; ineg = pairs_ds[ni]
+        gp = Data(x=ip.x1, edge_index=ip.edge_index1)
+        gn = Data(x=ineg.x1, edge_index=ineg.edge_index1)
+        bp = Batch.from_data_list([gp]).to(device)
+        bn = Batch.from_data_list([gn]).to(device)
+        hp = encoder.forward(bp)["graph_embedding"]
+        hn = encoder.forward(bn)["graph_embedding"]
+        cos = torch.nn.functional.cosine_similarity(hp, hn).item()
+        l2  = torch.norm(hp - hn).item()
+        cos_list.append(cos); l2_list.append(l2)
+
+    print(f"[probe] matched={len(pairs)}  cos μ={sum(cos_list)/len(cos_list):.6f} "
+          f"l2 μ={sum(l2_list)/len(l2_list):.6f} | "
+          f"cos min/max=({min(cos_list):.6f},{max(cos_list):.6f}) "
+          f"l2 min/max=({min(l2_list):.6f},{max(l2_list):.6f})")
 
 def train(
     train_pairs,
@@ -403,6 +447,10 @@ def train(
     artefacts_dir: Path,
     cfg: Config,
 ):
+    import json
+
+    from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
+
     log("In Training ... ")
     log("Setting up datasets …")
     train_ds = PairsGraphsDataset(train_pairs)
@@ -410,128 +458,16 @@ def train(
     log(f"Datasets ready. train_size={len(train_ds):,} valid_size={len(valid_ds):,}")
 
     log("Setting up dataloaders …")
-    train_loader = make_loader(train_ds, cfg.batch_size, True, cfg, collate_pairs)  # <<< use Batch collate
-    valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)  # <<< use Batch collate
+    train_loader = make_loader(train_ds, cfg.batch_size, True, cfg, collate_pairs)
+    valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)
     log("In Training ... Data loaders ready.")
 
     device = torch.device(cfg.device)
     encoder = encoder.to(device).eval()
-    model = LogisticPairBaseline(dim=cfg.hv_dim).to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
-    optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
-    log(f"Model on: {next(model.parameters()).device}")
+    probe_encoder_edge_sensitivity(encoder, train_pairs, device, max_pairs=1000)
 
-    base_row = _sanitize_for_parquet(
-        {
-            **asdict(cfg),
-            "train_size": len(train_pairs),
-            "valid_size": len(valid_pairs),
-            "model_params": sum(p.numel() for p in model.parameters()),
-        }
-    )
-
-    rows, train_losses, valid_losses, valid_aucs = [], [], [], []
-    best_auc, global_step = -float("inf"), 0
-
-    g2_cache_train = ParentH2Cache(max_items=cfg.train_parents + 1000)
-    g2_cache_valid = ParentH2Cache(max_items=cfg.valid_parents + 1000)
-
-    log(f"Starting training on {device} {_gpu_mem(device)}")
-    for epoch in range(1, cfg.epochs + 1):
-        model.train()
-        epoch_loss_sum, n_seen = 0.0, 0
-        pbar = tqdm(train_loader, desc=f"train e{epoch}", dynamic_ncols=True)
-        t0 = time.time()
-
-        for g1_b, g2_b, k1k2, y, parent_ids in pbar:
-            n = y.size(0)
-            n_seen += n
-
-            # keep g1_b/g2_b on CPU; only move numeric tensors now
-            k1k2 = k1k2.to(device)
-            y = y.to(device)
-
-            with torch.no_grad():
-                h1 = _encode_batch(
-                    encoder, g1_b, device=device, micro_bs=cfg.micro_bs, hv_dim=cfg.hv_dim, hv_scale=cfg.hv_scale
-                )
-                h2 = encode_g2_with_cache(
-                    encoder, g2_b, parent_ids, device, g2_cache_train, cfg.hv_dim, cfg.micro_bs, cfg.hv_scale
-                )
-
-            logits = model(h1, h2, k1k2)
-            loss = criterion(logits, y)
-
-            optim.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optim.step()
-
-            epoch_loss_sum += float(loss.item()) * n
-            global_step += 1
-            pbar.set_postfix(loss=f"{float(loss.item()):.4f}")
-
-        train_loss = epoch_loss_sum / max(1, n_seen)
-        train_losses.append(train_loss)
-        log(f"[epoch {epoch}] train_loss={train_loss:.6f} | time={time.time() - t0:.1f}s")
-
-        metrics = evaluate(model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid)
-        valid_losses.append(metrics["loss"])
-        valid_aucs.append(metrics["auc"])
-        log(
-            f"[epoch {epoch}] valid_loss={metrics['loss']:.6f}  valid_auc={metrics['auc']:.4f}  valid_ap={metrics['ap']:.4f}"
-        )
-
-        rows.append(
-            _sanitize_for_parquet(
-                {
-                    **base_row,
-                    "epoch": epoch,
-                    "train_loss": float(train_loss),
-                    "valid_loss": float(metrics["loss"]),
-                    "valid_auc": float(metrics["auc"]),
-                    "valid_ap": float(metrics["ap"]),
-                    "global_step": int(global_step),
-                }
-            )
-        )
-
-        if metrics["auc"] > best_auc:
-            best_auc = metrics["auc"]
-            torch.save(model.state_dict(), models_dir / "best.pt")
-            log(f"[epoch {epoch}] saved best.pt (auc={best_auc:.4f})")
-
-    df = pd.DataFrame(rows)
-    parquet_path = evals_dir / "metrics.parquet"
-    if parquet_path.exists():
-        try:
-            old = pd.read_parquet(parquet_path)
-            df = pd.concat([old, df], ignore_index=True)
-        except Exception as e:
-            log(f"Warning: failed to read/append existing parquet ({e}); writing fresh file.")
-    df.to_parquet(parquet_path, index=False)
-    log(f"Saved parquet → {parquet_path}")
-
-    plt.figure()
-    plt.plot(train_losses, label="train")
-    plt.plot(valid_losses, label="valid")
-    plt.title("BCE loss")
-    plt.xlabel("epoch")
-    plt.ylabel("loss")
-    plt.legend()
-    plt.savefig(artefacts_dir / "loss.png")
-    plt.close()
-
-    plt.figure()
-    plt.plot(valid_aucs)
-    plt.title("Valid ROC-AUC")
-    plt.xlabel("epoch")
-    plt.ylabel("AUC")
-    plt.savefig(artefacts_dir / "auc.png")
-    plt.close()
-
+    log("Training finished.")
 
 # ---------------------------------------------------------------------
 # Orchestration
@@ -590,13 +526,14 @@ def run_experiment(cfg: Config):
     torch.manual_seed(cfg.seed)
     train(
         train_pairs=train_small,
-        valid_pairs=valid_small,
+        valid_pairs=train_small,
         encoder=hypernet,
         models_dir=models_dir,
         evals_dir=evals_dir,
         artefacts_dir=artefacts_dir,
         cfg=cfg,
     )
+
 
 
 if __name__ == "__main__":

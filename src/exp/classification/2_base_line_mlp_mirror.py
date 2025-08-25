@@ -22,9 +22,9 @@ from pprint import pprint
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
-import torch.nn as nn
 from pytorch_lightning import seed_everything
 from sklearn.metrics import average_precision_score, roc_auc_score
+from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from torch_geometric.data import Batch, Data
 from tqdm.auto import tqdm
@@ -82,28 +82,28 @@ def setup_exp() -> dict:
 # ---------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------
-class LogisticPairBaseline(nn.Module):
-    def __init__(self, dim: int = 7744, use_cosine: bool = True):
+# MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
+class MirrorMLP(nn.Module):
+    def __init__(self, hv_dim: int, hidden_dims: list[int], *, use_layernorm: bool = True):
         super().__init__()
-        self.dim = dim
-        self.use_cosine = use_cosine
-        extra = 6 if use_cosine else 5  # [n1, n2, dot, (cos), k1, k2]
-        self.linear = nn.Linear(2 * dim + extra, 1)
+        self.use_layernorm = use_layernorm
+        in_dim = 4 * hv_dim + 1  # h1,h2,|h1-h2|,h1⊙h2, + cosine scalar
+        layers: list[nn.Module] = []
+        last = in_dim
+        if use_layernorm:
+            layers.append(nn.LayerNorm(in_dim))
+        for h in hidden_dims:
+            layers += [nn.Linear(last, h), nn.GELU()]
+            last = h
+        layers += [nn.Linear(last, 1)]
+        self.net = nn.Sequential(*layers)
 
-    def forward(self, h1, h2, k1k2):  # h1,h2: [B,D], k1k2: [B,2]
-        d = torch.abs(h1 - h2)
-        m = h1 * h2
-        n1 = torch.linalg.vector_norm(h1, dim=-1, keepdim=True)
-        n2 = torch.linalg.vector_norm(h2, dim=-1, keepdim=True)
-        dot = (h1 * h2).sum(dim=-1, keepdim=True)
-        if self.use_cosine:
-            cos = dot / (n1 * n2 + 1e-8)
-            scalars = torch.cat([n1, n2, dot, cos, k1k2.float()], dim=-1)
-        else:
-            scalars = torch.cat([n1, n2, dot, k1k2.float()], dim=-1)
-        z = torch.cat([d, m, scalars], dim=-1)
-        return self.linear(z).squeeze(-1)  # logits
-
+    def forward(self, h1, h2):
+        diff = torch.abs(h1 - h2)
+        had  = h1 * h2
+        cos  = torch.nn.functional.cosine_similarity(h1, h2, dim=-1, eps=1e-8).unsqueeze(-1)
+        x = torch.cat([h1, h2, diff, had, cos], dim=-1)
+        return self.net(x).squeeze(-1)
 
 # ---------------------------------------------------------------------
 # Dataset wrapper that returns graphs (we encode in the training loop)
@@ -123,21 +123,18 @@ class PairsGraphsDataset(Dataset):
         item = self.ds[idx]
         g1 = Data(x=item.x1, edge_index=item.edge_index1)
         g2 = Data(x=item.x2, edge_index=item.edge_index2)
-        k1 = g1.x.size(0)
-        k2 = g2.x.size(0)
         y = float(item.y.view(-1)[0].item())
         parent_idx = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
-        return g1, g2, torch.tensor([k1, k2], dtype=torch.float32), torch.tensor(y, dtype=torch.float32), parent_idx
+        return g1, g2, torch.tensor(y, dtype=torch.float32), parent_idx
 
 
-def collate_pairs(batch):  # <<< CHANGED: collate returns PyG Batch (not lists)
-    g1_list, g2_list, k1k2, y, parent_idx = zip(*batch)
+def collate_pairs(batch):
+    g1_list, g2_list, y, parent_idx = zip(*batch, strict=False)
     g1_b = Batch.from_data_list(list(g1_list))
     g2_b = Batch.from_data_list(list(g2_list))
-    return g1_b, g2_b, torch.stack(k1k2, 0), torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
+    return g1_b, g2_b, torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
 
 
-6from collections import OrderedDict
 
 
 class ParentH2Cache:
@@ -171,9 +168,7 @@ def encode_g2_with_cache(
     parent_ids: torch.Tensor,  # shape [B], Long
     device: torch.device,
     cache: ParentH2Cache,
-    hv_dim: int,
     micro_bs: int,
-    hv_scale: float | None,
 ) -> torch.Tensor:
     """
     Returns h2 for the whole batch [B, D], encoding each parent only once.
@@ -206,10 +201,6 @@ def encode_g2_with_cache(
         for j in range(0, len(uniq_graphs), micro_bs):
             chunk = Batch.from_data_list(uniq_graphs[j : j + micro_bs]).to(device)
             out = encoder.forward(chunk)["graph_embedding"]  # [b, D] on device
-            # scale if needed
-            scale = hv_scale if hv_scale is not None else (1.0 / math.sqrt(hv_dim))
-            if scale != 1.0:
-                out = out * scale
             encoded.append(out.to("cpu"))
             del chunk
             if device.type == "cuda":
@@ -217,7 +208,7 @@ def encode_g2_with_cache(
         encoded = torch.cat(encoded, dim=0)  # [U, D]
 
         # fill cache
-        for pid, vec in zip(uniq_pids, encoded):
+        for pid, vec in zip(uniq_pids, encoded, strict=False):
             cache.set(pid, vec)
 
     # 3) assemble batch h2 by gathering from cache (then move to device)
@@ -232,8 +223,6 @@ def _encode_batch(
     *,
     device: torch.device,
     micro_bs: int,
-    hv_dim: int,
-    hv_scale: float | None,
 ) -> torch.Tensor:
     """
     Encode a big PyG Batch in micro-chunks to avoid OOM.
@@ -252,11 +241,6 @@ def _encode_batch(
         del chunk
         torch.cuda.empty_cache() if device.type == "cuda" else None
     H = torch.cat(outs, dim=0)  # [B, D]
-
-    # >>> CHANGED: numerics — scale by 1/sqrt(D) unless overridden
-    scale = hv_scale if hv_scale is not None else (1.0 / math.sqrt(hv_dim))
-    if scale != 1.0:
-        H = H * scale
     return H
 
 
@@ -272,6 +256,8 @@ class Config:
     batch_size: int = 256
     train_parents: int = 2000
     valid_parents: int = 500
+
+    hidden_dims: list[int] = (4096, 2048, 512, 128)
 
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
@@ -312,6 +298,12 @@ def get_args() -> Config:
     parser.add_argument("--pin_memory", action="store_true", default=False)
     parser.add_argument("--micro_bs", type=int, default=64)
     parser.add_argument("--hv_scale", type=float, default=None)
+    # Add hidden_dims as a comma-separated list
+    parser.add_argument(
+        "--hidden_dims", type=lambda s: [int(item) for item in s.split(",")],
+        default="4096,2048,512,128",
+        help="Comma-separated list of hidden layer sizes, e.g., '4096,2048,512,128'"
+    )
     return Config(**vars(parser.parse_args()))
 
 
@@ -327,40 +319,43 @@ def _gpu_mem(device: torch.device) -> str:
 # Eval + Train
 # ---------------------------------------------------------------------
 @torch.no_grad()
-def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache):
+def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool=False):
     model.eval()
     encoder.eval()
-    ys, ps = [], []
+    ys, ps, ls = [], [], []  # labels, probs, logits
     total_loss, total_n = 0.0, 0
 
-    for g1_b, g2_b, k1k2, y, parent_ids in loader:
-        # NOTE: keep batches on CPU; _encode_batch moves micro-chunks to GPU
-        k1k2 = k1k2.to(device)
+    for g1_b, g2_b, y, parent_ids in loader:
         y = y.to(device)
 
+        h1 = _encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs)
+        # h2 = _encode_batch(encoder, g2_b, device=device, micro_bs=cfg.micro_bs)
+        h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, h2_cache, cfg.micro_bs)
 
-        h1 = _encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs,
-                        hv_dim=cfg.hv_dim, hv_scale=cfg.hv_scale)
-        h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device,
-                                h2_cache, cfg.hv_dim, cfg.micro_bs, cfg.hv_scale)
-
-        logits = model(h1, h2, k1k2)
+        logits = model(h1, h2)
         loss = criterion(logits, y)
 
         prob = torch.sigmoid(logits).detach().cpu()
         ys.append(y.detach().cpu())
         ps.append(prob)
+        if return_details:
+            ls.append(logits.detach().cpu())
 
         total_loss += float(loss.item()) * y.size(0)
         total_n += y.size(0)
 
     y = torch.cat(ys).numpy()
     p = torch.cat(ps).numpy()
-    return {
+    out = {
         "auc": roc_auc_score(y, p),
         "ap": average_precision_score(y, p),
         "loss": total_loss / max(1, total_n),
     }
+    if return_details:
+        out["y"] = y
+        out["p"] = p
+        out["logits"] = torch.cat(ls).numpy()
+    return out
 
 
 def make_loader(ds, batch_size, shuffle, cfg, collate_fn):
@@ -403,6 +398,10 @@ def train(
     artefacts_dir: Path,
     cfg: Config,
 ):
+    import json
+
+    from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
+
     log("In Training ... ")
     log("Setting up datasets …")
     train_ds = PairsGraphsDataset(train_pairs)
@@ -410,16 +409,18 @@ def train(
     log(f"Datasets ready. train_size={len(train_ds):,} valid_size={len(valid_ds):,}")
 
     log("Setting up dataloaders …")
-    train_loader = make_loader(train_ds, cfg.batch_size, True, cfg, collate_pairs)  # <<< use Batch collate
-    valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)  # <<< use Batch collate
+    train_loader = make_loader(train_ds, cfg.batch_size, True, cfg, collate_pairs)
+    valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)
     log("In Training ... Data loaders ready.")
 
     device = torch.device(cfg.device)
     encoder = encoder.to(device).eval()
-    model = LogisticPairBaseline(dim=cfg.hv_dim).to(device)
 
+    # ----- model + optim -----
+    model = MirrorMLP(hv_dim=cfg.hv_dim, hidden_dims=cfg.hidden_dims).to(device)
     criterion = nn.BCEWithLogitsLoss()
     optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
     log(f"Model on: {next(model.parameters()).device}")
 
@@ -429,6 +430,11 @@ def train(
             "train_size": len(train_pairs),
             "valid_size": len(valid_pairs),
             "model_params": sum(p.numel() for p in model.parameters()),
+            "type": "MLPClassifier",
+            "hidden_dims": cfg.hidden_dims,
+            "activation": "GELU",
+            "dropout": 0.0,
+            "normalization": "None",
         }
     )
 
@@ -438,6 +444,9 @@ def train(
     g2_cache_train = ParentH2Cache(max_items=cfg.train_parents + 1000)
     g2_cache_valid = ParentH2Cache(max_items=cfg.valid_parents + 1000)
 
+    # Save the run config for provenance
+    (evals_dir / "run_config.json").write_text(json.dumps(base_row, indent=2))
+
     log(f"Starting training on {device} {_gpu_mem(device)}")
     for epoch in range(1, cfg.epochs + 1):
         model.train()
@@ -445,23 +454,18 @@ def train(
         pbar = tqdm(train_loader, desc=f"train e{epoch}", dynamic_ncols=True)
         t0 = time.time()
 
-        for g1_b, g2_b, k1k2, y, parent_ids in pbar:
+        for g1_b, g2_b, y, parent_ids in pbar:
             n = y.size(0)
             n_seen += n
-
-            # keep g1_b/g2_b on CPU; only move numeric tensors now
-            k1k2 = k1k2.to(device)
             y = y.to(device)
 
+            # Precompute encodings (no grad) to keep training simple and fast
             with torch.no_grad():
-                h1 = _encode_batch(
-                    encoder, g1_b, device=device, micro_bs=cfg.micro_bs, hv_dim=cfg.hv_dim, hv_scale=cfg.hv_scale
-                )
-                h2 = encode_g2_with_cache(
-                    encoder, g2_b, parent_ids, device, g2_cache_train, cfg.hv_dim, cfg.micro_bs, cfg.hv_scale
-                )
+                h1 = _encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs)
+                # h2 = _encode_batch(encoder, g2_b, device=device, micro_bs=cfg.micro_bs)
+                h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, g2_cache_train, cfg.micro_bs)
 
-            logits = model(h1, h2, k1k2)
+            logits = model(h1, h2)
             loss = criterion(logits, y)
 
             optim.zero_grad(set_to_none=True)
@@ -503,6 +507,11 @@ def train(
             torch.save(model.state_dict(), models_dir / "best.pt")
             log(f"[epoch {epoch}] saved best.pt (auc={best_auc:.4f})")
 
+    # Always save a final checkpoint
+    torch.save(model.state_dict(), models_dir / "last.pt")
+    log("Saved last.pt")
+
+    # ---- persist metrics history ----
     df = pd.DataFrame(rows)
     parquet_path = evals_dir / "metrics.parquet"
     if parquet_path.exists():
@@ -514,6 +523,7 @@ def train(
     df.to_parquet(parquet_path, index=False)
     log(f"Saved parquet → {parquet_path}")
 
+    # ---- training curves ----
     plt.figure()
     plt.plot(train_losses, label="train")
     plt.plot(valid_losses, label="valid")
@@ -532,6 +542,95 @@ def train(
     plt.savefig(artefacts_dir / "auc.png")
     plt.close()
 
+    # ---- detailed final eval on valid (for analysis artefacts) ----
+    details = evaluate(model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid, return_details=True)
+    y = details["y"]
+    p = details["p"]
+    logits = details["logits"]
+
+    # Save per-sample predictions for offline slicing
+    valid_preds = pd.DataFrame(
+        {
+            "y": y.astype(int),
+            "p": p.astype(float),
+            "logit": logits.astype(float),
+            # parent_ids — gather by re-running a light pass to collect ids only
+        }
+    )
+    # Collect parent_ids aligned with valid_loader order
+    pid_list = []
+    for _, _, _, parent_ids in valid_loader:
+        pid_list.extend(parent_ids.tolist())
+    valid_preds["parent_id"] = pid_list[: len(valid_preds)]
+    valid_preds.to_parquet(evals_dir / "valid_predictions.parquet", index=False)
+
+    # ROC curve
+    fpr, tpr, _ = roc_curve(y, p)
+    plt.figure()
+    plt.plot(fpr, tpr)
+    plt.plot([0, 1], [0, 1], linestyle="--")
+    plt.title(f"ROC (AUC={details['auc']:.4f})")
+    plt.xlabel("FPR")
+    plt.ylabel("TPR")
+    plt.savefig(artefacts_dir / "roc.png")
+    plt.close()
+
+    # PR curve
+    prec, rec, _ = precision_recall_curve(y, p)
+    plt.figure()
+    plt.plot(rec, prec)
+    plt.title(f"PR (AP={details['ap']:.4f})")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.savefig(artefacts_dir / "pr.png")
+    plt.close()
+
+    # Probability histogram
+    plt.figure()
+    plt.hist(p, bins=50)
+    plt.title("Validation probability histogram")
+    plt.xlabel("P(y=1)")
+    plt.ylabel("count")
+    plt.savefig(artefacts_dir / "prob_hist.png")
+    plt.close()
+
+    # Logit hist by class
+    plt.figure()
+    plt.hist(logits[y == 1], bins=50, alpha=0.6, label="pos")
+    plt.hist(logits[y == 0], bins=50, alpha=0.6, label="neg")
+    plt.title("Validation logit histogram")
+    plt.xlabel("logit")
+    plt.ylabel("count")
+    plt.legend()
+    plt.savefig(artefacts_dir / "logit_hist.png")
+    plt.close()
+
+    # Confusion matrix at 0.5
+    y_hat = (p >= 60.5).astype(int)
+    cm = confusion_matrix(y, y_hat, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    cm_txt = (
+        f"Confusion Matrix @0.5\n"
+        f"TN={tn}  FP={fp}\n"
+        f"FN={fn}  TP={tp}\n"
+        f"Accuracy={(tp+tn)/max(1,len(y)):.4f}  "
+        f"Precision={tp/max(1,tp+fp):.4f}  "
+        f"Recall={tp/max(1,tp+fn):.4f}\n"
+    )
+    (artefacts_dir / "confusion_matrix.txt").write_text(cm_txt)
+    log(cm_txt)
+
+    # Top confident errors (for quick inspection)
+    err_mask = (y_hat != y)
+    if err_mask.any():
+        errs = valid_preds[err_mask]
+        # confidence = distance from 0.5
+        errs = errs.assign(confidence=(errs["p"] - 0.5).abs())
+        errs = errs.sort_values("confidence", ascending=False).head(200)
+        errs.to_csv(artefacts_dir / "top_confident_errors.csv", index=False)
+        log(f"Saved top_confident_errors.csv ({len(errs)} rows)")
+
+    log("Training finished.")
 
 # ---------------------------------------------------------------------
 # Orchestration
