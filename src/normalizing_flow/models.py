@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import normflows as nf
 import numpy as np
 import pytorch_lightning as pl
@@ -9,107 +7,50 @@ from torch import Tensor
 from src.normalizing_flow.config import FlowConfig
 
 
+import torch
+import pytorch_lightning as pl
+from dataclasses import asdict
+
 class AbstractNFModel(pl.LightningModule):
-    def __init__(self, cfg: FlowConfig):
+    def __init__(self, cfg):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["cfg"])
         self.cfg = cfg
-        self.flow = None  # Must be initialized in subclass
+        self.flow = None  # child must build a flow
 
-    def forward(self, x: Tensor, context: Tensor = None) -> Tensor:
-        batch = x.shape[0]
-        flat = x.view(batch, -1)
-        return self.flow.forward(flat, context) if context is not None else self.flow.forward(flat)
+    # Child classes will override training_step / validation_step to accept PyG Batch.
+    # These helpers operate on *flat* tensors already computed by the child.
 
-    def forward_kld(self, x: Tensor) -> Tensor:
-        batch = x.shape[0]
-        flat = x.view(batch, -1)
-        return self.flow.forward_kld(flat)
+    def nf_forward(self, flat):
+        # log q(x), z = f(x), etc. (normflows interface returns log prob with signs)
+        return self.flow.forward(flat)
 
-    def sample(self, num_samples: int) -> Tensor:
+    def nf_forward_kld(self, flat):
+        return self.flow.forward_kld(flat)  # returns per-sample KL, normflows API
+
+    def sample(self, num_samples: int):
         z, logs = self.flow.sample(num_samples)
-        if self.cfg.input_shape is not None:
-            return z.view(num_samples, *self.cfg.input_shape), logs
         return z, logs
 
-    def training_step(self, batch, batch_idx):
-        loss = self.forward_kld(batch).mean()
-        if torch.isfinite(loss):
-            # We log the scalar, otherwise the if the loss is subclass of Tensor (i.e. HRRTensor) the deepcopy fails
-            loss_scalar = loss.item()
-            self.log("train_loss", loss_scalar, on_step=True, on_epoch=True, prog_bar=True)
-            return loss
-        print(f"Skipping NaN/Inf loss at step {batch_idx}")
-        return None
-
-    def validation_step(self, batch, batch_idx):
-        loss = self.forward_kld(batch).mean()
-        loss_scalar = loss.item()
-        self.log("val_loss", loss_scalar, on_epoch=True, prog_bar=True)
-        return loss
-
     def configure_optimizers(self):
+        import torch
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
-    def on_train_epoch_start(self):
-        optimizer = self.optimizers()
-        lr = optimizer.param_groups[0]["lr"]
-        self.log("lr", float(lr), on_epoch=True, prog_bar=True)
-
     @classmethod
-    def load_from_path(cls, path: str) -> 'AbstractNFModel':
-        checkpoint = torch.load(path, map_location="cpu")
-        cfg = FlowConfig(**checkpoint["hyper_parameters"]["cg"])
-        model = cls(cfg)
-        model.load_state_dict(checkpoint["state_dict"])
+    def load_from_path(cls, path: str):
+        ckpt = torch.load(path, map_location="cpu")
+        cfg_dict = ckpt.get("hyper_parameters", {}).get("cfg", {})
+        model = cls(type("X", (), cfg_dict))  # minimal duck-typed cfg if needed
+        model.load_state_dict(ckpt["state_dict"])
         return model
 
     def save_to_path(self, path: str):
-        """
-        Save the model state and hyperparameters to file.
-        """
         ckpt = {
             "state_dict": self.state_dict(),
-            "hyper_parameters": {"cfg": self.cfg.__dict__()}
+            "hyper_parameters": {"cfg": asdict(self.cfg) if hasattr(self.cfg, "__dataclass_fields__") else dict(self.cfg.__dict__)},
         }
         torch.save(ckpt, path)
 
-
-class RealNVPLightning(AbstractNFModel):
-    def __init__(self, cfg: FlowConfig):
-        super().__init__(cfg)
-
-
-        # flatten dimensionality
-        latent_dim = int(np.prod(cfg.input_shape))
-
-        # build alternating mask [1,0,1,0,...] and register as buffer
-        mask = torch.tensor(
-            [1 if i % 2 == 0 else 0 for i in range(latent_dim)],
-            dtype=torch.float32
-        )
-        self.register_buffer("mask", mask)
-
-        flows = []
-        for _ in range(cfg.num_flows):
-            # 2 hidden layers: [latent_dim → hidden → hidden → latent_dim]
-            mlp_layers = [latent_dim,
-                          cfg.num_hidden_channels,
-                          cfg.num_hidden_channels,
-                          latent_dim]
-
-            t_net = nf.nets.MLP(mlp_layers, init_zeros=True)
-            s_net = nf.nets.MLP(mlp_layers, init_zeros=True)
-
-            flows.append(
-                nf.flows.MaskedAffineFlow(self.mask, t=t_net, s=s_net)
-            )
-            flows.append(
-                nf.flows.Permute(latent_dim, mode="swap")
-            )
-
-        base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
-        self.flow = nf.NormalizingFlow(q0=base, flows=flows)
 
 
 class NeuralSplineLightning(AbstractNFModel):
