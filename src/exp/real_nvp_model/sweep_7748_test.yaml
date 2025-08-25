@@ -1,4 +1,4 @@
-program: 02_real_nvp.py
+program: 2_real_nvp_test.py
 method: bayes
 metric:
   name: val_loss
@@ -9,7 +9,7 @@ parameters:
   lr:
     min: 0.00005
     max: 0.005
-    distribution: log_uniform
+    distribution: log_uniform_values
   weight_decay:
     values: [0.0, 1e-5]
   batch_size:
@@ -17,10 +17,10 @@ parameters:
   seed:
     values: [42]
   num_flows:
-    values: [5, 8, 12, 16]
+    values: [5, 8]
   num_hidden_channels:
-    values: [64, 128, 256, 512]
+    values: [64, 128]
   epochs:
-    values: [1] # Raise
+    values: [30] # Raise
   hv_dim:
     values: [7744]

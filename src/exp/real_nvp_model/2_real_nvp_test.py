@@ -16,6 +16,7 @@ import normflows as nf
 import numpy as np
 import pandas as pd
 import torch
+from torchhd import HRRTensor
 import wandb
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
@@ -41,6 +42,9 @@ def log(msg: str) -> None:
 
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
+## Later we use "high" for now medium is good compromise
+torch.set_float32_matmul_precision("high")  # great speed boost on H100
 
 
 def setup_exp() -> dict:
@@ -104,85 +108,111 @@ def get_flow_cli_args() -> FlowConfig:
     parser.add_argument("--hv_dim", "-hd", type=int, required=True)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", "-wd", type=float, default=0.0)
-    parser.add_argument("--device", "-dev", type=str, choices=["cpu", "cuda"],
-                        default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", "-dev", type=str, choices=["cpu", "cuda"], default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     return FlowConfig(**vars(parser.parse_args()))
 
 
+class BoundedMLP(torch.nn.Module):
+    def __init__(self, dims, smax=5.0):
+        super().__init__()
+        self.net = nf.nets.MLP(dims, init_zeros=True)  # keeps identity at start
+        self.smax = float(smax)
+        self.last_pre = None  # for logging
+
+    def forward(self, x):
+        pre = self.net(x)
+        self.last_pre = pre
+        return torch.tanh(pre) * self.smax  # bound log-scale in [-smax, smax]
+
 class RealNVPLightning(AbstractNFModel):
-    """
-    Exact RealNVP on flat = concat([node_terms, graph_terms]) ∈ R^(2*D).
-    No projections, no pooling. Fully invertible in the original space.
-
-    Masks: alternating 0101... with random permutations inserted between blocks.
-    Base: standard diagonal Gaussian.
-    """
-
     def __init__(self, cfg):
         super().__init__(cfg)
         D = int(cfg.hv_dim)
         self.D = D
-        self.flat_dim = 2 * D  # node_terms (D) + graph_terms (D)
+        self.flat_dim = 2 * D
 
-        # --- Build RealNVP stack ---
-        # Start with a simple alternating mask
-        mask = torch.arange(self.flat_dim) % 2  # 0,1,0,1,...
-        mask = mask.to(torch.float32)
+        mask = (torch.arange(self.flat_dim) % 2).to(torch.float32)
         self.register_buffer("mask0", mask)
 
+        self.s_modules = []  # keep handles for warmup/logging
         flows = []
-        for k in range(int(cfg.num_flows)):
-            # Subnets for shift (t) and log-scale (s)
-            # Keep them small; params blow up fast with 15,488 dims.
-            hidden = int(cfg.num_hidden_channels)
+        hidden = int(cfg.num_hidden_channels)
+        for _ in range(int(cfg.num_flows)):
             layers = [self.flat_dim, hidden, hidden, self.flat_dim]
-
-            t_net = nf.nets.MLP(layers, init_zeros=True)  # identity at start
-            s_net = nf.nets.MLP(layers, init_zeros=True)
+            t_net = nf.nets.MLP(layers, init_zeros=True)
+            s_net = BoundedMLP(layers, smax=getattr(cfg, "smax_final", 5.0))
+            self.s_modules.append(s_net)
 
             flows.append(nf.flows.MaskedAffineFlow(self.mask0, t=t_net, s=s_net))
-
-            # Permute to change which dims are updated next block
             flows.append(nf.flows.Permute(self.flat_dim, mode="shuffle"))
 
         base = nf.distributions.DiagGaussian(self.flat_dim, trainable=False)
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
 
+    def on_fit_start(self):
+        # H100 tip: get tensor cores w/o AMP
+        try:
+            import torch
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+
+    def on_train_epoch_start(self):
+        # log-det warmup for stability: ramp smax from small → final
+        warm = int(getattr(self.cfg, "smax_warmup_epochs", 5))
+        s0 = float(getattr(self.cfg, "smax_initial", 1.0))
+        s1 = float(getattr(self.cfg, "smax_final", 5.0))
+        if warm > 0:
+            t = min(1.0, self.current_epoch / max(1, warm))
+            smax = (1 - t) * s0 + t * s1
+            for m in self.s_modules:
+                m.smax = smax
+
     # Lightning will move the PyG Batch; just ensure we return batch on device
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         return batch.to(device)
 
-    # ---- flattener: exact concatenation, no projections/pooling
     def _flat_from_batch(self, batch) -> torch.Tensor:
-        """
-        Expects:
-          batch.node_terms: [B, D]
-          batch.graph_terms: [B, D]
-        Returns:
-          flat: [B, 2D]
-        """
-        assert hasattr(batch, "node_terms") and hasattr(batch, "graph_terms"), \
-            "Exact RealNVP needs node_terms and graph_terms per-graph, each shape [B, D]."
-        n = batch.node_terms
-        g = batch.graph_terms
-        assert n.dim() == 2 and g.dim() == 2, f"Expected 2D tensors; got {n.shape=} and {g.shape=}."
-        assert n.shape == g.shape and n.shape[1] == self.D, \
-            f"Expected both [B,{self.D}]; got {n.shape} and {g.shape}."
-        return torch.cat([n, g], dim=-1)  # [B, 2D]
+        D = self.D
+        B = batch.num_graphs
+        n, g = batch.node_terms, batch.graph_terms
+        if n.dim() == 1: n = n.view(B, D)
+        if g.dim() == 1: g = g.view(B, D)
+        return torch.cat([n, g], dim=-1)
 
-    # ---- standard Lightning steps
     def training_step(self, batch, batch_idx):
         flat = self._flat_from_batch(batch)
-        # normflows.forward_kld returns per-sample objective
-        loss = self.nf_forward_kld(flat).mean()
-        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        obj = self.nf_forward_kld(flat)                 # [B]
+        # keep only finite samples (safety)
+        obj = obj[torch.isfinite(obj)]
+        if obj.numel() == 0:
+            # log a plain float
+            self.log("nan_loss_batches", 1.0, on_step=True, prog_bar=True, batch_size=flat.size(0))
+            return None
+
+        loss = obj.mean()
+        # *** log pure Python float and pass batch_size ***
+        self.log("train_loss", float(loss.detach().cpu().item()),
+                on_step=True, on_epoch=True, prog_bar=True, batch_size=flat.size(0))
+
+        # optional: monitor scale pre-activation magnitude (float)
+        with torch.no_grad():
+            s_absmax = 0.0
+            for m in getattr(self, "s_modules", []):
+                if getattr(m, "last_pre", None) is not None and torch.isfinite(m.last_pre).any():
+                    s_absmax = max(s_absmax, float(m.last_pre.detach().abs().max().cpu().item()))
+        self.log("s_pre_absmax", s_absmax, on_step=True, prog_bar=True, batch_size=flat.size(0))
         return loss
 
     def validation_step(self, batch, batch_idx):
         flat = self._flat_from_batch(batch)
-        loss = self.nf_forward_kld(flat).mean()
-        self.log("val_loss", loss, prog_bar=True, on_epoch=True)
-        return loss
+        obj = self.nf_forward_kld(flat)
+        obj = obj[torch.isfinite(obj)]
+        val = float("nan") if obj.numel() == 0 else float(obj.mean().detach().cpu().item())
+        self.log("val_loss", val, on_epoch=True, prog_bar=True, batch_size=flat.size(0))
+        return torch.tensor(val, device=flat.device) if val == val else None  # return NaN-safe
 
     # ---- helpers for sampling/inspection
     @torch.no_grad()
@@ -194,14 +224,15 @@ class RealNVPLightning(AbstractNFModel):
           logs
         """
         z, _logs = self.sample(num_samples)  # [num_samples, 2D]
-        node_terms = z[:, :self.D].contiguous()
-        graph_terms = z[:, self.D:].contiguous()
+        node_terms = z[:, : self.D].contiguous()
+        graph_terms = z[:, self.D :].contiguous()
         return node_terms, graph_terms, _logs
 
 
 # ---------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------
+
 
 def plot_train_val_loss(df, artefacts_dir):
     train = df[df["train_loss_epoch"].notna()]
@@ -240,35 +271,46 @@ class TimeLoggingCallback(Callback):
         trainer.logger.log_metrics({"elapsed_time_sec": elapsed}, step=trainer.current_epoch)
 
 
-def _evaluate_loader_nll(model: RealNVPLightning, loader: DataLoader, device: torch.device) -> np.ndarray:
+def _evaluate_loader_nll(model, loader, device):
     model.eval()
     outs = []
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
             flat = model._flat_from_batch(batch)
-            kld = model.nf_forward_kld(flat)  # [B]
-            outs.append(kld.detach().cpu())
-    return torch.cat(outs).numpy()
+            kld = model.nf_forward_kld(flat)     # [B] ideally
+            if torch.is_tensor(kld):
+                if kld.ndim == 0:                # library gave scalar
+                    kld = kld.expand(flat.size(0))
+                kld = kld[torch.isfinite(kld)]
+                if kld.numel():
+                    outs.append(kld.detach().cpu())
+    return torch.cat(outs).numpy() if outs else np.empty((0,), dtype=np.float32)
 
 
 def _hist(figpath: Path, data: np.ndarray, title: str, xlabel: str, bins: int = 80):
+    arr = np.asarray(data).ravel()
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        log(f"Skip hist {figpath.name}: empty/non-finite data")
+        return
+    vmin, vmax = float(arr.min()), float(arr.max())
+    if np.isclose(vmin, vmax):
+        span = 1.0 if vmin == 0.0 else 0.05 * abs(vmin)
+        vmin, vmax, bins = vmin - span, vmax + span, 1
     plt.figure(figsize=(6, 4))
-    plt.hist(data, bins=bins)
-    plt.title(title)
-    plt.xlabel(xlabel);
-    plt.ylabel("count");
-    plt.tight_layout()
-    plt.savefig(figpath);
-    plt.close()
+    plt.hist(arr, bins=bins, range=(vmin, vmax))
+    plt.title(title); plt.xlabel(xlabel); plt.ylabel("count"); plt.tight_layout()
+    plt.savefig(figpath); plt.close()
 
 
 def _pairwise_cosine(x: np.ndarray, m: int = 2000) -> np.ndarray:
     # sample up to m pairs
     n = x.shape[0]
-    if n < 2: return np.array([])
+    if n < 2:
+        return np.array([])
     idx = np.random.choice(n, size=(min(m, n - 1), 2), replace=True)
-    a = x[idx[:, 0]];
+    a = x[idx[:, 0]]
     b = x[idx[:, 1]]
     an = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-8)
     bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-8)
@@ -293,44 +335,52 @@ def run_experiment(cfg: FlowConfig):
         vsa=cfg.vsa,
         hv_dim=cfg.hv_dim,
         device=cfg.device,
-        node_feature_configs=OrderedDict([
-            (Features.ATOM_TYPE, FeatureConfig(
-                count=prod(zinc_feature_bins),
-                encoder_cls=CombinatoricIntegerEncoder,
-                index_range=IndexRange((0, 4)),
-                bins=zinc_feature_bins,
-            )),
-        ]),
+        node_feature_configs=OrderedDict(
+            [
+                (
+                    Features.ATOM_TYPE,
+                    FeatureConfig(
+                        count=prod(zinc_feature_bins),
+                        encoder_cls=CombinatoricIntegerEncoder,
+                        index_range=IndexRange((0, 4)),
+                        bins=zinc_feature_bins,
+                    ),
+                ),
+            ]
+        ),
     )
 
     log("Loading/creating hypernet …")
-    hypernet: HyperNet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(cfg.device).eval()
+    hypernet: HyperNet = (
+        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(cfg.device).eval()
+    )
     log("Hypernet ready.")
 
     # ----- W&B -----
     run = wandb.run or wandb.init(
-        project="realnvp-test",
-        config=cfg.__dict__,
-        name=f"run_{cfg.hv_dim}_{cfg.seed}",
-        reinit=True
+        project="realnvp-test", config=cfg.__dict__, name=f"run_{cfg.hv_dim}_{cfg.seed}", reinit=True
     )
     run.tags = [f"hv_dim={cfg.hv_dim}", f"vsa={cfg.vsa.value}", "dataset=ZincSmiles"]
 
     wandb_logger = WandbLogger(log_model=True, experiment=run)
 
     # ----- datasets / loaders -----
-    train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")[:128]
-    # validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")[:]
+    train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")[:8192]
+    validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")[:512]
 
     train_dataloader = DataLoader(
-        train_dataset, batch_size=cfg.batch_size, shuffle=True,
-        num_workers=2, pin_memory=torch.cuda.is_available(), drop_last=True,
+        train_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=torch.cuda.is_available(),
+        drop_last=True,
     )
-    # validation_dataloader = DataLoader(
-    #     validation_dataset, batch_size=cfg.batch_size, shuffle=False,
-    #     num_workers=2, pin_memory=torch.cuda.is_available(), drop_last=False,
-    # )
-    # log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
+    validation_dataloader = DataLoader(
+        validation_dataset, batch_size=cfg.batch_size, shuffle=False,
+        num_workers=2, pin_memory=torch.cuda.is_available(), drop_last=False,
+    )
+    log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # ----- model / trainer -----
     model = RealNVPLightning(cfg)
@@ -354,13 +404,14 @@ def run_experiment(cfg: FlowConfig):
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
-        log_every_n_steps=10,
+        gradient_clip_val=1.0,
+        log_every_n_steps=1,
         enable_progress_bar=True,
         detect_anomaly=False,
     )
 
     # ----- train -----
-    trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=train_dataloader)
+    trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader)
 
     # ----- curves to parquet / png -----
     metrics_path = Path(csv_logger.log_dir) / "metrics.csv"
@@ -375,46 +426,60 @@ def run_experiment(cfg: FlowConfig):
             plt.plot(train["epoch"], train["train_loss_epoch"], label="Train")
         if not val.empty:
             plt.plot(val["epoch"], val["val_loss"], label="Val")
-        plt.xlabel("Epoch");
-        plt.ylabel("Loss");
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
         plt.title("Loss")
-        plt.legend();
+        plt.legend()
         plt.tight_layout()
-        plt.savefig(artefacts_dir / "train_val_loss.png");
+        plt.savefig(artefacts_dir / "train_val_loss.png")
         plt.close()
 
     # =================================================================
     # Post-training analysis: load best, evaluate NLL, sample & log
     # =================================================================
-    best_path = checkpoint_callback.best_model_path or checkpoint_callback.last_model_path
-    assert best_path and Path(best_path).exists(), "No checkpoint saved."
-    log(f"Loading best checkpoint: {best_path}")
+    best_path = checkpoint_callback.best_model_path
+    if (not best_path) or ("nan" in Path(best_path).name) or (not Path(best_path).exists()):
+        best_path = checkpoint_callback.last_model_path
 
-    # Lightning checkpoints include state_dict; instantiate with cfg and load
+    if not best_path or not Path(best_path).exists():
+        log("No checkpoint found (best/last). Skipping post-training analysis.")
+        return
+
+    log(f"Loading best checkpoint: {best_path}")
     best_model = RealNVPLightning(cfg)
-    state = torch.load(best_path, map_location="cpu")
+    state = torch.load(best_path, map_location="cpu", weights_only=False)
     best_model.load_state_dict(state["state_dict"])
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     best_model.to(device).eval()
 
     # ---- per-sample NLL (really the KL objective) on validation ----
-    val_nll = _evaluate_loader_nll(best_model, train_dataloader, device)
-    pd.DataFrame({"nll": val_nll}).to_parquet(evals_dir / "val_nll.parquet", index=False)
-    _hist(artefacts_dir / "val_nll_hist.png", val_nll, "Validation NLL", "NLL")
-    wandb.log({
-        "val_nll_mean": float(np.mean(val_nll)),
-        "val_nll_std": float(np.std(val_nll)),
-        "val_nll_min": float(np.min(val_nll)),
-        "val_nll_max": float(np.max(val_nll)),
-        "val_nll_hist": wandb.Histogram(val_nll),
-    })
+    val_nll = _evaluate_loader_nll(best_model, validation_dataloader, device)
+    if val_nll.size:
+        pd.DataFrame({"nll": val_nll}).to_parquet(evals_dir / "val_nll.parquet", index=False)
+        _hist(artefacts_dir / "val_nll_hist.png", val_nll, "Validation NLL", "NLL")
+        wandb.log(
+            {
+                "val_nll_mean": float(np.mean(val_nll)),
+                "val_nll_std": float(np.std(val_nll)),
+                "val_nll_min": float(np.min(val_nll)),
+                "val_nll_max": float(np.max(val_nll)),
+                "val_nll_hist": wandb.Histogram(val_nll),
+            }
+        )
+    else:
+        log("No finite NLL values collected; skipping NLL stats.")
 
     # ---- sample from the flow ----
     with torch.no_grad():
         node_s, graph_s, logs = best_model.sample_split(2048)  # each [K, D]
 
+    node_s = node_s.as_subclass(HRRTensor)
+    graph_s = graph_s.as_subclass(HRRTensor)
+
     node_counters = hypernet.decode_order_zero_counter(node_s)
     for i, ctr in node_counters.items():
+        if i >= 4:
+            break
         log(f"Sample {i}: total nodes: {ctr.total()}, \n{ctr}")
 
     node_np = node_s.detach().cpu().numpy()
@@ -427,7 +492,8 @@ def run_experiment(cfg: FlowConfig):
 
     def _pairwise_cosine(x: np.ndarray, m: int = 2000) -> np.ndarray:
         n = x.shape[0]
-        if n < 2: return np.array([])
+        if n < 2:
+            return np.array([])
         idx = np.random.choice(n, size=(min(m, n - 1), 2), replace=True)
         a = x[idx[:, 0]]
         b = x[idx[:, 1]]
@@ -449,26 +515,34 @@ def run_experiment(cfg: FlowConfig):
     # plots
     _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
     _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
-    if node_cos.size:  _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
-    if graph_cos.size: _hist(artefacts_dir / "sample_graph_cos_hist.png", graph_cos, "Graph pairwise cosine", "cos")
+    if node_cos.size:
+        _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    if graph_cos.size:
+        _hist(artefacts_dir / "sample_graph_cos_hist.png", graph_cos, "Graph pairwise cosine", "cos")
 
     # W&B logs
-    wandb.log({
-        "sample_node_norm_mean": float(np.mean(node_norm)),
-        "sample_node_norm_std": float(np.std(node_norm)),
-        "sample_graph_norm_mean": float(np.mean(graph_norm)),
-        "sample_graph_norm_std": float(np.std(graph_norm)),
-        "sample_node_norm_hist": wandb.Histogram(node_norm),
-        "sample_graph_norm_hist": wandb.Histogram(graph_norm),
-        "sample_node_cos_hist": wandb.Histogram(node_cos) if node_cos.size else None,
-        "sample_graph_cos_hist": wandb.Histogram(graph_cos) if graph_cos.size else None,
-    })
+    wandb.log(
+        {
+            "sample_node_norm_mean": float(np.mean(node_norm)),
+            "sample_node_norm_std": float(np.std(node_norm)),
+            "sample_graph_norm_mean": float(np.mean(graph_norm)),
+            "sample_graph_norm_std": float(np.std(graph_norm)),
+            "sample_node_norm_hist": wandb.Histogram(node_norm),
+            "sample_graph_norm_hist": wandb.Histogram(graph_norm),
+            "sample_node_cos_hist": wandb.Histogram(node_cos) if node_cos.size else None,
+            "sample_graph_cos_hist": wandb.Histogram(graph_cos) if graph_cos.size else None,
+        }
+    )
 
     # quick table
-    pd.DataFrame({
-        **{f"node_{i}": node_np[:16, i] for i in range(min(16, node_np.shape[1]))},
-        **{f"graph_{i}": graph_np[:16, i] for i in range(min(16, graph_np.shape[1]))},
-    }).to_parquet(evals_dir / "sample_head.parquet", index=False)
+    pd.DataFrame(
+        {
+            **{f"node_{i}": node_np[:16, i] for i in range(min(16, node_np.shape[1]))},
+            **{f"graph_{i}": graph_np[:16, i] for i in range(min(16, graph_np.shape[1]))},
+        }
+    ).to_parquet(evals_dir / "sample_head.parquet", index=False)
+
+    log("Experiment completed.")
 
 
 def sweep_entrypoint():

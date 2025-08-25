@@ -1,23 +1,31 @@
 #!/bin/bash
+#
+# bwUniCluster 3.0 — single-GPU dev job
+# Partitions:
+# cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
+
 ENTITY="arvand-kaveh-karlsruhe-institute-of-technology"
-PROJECT="realnvp-test"
-SWEEP_YAML="sweep_7744_test.yml"
+PROJECT="realnvp"
+SWEEP_YAML="sweep_7744.yml"
+echo ${GHDC_HOME}
 EXPERIMENTS_PATH="${GHDC_HOME}/src/exp/real_nvp_model"
 
 # 1) Create sweep once and capture its ID
 # shellcheck disable=SC2164
+# ========== W&B Setup ==========
 cd "${EXPERIMENTS_PATH}"
-SWEEP_ID=$(pixi run wandb sweep "${SWEEP_YAML}" --entity "${ENTITY}" --project "${PROJECT}" | awk '/Created sweep with ID/ {print $NF}')
+## run: pixi run wandb sweep sweep_7748.yaml --entity "arvand-kaveh-karlsruhe-institute-of-technology" --project "realnvp"
+SWEEP_ID="z9im3p4w"
 
 # 2) Submit agent
 sbatch \
-  --job-name="sweep_hdc7744_test" \
-  --partition=dev_gpu_h100 \
-  --time=00:20:00 \
+  --job-name="RealNVP" \
+  --partition=gpu_h100_il \
+  --time=24:00:00 \
   --gres=gpu:1 \
   --nodes=1 \
   --ntasks=1 \
-  --mem=16G \
+  --mem=128G \
   --wrap="module load devel/cuda/11.8 && \
     export WANDB_API_KEY=${WANDB_API_KEY} && \
     export WANDB_SWEEP=1 && \
