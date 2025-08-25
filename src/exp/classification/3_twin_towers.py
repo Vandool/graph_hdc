@@ -671,7 +671,7 @@ def train(
     plt.close()
 
     # Confusion matrix at 0.5
-    y_hat = (p >= 60.5).astype(int)
+    y_hat = (p >= 0.5).astype(int)
     cm = confusion_matrix(y, y_hat, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
     cm_txt = (
