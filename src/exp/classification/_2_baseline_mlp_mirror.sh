@@ -1,10 +1,12 @@
 #!/bin/bash
 #
 # bwUniCluster 3.0 — single-GPU dev job
+# Partitions:
+# cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
 
 #SBATCH --job-name=zinc_pairs_baseline_mlp
 #SBATCH --partition=gpu_a100_il
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -26,13 +28,13 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --epochs 7 \
-  --batch_size 128 \
+  --epochs 20 \
+  --batch_size 64 \
   --hv_dim 7744 \
   --vsa HRR \
   --lr 1e-3 \
   --weight_decay 1e-4 \
   --num_workers 0 \
-  --micro_bs 64 \
-  --train_parents 10000 \
-  --valid_parents 1000
+  --micro_bs 32 \
+  --train_parents 20000 \
+  --valid_parents 2000
