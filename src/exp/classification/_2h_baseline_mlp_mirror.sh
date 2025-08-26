@@ -5,7 +5,7 @@
 # Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
 
 #SBATCH --job-name=zinc_pairs_baseline_mlp
-#SBATCH --partition=accelerated-200
+#SBATCH --partition=accelerated
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1

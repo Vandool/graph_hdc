@@ -519,7 +519,7 @@ def train(
         pbar = tqdm(train_loader, desc=f"train e{epoch}", dynamic_ncols=True)
         t0 = time.time()
 
-        for g1_b, g2_b, y, parent_ids in pbar:
+        for batch (g1_b, g2_b, y, parent_ids) in enumerate(pbar):
             n = y.size(0)
             n_seen += n
             y = y.to(device)
@@ -541,6 +541,11 @@ def train(
             epoch_loss_sum += float(loss.item()) * n
             global_step += 1
             pbar.set_postfix(loss=f"{float(loss.item()):.4f}")
+
+            if batch % 100 == 0:
+                # Always save a final checkpoint
+                torch.save(model.state_dict(), models_dir / "last.pt")
+                log("Saved last.pt")
 
         train_loss = epoch_loss_sum / max(1, n_seen)
         train_losses.append(train_loss)
