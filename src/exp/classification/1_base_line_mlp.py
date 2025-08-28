@@ -1,7 +1,9 @@
 import contextlib
-import math
+import json
+import os
 
 import torch.multiprocessing as mp
+from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -102,7 +104,42 @@ class MLPClassifier(nn.Module):
     def forward(self, h1: torch.Tensor, h2: torch.Tensor) -> torch.Tensor:
         # h1,h2: [B, hv_dim]
         x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
-        return self.net(x).squeeze(-1)   # [B]
+        return self.net(x).squeeze(-1)  # [B]
+
+
+def cleanup_old_snapshots(models_dir: Path, keep_last_k: int):
+    snaps = sorted(models_dir.glob("autosnap_*.pt"))
+    for p in snaps[:-keep_last_k]:
+        p.unlink(missing_ok=True)
+
+
+def _atomic_save(obj, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(obj, tmp)  # blocks while copying GPU→CPU, then writes
+    os.replace(tmp, path)  # atomic rename
+
+
+def save_checkpoint(
+    tag: str, models_dir: Path, model, optim, epoch, global_step, best_auc, cfg, scheduler=None, scaler=None
+):
+    ckpt = {
+        "model": model.state_dict(),
+        "optimizer": optim.state_dict(),
+        "epoch": int(epoch),
+        "global_step": int(global_step),
+        "best_auc": float(best_auc),
+        "cfg": asdict(cfg) if hasattr(cfg, "__dataclass_fields__") else dict(cfg.__dict__),
+        "rng_state_cpu": torch.get_rng_state(),
+        "rng_state_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+    if scheduler is not None:
+        ckpt["scheduler"] = scheduler.state_dict()
+    if scaler is not None:
+        ckpt["scaler"] = scaler.state_dict()
+    path = models_dir / f"autosnap_{tag}.pt"
+    _atomic_save(ckpt, path)
+    return path
 
 # ---------------------------------------------------------------------
 # Dataset wrapper that returns graphs (we encode in the training loop)
@@ -132,8 +169,6 @@ def collate_pairs(batch):
     g1_b = Batch.from_data_list(list(g1_list))
     g2_b = Batch.from_data_list(list(g2_list))
     return g1_b, g2_b, torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
-
-
 
 
 class ParentH2Cache:
@@ -274,6 +309,10 @@ class Config:
     micro_bs: int = 64
     hv_scale: float | None = None
 
+    # Checkpointing
+    save_every_seconds: int = 1800  # every 30 minutes
+    keep_last_k: int = 2  # rolling snapshots to keep
+
 
 def get_args() -> Config:
     parser = argparse.ArgumentParser(description="Logistic baseline classifier args")
@@ -299,10 +338,13 @@ def get_args() -> Config:
     parser.add_argument("--hv_scale", type=float, default=None)
     # Add hidden_dims as a comma-separated list
     parser.add_argument(
-        "--hidden_dims", type=lambda s: [int(item) for item in s.split(",")],
+        "--hidden_dims",
+        type=lambda s: [int(item) for item in s.split(",")],
         default="4096,2048,512,128",
-        help="Comma-separated list of hidden layer sizes, e.g., '4096,2048,512,128'"
+        help="Comma-separated list of hidden layer sizes, e.g., '4096,2048,512,128'",
     )
+    parser.add_argument("--save_every_seconds", type=int, default=1800)
+    parser.add_argument("--keep_last_k", type=int, default=2)
     return Config(**vars(parser.parse_args()))
 
 
@@ -318,7 +360,7 @@ def _gpu_mem(device: torch.device) -> str:
 # Eval + Train
 # ---------------------------------------------------------------------
 @torch.no_grad()
-def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool=False):
+def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool = False):
     model.eval()
     encoder.eval()
     ys, ps, ls = [], [], []  # labels, probs, logits
@@ -396,10 +438,6 @@ def train(
     artefacts_dir: Path,
     cfg: Config,
 ):
-    import json
-
-    from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
-
     log("In Training ... ")
     log("Setting up datasets …")
     train_ds = PairsGraphsDataset(train_pairs)
@@ -445,6 +483,9 @@ def train(
     # Save the run config for provenance
     (evals_dir / "run_config.json").write_text(json.dumps(base_row, indent=2))
 
+    # Since training can take long, we save based on time
+    last_save_t = time.time()
+
     log(f"Starting training on {device} {_gpu_mem(device)}")
     for epoch in range(1, cfg.epochs + 1):
         model.train()
@@ -473,6 +514,14 @@ def train(
             epoch_loss_sum += float(loss.item()) * n
             global_step += 1
             pbar.set_postfix(loss=f"{float(loss.item()):.4f}")
+
+            should_save = cfg.save_every_seconds and (time.time() - last_save_t) >= cfg.save_every_seconds
+            if should_save:
+                tag = f"e{epoch:03d}_s{global_step:08d}"
+                path = save_checkpoint(tag, models_dir, model, optim, epoch, global_step, best_auc, cfg)
+                cleanup_old_snapshots(models_dir, cfg.keep_last_k)
+                last_save_t = time.time()
+                log(f"[autosave] saved {path.name}")
 
         train_loss = epoch_loss_sum / max(1, n_seen)
         train_losses.append(train_loss)
@@ -603,22 +652,22 @@ def train(
     plt.close()
 
     # Confusion matrix at 0.5
-    y_hat = (p >= 60.5).astype(int)
+    y_hat = (p >= 0.5).astype(int)
     cm = confusion_matrix(y, y_hat, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
     cm_txt = (
         f"Confusion Matrix @0.5\n"
         f"TN={tn}  FP={fp}\n"
         f"FN={fn}  TP={tp}\n"
-        f"Accuracy={(tp+tn)/max(1,len(y)):.4f}  "
-        f"Precision={tp/max(1,tp+fp):.4f}  "
-        f"Recall={tp/max(1,tp+fn):.4f}\n"
+        f"Accuracy={(tp + tn) / max(1, len(y)):.4f}  "
+        f"Precision={tp / max(1, tp + fp):.4f}  "
+        f"Recall={tp / max(1, tp + fn):.4f}\n"
     )
     (artefacts_dir / "confusion_matrix.txt").write_text(cm_txt)
     log(cm_txt)
 
     # Top confident errors (for quick inspection)
-    err_mask = (y_hat != y)
+    err_mask = y_hat != y
     if err_mask.any():
         errs = valid_preds[err_mask]
         # confidence = distance from 0.5
@@ -628,6 +677,7 @@ def train(
         log(f"Saved top_confident_errors.csv ({len(errs)} rows)")
 
     log("Training finished.")
+
 
 # ---------------------------------------------------------------------
 # Orchestration

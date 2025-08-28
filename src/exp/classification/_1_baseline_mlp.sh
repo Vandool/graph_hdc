@@ -1,15 +1,17 @@
 #!/bin/bash
 #
 # bwUniCluster 3.0 — single-GPU dev job
+# Partitions:
+# cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
 
-#SBATCH --job-name=zinc_pairs_baseline_mlp
-#SBATCH --partition=dev_gpu_h100
-#SBATCH --time=00:30:00
+#SBATCH --job-name=Oracle_MLP
+#SBATCH --partition=gpu_h100_il
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 module load devel/cuda/11.8
 
@@ -34,5 +36,7 @@ pixi run python "$SCRIPT" \
   --weight_decay 1e-4 \
   --num_workers 0 \
   --micro_bs 64 \
-  --train_parents 50 \
-  --valid_parents 10
+  --train_parents 20000 \
+  --valid_parents 2000 \
+  --save_every_seconds 1800 \
+  --keep_last_k 2

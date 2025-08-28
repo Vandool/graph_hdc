@@ -10,7 +10,7 @@ from src.normalizing_flow.config import FlowConfig
 class AbstractNFModel(pl.LightningModule):
     def __init__(self, cfg):
         super().__init__()
-        self.save_hyperparameters(ignore=["cfg"])
+        self.save_hyperparameters()
         self.cfg = cfg
         self.flow = None  # child must build a flow
 
@@ -29,24 +29,21 @@ class AbstractNFModel(pl.LightningModule):
         return z, logs
 
     def configure_optimizers(self):
-        import torch
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
     @classmethod
-    def load_from_path(cls, path: str):
-        ckpt = torch.load(path, map_location="cpu")
-        cfg_dict = ckpt.get("hyper_parameters", {}).get("cfg", {})
-        model = cls(type("X", (), cfg_dict))  # minimal duck-typed cfg if needed
-        model.load_state_dict(ckpt["state_dict"])
+    def load_from_path(cls, path: str) -> "AbstractNFModel":
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        cfg = FlowConfig(**checkpoint["hyper_parameters"]["cfg"])
+        model = cls(cfg)
+        model.load_state_dict(checkpoint["state_dict"])
         return model
 
     def save_to_path(self, path: str):
-        ckpt = {
-            "state_dict": self.state_dict(),
-            "hyper_parameters": {
-                "cfg": asdict(self.cfg) if hasattr(self.cfg, "__dataclass_fields__") else dict(self.cfg.__dict__)
-            },
-        }
+        """
+        Save the model state and hyperparameters to file.
+        """
+        ckpt = {"state_dict": self.state_dict(), "hyper_parameters": {"cfg": self.cfg.__dict__()}}
         torch.save(ckpt, path)
 
 
@@ -57,17 +54,19 @@ class NeuralSplineLightning(AbstractNFModel):
         latent_dim = cfg.num_input_channels
         flows = []
         for _ in range(cfg.num_flows):
-            flows.append(nf.flows.AutoregressiveRationalQuadraticSpline(
-                num_input_channels=cfg.num_input_channels,
-                num_blocks=cfg.num_blocks,
-                num_hidden_channels=cfg.num_hidden_channels,
-                num_context_channels=cfg.num_context_channels,
-                num_bins=cfg.num_bins,
-                tail_bound=cfg.tail_bound,
-                activation=cfg.activation,
-                dropout_probability=cfg.dropout_probability,
-                permute_mask=cfg.permute,
-            ))
+            flows.append(
+                nf.flows.AutoregressiveRationalQuadraticSpline(
+                    num_input_channels=cfg.num_input_channels,
+                    num_blocks=cfg.num_blocks,
+                    num_hidden_channels=cfg.num_hidden_channels,
+                    num_context_channels=cfg.num_context_channels,
+                    num_bins=cfg.num_bins,
+                    tail_bound=cfg.tail_bound,
+                    activation=cfg.activation,
+                    dropout_probability=cfg.dropout_probability,
+                    permute_mask=cfg.permute,
+                )
+            )
             flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
 
         base = nf.distributions.DiagGaussian(latent_dim, trainable=False)

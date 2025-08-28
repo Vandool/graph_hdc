@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import math
 import os
 import random
 import shutil
@@ -8,7 +9,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from math import prod
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -354,7 +354,7 @@ def run_experiment(cfg: FlowConfig):
                 (
                     Features.ATOM_TYPE,
                     FeatureConfig(
-                        count=prod(zinc_feature_bins),
+                        count=math.prod(zinc_feature_bins),
                         encoder_cls=CombinatoricIntegerEncoder,
                         index_range=IndexRange((0, 4)),
                         bins=zinc_feature_bins,
