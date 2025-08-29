@@ -28,7 +28,7 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --epochs 20 \
+  --epochs 2 \
   --batch_size 64 \
   --hv_dim 7744 \
   --vsa HRR \

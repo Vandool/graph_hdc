@@ -5,7 +5,7 @@
 # cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
 
 #SBATCH --job-name=Oracle_MLP
-#SBATCH --partition=gpu_h100_il
+#SBATCH --partition=gpu_mi300
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -16,7 +16,7 @@
 module load devel/cuda/11.8
 
 # ========== Paths ==========
-PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
+PROJECT_DIR="${GHDC_HOME}"
 EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/classification"
 SCRIPT_NAME="1_base_line_mlp.py"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
@@ -28,7 +28,7 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --epochs 20 \
+  --epochs 2 \
   --batch_size 128 \
   --hv_dim 7744 \
   --vsa HRR \

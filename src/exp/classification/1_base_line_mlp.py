@@ -1,9 +1,12 @@
 import contextlib
 import json
+import math
 import os
 
 import torch.multiprocessing as mp
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
+
+from src.exp.dataset_generation.generate_zinc_smiles import get_device
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -326,9 +329,6 @@ def get_args() -> Config:
     parser.add_argument("--vsa", "-v", type=VSAModel, default=VSAModel.HRR)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", "-wd", type=float, default=1e-4)
-    parser.add_argument(
-        "--device", "-dev", type=str, choices=["cpu", "cuda"], default="cuda" if torch.cuda.is_available() else "cpu"
-    )
     parser.add_argument("--train_parents", type=int, default=2000)
     parser.add_argument("--valid_parents", type=int, default=500)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -693,19 +693,19 @@ def run_experiment(cfg: Config):
     # Dataset & Encoder (HRR @ 7744)
     ds_name = "ZincPairsEncodings"
     zinc_feature_bins = [9, 6, 3, 4]
-
+    device = torch.device(cfg.device)
     dataset_config = DatasetConfig(
         seed=cfg.seed,
         name=ds_name,
         vsa=cfg.vsa,
         hv_dim=cfg.hv_dim,
-        device=cfg.device,  # encoder lives on main process device now
+        device=device,
         node_feature_configs=OrderedDict(
             [
                 (
                     Features.ATOM_TYPE,
                     FeatureConfig(
-                        count=prod(zinc_feature_bins),  # 9 * 6 * 3 * 4
+                        count=math.prod(zinc_feature_bins),  # 9 * 6 * 3 * 4
                         encoder_cls=CombinatoricIntegerEncoder,
                         index_range=IndexRange((0, 4)),
                         bins=zinc_feature_bins,
@@ -717,7 +717,7 @@ def run_experiment(cfg: Config):
 
     log("Loading/creating hypernet …")
     hypernet = (
-        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(cfg.device).eval()
+        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(device=device).eval()
     )
     log("Hypernet ready.")
 
