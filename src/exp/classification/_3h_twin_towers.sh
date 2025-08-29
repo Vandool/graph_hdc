@@ -6,7 +6,7 @@
 
 #SBATCH --job-name=zinc_pairs_baseline_mlp
 #SBATCH --partition=accelerated-h100
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -39,5 +39,5 @@ pixi run python "$SCRIPT" \
   --weight_decay 1e-4 \
   --num_workers 0 \
   --micro_bs 64 \
-  --train_parents 10000 \
+  --train_parents 20000 \
   --valid_parents 1000

@@ -23,6 +23,5 @@ results/
 .gitattributes
 
 # Wandb
-
 /wandb/
 wandb/
