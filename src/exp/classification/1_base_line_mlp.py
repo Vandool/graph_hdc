@@ -1,12 +1,9 @@
 import contextlib
 import json
 import math
-import os
 
 import torch.multiprocessing as mp
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
-
-from src.exp.dataset_generation.generate_zinc_smiles import get_device
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -20,7 +17,6 @@ import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from math import prod
 from pathlib import Path
 from pprint import pprint
 
@@ -30,7 +26,7 @@ import torch
 from pytorch_lightning import seed_everything
 from sklearn.metrics import average_precision_score, roc_auc_score
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset
 from torch_geometric.data import Batch, Data
 from tqdm.auto import tqdm
 
@@ -52,7 +48,7 @@ def log(msg: str) -> None:
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 
-def setup_exp() -> dict:
+def setup_exp(dir_name: str | None = None) -> dict:
     script_path = Path(__file__).resolve()
     experiments_path = script_path.parent
     script_stem = script_path.stem
@@ -62,7 +58,7 @@ def setup_exp() -> dict:
 
     print(f"Setting up experiment in {base_dir}")
     now = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
-    exp_dir = base_dir / now
+    exp_dir = base_dir / now if not dir_name else base_dir / dir_name
     exp_dir.mkdir(parents=True, exist_ok=True)
     print(f"Experiment directory created: {exp_dir}")
 
@@ -124,7 +120,7 @@ def _atomic_save(obj, path: Path) -> None:
 
 
 def save_checkpoint(
-    tag: str, models_dir: Path, model, optim, epoch, global_step, best_auc, cfg, scheduler=None, scaler=None
+        tag: str, models_dir: Path, model, optim, epoch, global_step, best_auc, cfg, scheduler=None, scaler=None
 ):
     ckpt = {
         "model": model.state_dict(),
@@ -143,6 +139,7 @@ def save_checkpoint(
     path = models_dir / f"autosnap_{tag}.pt"
     _atomic_save(ckpt, path)
     return path
+
 
 # ---------------------------------------------------------------------
 # Dataset wrapper that returns graphs (we encode in the training loop)
@@ -200,12 +197,12 @@ class ParentH2Cache:
 
 @torch.no_grad()
 def encode_g2_with_cache(
-    encoder: AbstractGraphEncoder,
-    g2_b: Batch,
-    parent_ids: torch.Tensor,  # shape [B], Long
-    device: torch.device,
-    cache: ParentH2Cache,
-    micro_bs: int,
+        encoder: AbstractGraphEncoder,
+        g2_b: Batch,
+        parent_ids: torch.Tensor,  # shape [B], Long
+        device: torch.device,
+        cache: ParentH2Cache,
+        micro_bs: int,
 ) -> torch.Tensor:
     """
     Returns h2 for the whole batch [B, D], encoding each parent only once.
@@ -236,7 +233,7 @@ def encode_g2_with_cache(
         # (use the existing micro-batch encoder)
         encoded = []
         for j in range(0, len(uniq_graphs), micro_bs):
-            chunk = Batch.from_data_list(uniq_graphs[j : j + micro_bs]).to(device)
+            chunk = Batch.from_data_list(uniq_graphs[j: j + micro_bs]).to(device)
             out = encoder.forward(chunk)["graph_embedding"]  # [b, D] on device
             encoded.append(out.to("cpu"))
             del chunk
@@ -255,11 +252,11 @@ def encode_g2_with_cache(
 
 @torch.no_grad()
 def _encode_batch(
-    encoder: AbstractGraphEncoder,
-    g_batch: Batch,
-    *,
-    device: torch.device,
-    micro_bs: int,
+        encoder: AbstractGraphEncoder,
+        g_batch: Batch,
+        *,
+        device: torch.device,
+        micro_bs: int,
 ) -> torch.Tensor:
     """
     Encode a big PyG Batch in micro-chunks to avoid OOM.
@@ -269,7 +266,7 @@ def _encode_batch(
     data_list = g_batch.to_data_list()  # (keeps tensors; we’ll move to device below)
     outs = []
     for i in range(0, len(data_list), micro_bs):
-        chunk_list = data_list[i : i + micro_bs]
+        chunk_list = data_list[i: i + micro_bs]
         chunk = Batch.from_data_list(chunk_list).to(device)
         with torch.no_grad():
             out = encoder.forward(chunk)["graph_embedding"]  # [b, D]
@@ -430,13 +427,13 @@ def _sanitize_for_parquet(d: dict) -> dict:
 
 
 def train(
-    train_pairs,
-    valid_pairs,
-    encoder: AbstractGraphEncoder,
-    models_dir: Path,
-    evals_dir: Path,
-    artefacts_dir: Path,
-    cfg: Config,
+        train_pairs,
+        valid_pairs,
+        encoder: AbstractGraphEncoder,
+        models_dir: Path,
+        evals_dir: Path,
+        artefacts_dir: Path,
+        cfg: Config,
 ):
     log("In Training ... ")
     log("Setting up datasets …")

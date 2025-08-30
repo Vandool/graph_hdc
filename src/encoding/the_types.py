@@ -1,4 +1,5 @@
 import enum
+from dataclasses import dataclass
 
 from torchhd import FHRRTensor, HRRTensor, MAPTensor, VSATensor
 
@@ -38,3 +39,34 @@ class VSAModel(enum.Enum):
     @property
     def tensor_class(self) -> VSATensor:
         return self._vsa_type_
+
+
+@dataclass(frozen=True)
+class Feat:
+    """
+    Hashable node feature (discrete indices).
+
+    :param atom_type: Index of atom type (e.g., Br,C,Cl,F,I,N,O,P,S mapped to ints).
+    :param degree_idx: Degree minus one, i.e. 0->deg 1, 4->deg 5.
+    :param formal_charge_idx: Encoded as 0,1,2 for charges [0,1,-1] respectively.
+    :param explicit_hs: Total explicit hydrogens (0..3).
+    """
+    atom_type: int
+    degree_idx: int
+    formal_charge_idx: int
+    explicit_hs: int
+
+    @property
+    def target_degree(self) -> int:
+        """Final/desired node degree (degree index + 1)."""
+        return self.degree_idx + 1
+
+    def to_tuple(self) -> tuple[int, int, int, int]:
+        """Return (atom_type, degree_idx, formal_charge_idx, explicit_hs)."""
+        return self.atom_type, self.degree_idx, self.formal_charge_idx, self.explicit_hs
+
+    @staticmethod
+    def from_tuple(t: tuple[int, int, int, int]) -> "Feat":
+        """Construct from a 4-tuple."""
+        a, d, c, h = t
+        return Feat(int(a), int(d), int(c), int(h))

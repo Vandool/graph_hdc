@@ -304,7 +304,7 @@ class HyperNet(AbstractHyperNet):
             high-dimensional graph embedding vectors for the input graphs with shape (batch_size, hidden_dim)
         """
         # node_dim: (batch_size * num_nodes)
-        node_dim = data.x.size(0)r_;
+        node_dim = data.x.size(0)
         # ~ mapping node & graph properties as hypervectors
         # The "encoder_properties" method will actually manage the encoding of the node and graph properties of
         # the graph (as represented by the Data object) into representative

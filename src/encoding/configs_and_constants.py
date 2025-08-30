@@ -1,8 +1,8 @@
 import enum
+import math
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Optional
 
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
@@ -13,6 +13,7 @@ from src.encoding.feature_encoders import (
     TrueFalseEncoder,
 )
 from src.encoding.the_types import VSAModel
+from src.utils.utils import pick_device_str
 
 IndexRange = tuple[int, int]
 
@@ -36,7 +37,7 @@ class Features(enum.Enum):
     NODE_DEGREE = ("node_degree", 1)
     ATOMIC_NUMBER = ("atom_number", 5)  # unique values [1.0, 6.0, 7.0, 8.0, 9.0]
     AROMATIC = ("aromatic", 6)
-    NHA = ("nha", 3) # unique values [1.0, 2.0, 3.0]
+    NHA = ("nha", 3)  # unique values [1.0, 2.0, 3.0]
 
     # three hybridization flags
     SP = ("todo", 7)
@@ -210,18 +211,39 @@ QM9_CONFIG: DatasetConfig = DatasetConfig(
     ),
 )
 
-
 ZINC_SMILES_CONFIG: DatasetConfig = DatasetConfig(
-        name="ZINC_SMILES",
-        node_feature_configs=OrderedDict(
-            [
-                (
-                    Features.ATOM_TYPE,
-                    FeatureConfig(count=1, encoder_cls=CombinatoricIntegerEncoder), # Place holder
+    name="ZINC_SMILES",
+    node_feature_configs=OrderedDict(
+        [
+            (
+                Features.ATOM_TYPE,
+                FeatureConfig(count=1, encoder_cls=CombinatoricIntegerEncoder),  # Place holder
+            ),
+        ]
+    ),
+)
+
+ZINC_SMILES_HRR_7744_CONFIG = DatasetConfig(
+    seed=42,
+    name="ZincSmilesHRR7744",
+    vsa=VSAModel.HRR,
+    hv_dim=88 * 88,
+    device=pick_device_str(),
+    node_feature_configs=OrderedDict(
+        [
+            (
+                Features.ATOM_TYPE,
+                FeatureConfig(
+                    count=math.prod([9, 6, 3, 4]),
+                    encoder_cls=CombinatoricIntegerEncoder,
+                    index_range=IndexRange((0, 4)),
+                    bins=[9, 6, 3, 4],
                 ),
-            ]
-        ),
-    )
+            ),
+        ]
+    ),
+)
+
 
 class SupportedDataset(enum.Enum):
     ZINC = ("ZINC", ZINC_CONFIG)
@@ -231,6 +253,7 @@ class SupportedDataset(enum.Enum):
     ZINC_NODE_DEGREE_COMB_NHA = ("ZINC_ND_COMB_NHA", ZINC_ND_COMB_CONFIG_NHA)
     ZINC_SMILES = ("ZINC_SMILES", ZINC_SMILES_CONFIG)
     QM9 = ("QM9", QM9_CONFIG)
+    ZINC_SMILES_HRR_7744 = ("ZINC_SMILES_HRR_7744", ZINC_SMILES_HRR_7744_CONFIG)
 
     def __new__(cls, value: str, default_cfg: DatasetConfig):
         obj = object.__new__(cls)

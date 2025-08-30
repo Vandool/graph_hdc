@@ -226,6 +226,7 @@ class RealNVPLightning(AbstractNFModel):
         z, _logs = self.sample(num_samples)  # [num_samples, 2D]
         node_terms = z[:, : self.D].contiguous()
         graph_terms = z[:, self.D :].contiguous()
+
         return node_terms, graph_terms, _logs
 
 

@@ -341,6 +341,11 @@ class PairConfig:
 
 
 class ZincPairsV2(Dataset):
+    """
+    === Aggregated summary (train+valid+test) ===
+    [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
+    [ALL] neg_type histogram: 1:3398852 (9.1%), 2:7131081 (19.0%), 3:8266188 (22.1%), 4:4009247 (10.7%), 5:7019712 (18.7%), 6:7657999 (20.4%)
+    """
     def __init__(self, base_dataset, split="train",
                  root=GLOBAL_DATASET_PATH / "ZincPairsV2",
                  cfg=None, transform=None, pre_transform=None, pre_filter=None,

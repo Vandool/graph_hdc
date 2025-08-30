@@ -2,16 +2,19 @@ import itertools
 import os
 import sys
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from enum import Enum
 from pathlib import Path
-from typing import Literal, Union
+from random import random
+from typing import Literal, Union, Sequence, Mapping, Any
 
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
 import torchhd
+from rdkit import Chem
 from torch import Tensor
 from torch_geometric.data import Data
 from torch_geometric.utils import scatter
@@ -19,7 +22,7 @@ from torchhd import VSATensor
 from torchhd.tensors.hrr import HRRTensor
 from torchhd.tensors.map import MAPTensor
 
-from src.encoding.the_types import VSAModel
+from src.encoding.the_types import VSAModel, Feat
 
 # ========= Paths =========
 ROOT = Path(__file__)
@@ -34,13 +37,11 @@ GLOBAL_DATA_PATH = Path(os.getenv("GLOBAL_DATA", ROOT / ""))
 TEST_ARTIFACTS_PATH = ROOT / "tests_new/artifacts"
 TEST_ASSETS_PATH = ROOT / "tests_new/assets"
 
+FORMAL_CHARGE_IDX_TO_VAL: dict[int, int] = {0: 0, 1: +1, 2: -1}
+
 
 # ========= Utils =========
 def set_seed(seed: int) -> None:
-    import random
-
-    import numpy as np
-
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -48,6 +49,18 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def jsonable(x: Any):
+    if x is None or isinstance(x, (bool, int, float, str)): return x
+    if isinstance(x, (np.generic,)): return x.item()
+    if isinstance(x, Path): return str(x)
+    if isinstance(x, torch.device): return str(x)
+    if torch.is_tensor(x): return x.item() if x.numel() == 1 else x.detach().cpu().tolist()
+    if isinstance(x, Enum): return x.value
+    if isinstance(x, dict): return {k: jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)): return [jsonable(v) for v in x]
+    return str(x)
 
 
 def plot_vector_distributions(vectors: np.ndarray, kind: str = "hist", bins: int = 32):
@@ -107,11 +120,11 @@ ReductionOP = Literal["bind", "bundle"]
 
 
 def scatter_hd(
-    src: Tensor,
-    index: Tensor,
-    *,
-    op: ReductionOP,
-    dim_size: int | None = None,
+        src: Tensor,
+        index: Tensor,
+        *,
+        op: ReductionOP,
+        dim_size: int | None = None,
 ) -> Tensor:
     """
     Scatter-reduce a batch of hypervectors along dim=0 using
@@ -369,6 +382,22 @@ def flatten_counter(c: Counter) -> list:
     return [k for k, v in c.items() for _ in range(v)]
 
 
+def pick_device():
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def pick_device_str() -> str:
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 class DataTransformer:
     @staticmethod
     def to_tuple_list(edge_index: Tensor) -> list[tuple[int, ...]]:
@@ -451,7 +480,382 @@ class DataTransformer:
             return Counter([tuple(n) for n in node_list])
         return Counter([(n,) for n in node_list])
 
+    @staticmethod
+    def nx_to_pyg(G: nx.Graph) -> "Data":
+        """
+        Convert an undirected NetworkX graph with ``feat`` attributes to a
+        :class:`torch_geometric.data.Data`.
+
+        Node features are stacked as a dense matrix ``x`` of dtype ``long`` with
+        columns ``[atom_type, degree_idx, formal_charge_idx, explicit_hs]``.
+
+        Undirected edges are converted to a directed ``edge_index`` with both
+        directions.
+
+        :param G: NetworkX graph where each node has a ``feat: Feat`` attribute.
+        :returns: PyG ``Data`` object with fields ``x`` and ``edge_index``.
+        :raises RuntimeError: If PyTorch/PyG are not available.
+        """
+        if torch is None or Data is None:
+            raise RuntimeError("torch / torch_geometric are required for nx_to_pyg")
+
+        # Node ordering: use sorted ids for determinism
+        nodes = sorted(G.nodes)
+        idx_of: dict[int, int] = {n: i for i, n in enumerate(nodes)}
+
+        # Features
+        feats: list[list[int]] = [list(G.nodes[n]["feat"].to_tuple()) for n in nodes]
+        x = torch.tensor(feats, dtype=torch.long)
+
+        # Edges: add both directions
+        src, dst = [], []
+        for u, v in G.edges():
+            iu, iv = idx_of[u], idx_of[v]
+            src.extend([iu, iv])
+            dst.extend([iv, iu])
+        if src:
+            edge_index = torch.tensor([src, dst], dtype=torch.long)
+        else:
+            edge_index = torch.empty((2, 0), dtype=torch.long)
+
+        return Data(x=x, edge_index=edge_index)
+
+    @staticmethod
+    def pyg_to_nx(
+            data: "Data",
+            *,
+            strict_undirected: bool = True,
+            allow_self_loops: bool = False,
+    ) -> nx.Graph:
+        """
+        Convert a PyG ``Data`` (undirected, bidirectional edges) to a mutable NetworkX graph.
+
+        Assumptions
+        ----------
+        - ``data.x`` has shape ``[N, 4]`` with integer-encoded features:
+          ``[atom_type, degree_idx, formal_charge_idx, explicit_hs]``.
+        - ``data.edge_index`` is bidirectional (both (u,v) and (v,u) present) for undirected graphs.
+        - Features are **frozen** and represent the final target degrees.
+
+        Node attributes
+        ---------------
+        - ``feat``: ``Feat`` instance (constructed from the 4-tuple).
+        - ``target_degree``: ``feat.target_degree`` (== ``degree_idx + 1``).
+
+        Parameters
+        ----------
+        data : Data
+            PyG data object.
+        strict_undirected : bool, optional
+            If ``True``, assert that ``edge_index`` is symmetric.
+        allow_self_loops : bool, optional
+            If ``False``, drop self-loops.
+
+        Returns
+        -------
+        nx.Graph
+            Mutable undirected graph with node attributes.
+
+        Raises
+        ------
+        ValueError
+            If feature dimensionality is not ``[N, 4]`` or edges are not symmetric when required.
+        """
+        if data.x is None:
+            raise ValueError("data.x is None (expected [N,4] features).")
+        if data.edge_index is None:
+            raise ValueError("data.edge_index is None.")
+
+        x = data.x
+        if x.dim() != 2 or x.size(1) != 4:
+            raise ValueError(f"Expected data.x shape [N,4], got {tuple(x.size())}.")
+
+        # Ensure integer features
+        if not torch.is_floating_point(x):
+            x_int = x.to(torch.long)
+        else:
+            x_int = x.to(torch.long)  # safe cast, your encoding is discrete
+
+        N = x_int.size(0)
+        ei = data.edge_index
+        if ei.dim() != 2 or ei.size(0) != 2:
+            raise ValueError("edge_index must be [2, E].")
+        src = ei[0].to(torch.long)
+        dst = ei[1].to(torch.long)
+
+        # Build undirected edge set (dedup, optional self-loop handling)
+        pairs = set()
+        for u, v in zip(src.tolist(), dst.tolist()):
+            if u == v and not allow_self_loops:
+                continue
+            a, b = (u, v) if u < v else (v, u)
+            pairs.add((a, b))
+
+        if strict_undirected:
+            # Check that for every (u,v) there is a (v,u) in the original directed list
+            dir_pairs = set(zip(src.tolist(), dst.tolist()))
+            for (u, v) in list(pairs):
+                if (u, v) not in dir_pairs or (v, u) not in dir_pairs:
+                    raise ValueError(f"edge_index is not symmetric for undirected edge ({u},{v}).")
+
+        # Construct NX graph
+        G = nx.Graph()
+        G.add_nodes_from(range(N))
+
+        # Attach features and target degrees
+        for n in range(N):
+            t = tuple(int(z) for z in x_int[n].tolist())  # (atom_type, degree_idx, formal_charge_idx, explicit_hs)
+            f = Feat.from_tuple(t)  # requires your Feat dataclass
+            G.nodes[n]["feat"] = f
+            G.nodes[n]["target_degree"] = f.target_degree
+
+        # Add edges
+        G.add_edges_from(pairs)
+        return G
+
+    @staticmethod
+    def nx_to_mol(
+            G: nx.Graph,
+            *,
+            atom_symbols=None,
+            infer_bonds: bool = True,
+            set_no_implicit: bool = True,
+            set_explicit_hs: bool = True,
+            set_atom_map_nums: bool = False,
+            sanitize: bool = True,
+            kekulize: bool = True,
+            validate_heavy_degree: bool = False,
+    ) -> tuple["Chem.Mol", dict[int, int]]:
+        """
+        Build an RDKit molecule from an **undirected** NetworkX graph with frozen features.
+
+        Each node must have ``feat`` as a 4-tuple: ``(atom_type_idx, degree_idx, charge_idx, explicit_hs)``,
+        or an object with ``to_tuple()`` returning that tuple.
+
+        If ``infer_bonds=True``, a greedy valence-based routine assigns DOUBLE/TRIPLE bonds to reduce
+        per-atom valence deficits (based on element & formal charge) before constructing the RDKit bonds.
+
+        :param G: Undirected graph; node['feat'] is frozen feature tuple.
+        :param atom_symbols: Mapping from atom_type_idx to element symbol.
+        :param infer_bonds: If True, infer bond orders from valence targets; otherwise use SINGLE bonds.
+        :param set_no_implicit: Set ``NoImplicit=True`` so RDKit won’t alter explicit H counts.
+        :param set_explicit_hs: Apply ``NumExplicitHs`` from features.
+        :param set_atom_map_nums: Annotate RDKit atoms with original NX ids (debug).
+        :param sanitize: Run ``Chem.SanitizeMol`` (may fail if bonding is chemically impossible).
+        :param kekulize: Try ``Chem.Kekulize`` after sanitize.
+        :param validate_heavy_degree: Assert NX heavy degree equals ``degree_idx+1`` for all nodes.
+        :returns: (mol, nx_to_rd_index_map)
+
+        .. note::
+           This inference is **heuristic** and not guaranteed to match real chemistry.
+           If sanitize fails, the function falls back to SINGLE bonds (unless you set ``sanitize=False``).
+        """
+
+        if atom_symbols is None:
+            atom_symbols = ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
+
+        def _as_tuple(feat_obj) -> tuple[int, int, int, int]:
+            if hasattr(feat_obj, "to_tuple"):
+                t = feat_obj.to_tuple()
+            else:
+                t = tuple(int(x) for x in feat_obj)
+            if len(t) != 4:
+                raise ValueError(f"feat must be a 4-tuple, got {t}")
+            return t
+
+        # --- unpack features & basic guards ---
+        feats: dict[int, tuple[int, int, int, int]] = {}
+        symbols: dict[int, str] = {}
+        charges: dict[int, int] = {}
+        expHs: dict[int, int] = {}
+        target_deg: dict[int, int] = {}
+
+        for n in G.nodes:
+            t = _as_tuple(G.nodes[n]["feat"])
+            at_idx, deg_idx, ch_idx, hs = t
+            if not (0 <= at_idx < len(atom_symbols)):
+                raise ValueError(f"atom_type_idx out of range on node {n}: {at_idx}")
+            sym = atom_symbols[at_idx]
+            ch = FORMAL_CHARGE_IDX_TO_VAL.get(int(ch_idx), int(ch_idx))
+            feats[n] = (at_idx, deg_idx, ch_idx, hs)
+            symbols[n] = sym
+            charges[n] = int(ch)
+            expHs[n] = int(hs)
+            target_deg[n] = int(deg_idx) + 1  # heavy neighbors count
+
+        if validate_heavy_degree:
+            for n in G.nodes:
+                if G.degree[n] != target_deg[n]:
+                    raise AssertionError(
+                        f"Heavy degree mismatch at node {n}: NX={G.degree[n]} vs target={target_deg[n]}")
+
+        # --- optional bond-order inference on the NX graph ---
+        # Bond orders: dict of undirected edge -> order (1,2,3)
+        order: dict[tuple[int, int], int] = {}
+        for u, v in G.edges:
+            a, b = (u, v) if u < v else (v, u)
+            order[(a, b)] = 1  # start with single
+
+        if infer_bonds and G.number_of_edges() > 0:
+            # Element valence "menus" (very rough, neutral-first; charged variants added where common)
+            # Chosen valence is the **smallest** >= current usage to avoid over-bonding.
+            valence_menu = {
+                "C": {0: (4,), -1: (3, 4), +1: (3,)},
+                "N": {0: (3, 5), -1: (2, 3), +1: (4,)},
+                "O": {0: (2,), -1: (1, 2), +1: (3,)},
+                "P": {0: (3, 5), +1: (4, 5)},
+                "S": {0: (2, 4, 6), +1: (3, 5), -1: (1, 2)},
+                "F": {0: (1,)}, "Cl": {0: (1,)}, "Br": {0: (1,)}, "I": {0: (1,)},
+            }
+
+            # ring preference: small cycles first
+            try:
+                cycles = nx.cycle_basis(G)
+            except Exception:
+                cycles = []
+            ring_edges = set()
+            for cyc in cycles:
+                for i in range(len(cyc)):
+                    a, b = cyc[i], cyc[(i + 1) % len(cyc)]
+                    a, b = (a, b) if a < b else (b, a)
+                    ring_edges.add((a, b))
+
+            def current_usage(n: int) -> int:
+                """Valence usage = explicit Hs + sum(bond orders to heavy neighbors)."""
+                s = expHs[n]
+                for nb in G.neighbors(n):
+                    a, b = (n, nb) if n < nb else (nb, n)
+                    s += order[(a, b)]
+                return s
+
+            def target_valence(n: int) -> int:
+                sym = symbols[n];
+                ch = charges[n]
+                menu = valence_menu.get(sym, {0: (target_deg[n] + expHs[n],)})
+                opts = menu.get(ch, menu.get(0, (target_deg[n] + expHs[n],)))
+                used = current_usage(n)
+                for v in sorted(opts):
+                    if v >= used:
+                        return v
+                return max(opts)
+
+            # Greedy raise orders until deficits vanish or stuck
+            def deficit(n: int) -> int:
+                return max(0, target_valence(n) - current_usage(n))
+
+            # atoms priority: hetero first, then carbons, larger deficit first
+            hetero = {"N", "O", "S", "P"}
+
+            def atom_priority(n: int) -> tuple[int, int]:
+                return (1 if symbols[n] in hetero else 0, deficit(n))
+
+            # bond escalation priority: prefer ring edges and hetero involvement
+            def bond_priority(u: int, v: int) -> tuple[int, int, int]:
+                a, b = (u, v) if u < v else (v, u)
+                in_ring = 1 if (a, b) in ring_edges else 0
+                hetero_count = int(symbols[u] in hetero) + int(symbols[v] in hetero)
+                return (in_ring, hetero_count, order[(a, b)])
+
+            changed = True
+            iters = 0
+            MAX_ITERS = 4 * G.number_of_edges()
+            while changed and iters < MAX_ITERS:
+                iters += 1
+                changed = False
+
+                # collect candidate atoms with positive deficit
+                cand_atoms = [n for n in G.nodes if deficit(n) > 0]
+                if not cand_atoms:
+                    break
+
+                # sort atoms by priority (hetero, deficit)
+                cand_atoms.sort(key=lambda n: atom_priority(n), reverse=True)
+
+                for n in cand_atoms:
+                    if deficit(n) <= 0:
+                        continue
+                    # choose neighbor with deficit and smallest current order, with bond priority
+                    nbs = [m for m in G.neighbors(n) if deficit(m) > 0 and order[(n, m) if n < m else (m, n)] < 3]
+                    if not nbs:
+                        continue
+                    # sort neighbors/bonds by ring & hetero preference, then lowest existing order
+                    nbs.sort(key=lambda m: bond_priority(n, m), reverse=True)
+                    m = nbs[0]
+                    a, b = (n, m) if n < m else (m, n)
+                    # bump bond order by 1
+                    order[(a, b)] += 1
+                    changed = True
+
+            # Optional final clip: avoid absurd orders on halogens
+            for (a, b), bo in list(order.items()):
+                if symbols[a] in ("F", "Cl", "Br", "I") or symbols[b] in ("F", "Cl", "Br", "I"):
+                    order[(a, b)] = min(order[(a, b)], 1)
+
+        # --- build RDKit RWMol ---
+        rw = Chem.RWMol()
+        nx_to_rd: dict[int, int] = {}
+        for n in sorted(G.nodes):
+            at_idx, deg_idx, ch_idx, hs = feats[n]
+            sym = symbols[n]
+            ch = charges[n]
+            atom = Chem.Atom(sym)
+            atom.SetFormalCharge(int(ch))
+            if set_explicit_hs:
+                atom.SetNumExplicitHs(int(hs))
+            if set_no_implicit:
+                atom.SetNoImplicit(True)
+            rd_idx = rw.AddAtom(atom)
+            nx_to_rd[n] = rd_idx
+
+        # add bonds with (possibly inferred) orders
+        for u, v in G.edges:
+            a, b = (u, v) if u < v else (v, u)
+            bo = order.get((a, b), 1)
+            bt = Chem.BondType.SINGLE if bo == 1 else Chem.BondType.DOUBLE if bo == 2 else Chem.BondType.TRIPLE
+            rw.AddBond(nx_to_rd[u], nx_to_rd[v], bt)
+
+        mol = rw.GetMol()
+
+        if set_atom_map_nums:
+            for n, rd_idx in nx_to_rd.items():
+                mol.GetAtomWithIdx(rd_idx).SetAtomMapNum(int(n))
+
+        if sanitize:
+            try:
+                Chem.SanitizeMol(mol)
+                if kekulize:
+                    try:
+                        Chem.Kekulize(mol, clearAromaticFlags=True)
+                    except Exception:
+                        pass
+            except Exception:
+                # fallback: rebuild with single bonds if sanitize fails
+                rw2 = Chem.RWMol()
+                idx_map = {}
+                for n in sorted(G.nodes):
+                    at_idx, deg_idx, ch_idx, hs = feats[n]
+                    sym = symbols[n];
+                    ch = charges[n]
+                    a = Chem.Atom(sym);
+                    a.SetFormalCharge(int(ch))
+                    if set_explicit_hs: a.SetNumExplicitHs(int(expHs[n]))
+                    if set_no_implicit: a.SetNoImplicit(True)
+                    idx_map[n] = rw2.AddAtom(a)
+                for u, v in G.edges:
+                    rw2.AddBond(idx_map[u], idx_map[v], Chem.BondType.SINGLE)
+                mol = rw2.GetMol()
+                if set_atom_map_nums:
+                    for n, rd_idx in idx_map.items():
+                        mol.GetAtomWithIdx(rd_idx).SetAtomMapNum(int(n))
+                if sanitize:
+                    # try a gentle sanitize (may still fail if graph is impossible chemically)
+                    try:
+                        Chem.SanitizeMol(mol)
+                    except Exception:
+                        pass
+
+        return mol, nx_to_rd
+
 
 if __name__ == "__main__":
-
     print(ROOT)
