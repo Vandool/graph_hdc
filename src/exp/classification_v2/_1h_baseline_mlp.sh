@@ -1,19 +1,22 @@
 #!/bin/bash
 #
-# bwUniCluster 3.0 — single-GPU dev job
-# Partitions:
-# cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
+# HoreKa — single-GPU dev job (A100 or H100)
+# Available partitions: cpuonly large accelerated accelerated-h100 accelerated-200 
+# Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
 
 #SBATCH --job-name=MLP_test
-#SBATCH --partition=dev_gpu_h100
+#SBATCH --partition=dev_accelerated
 #SBATCH --time=00:10:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 
-module load devel/cuda/11.8
+# CUDA toolchain on HoreKa (generic “devel/cuda” is recommended)
+module load devel/cuda
+# If you must pin a version, check availability first:
+# module avail devel/cuda
 
 # ========== Paths ==========
 PROJECT_DIR="${GHDC_HOME}"

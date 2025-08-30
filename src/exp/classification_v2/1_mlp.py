@@ -10,16 +10,14 @@ with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
 
 import os
-from src.exp.classification_v2.classification_utils import (setup_exp, gpu_mem, atomic_save, Config, encode_batch,
-                                                            encode_g2_with_cache, ParentH2Cache, get_args,
-                                                            PairsGraphsDataset, collate_pairs)
 import time
 from dataclasses import asdict
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from pprint import pprint
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import torch
 from pytorch_lightning import seed_everything
@@ -29,9 +27,21 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import (ZINC_SMILES_HRR_7744_CONFIG)
+from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
+from src.exp.classification_v2.classification_utils import (
+    Config,
+    PairsGraphsDataset,
+    ParentH2Cache,
+    atomic_save,
+    collate_pairs,
+    encode_batch,
+    encode_g2_with_cache,
+    get_args,
+    gpu_mem,
+    setup_exp,
+)
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 
@@ -135,7 +145,7 @@ def make_loader(ds, batch_size, shuffle, cfg, collate_fn):
         "batch_size": batch_size,
         "shuffle": shuffle,
         "num_workers": cfg.num_workers,
-        "pin_memory": (cfg.device == "cuda" and cfg.pin_memory),
+        "pin_memory": (torch.cuda.is_available() and cfg.pin_memory),
         "collate_fn": collate_fn,
         "persistent_workers": False,  # important for memory
         "worker_init_fn": lambda _: torch.set_num_threads(1),  # keep per-worker light
