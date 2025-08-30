@@ -1,4 +1,4 @@
-program: 2_real_nvp.py
+program: 0_real_nvp.py
 method: bayes
 metric:
   name: val_loss

@@ -23,7 +23,7 @@ from src.encoding.feature_encoders import (
     TrueFalseEncoder,
 )
 from src.encoding.the_types import VSAModel
-from src.utils.utils import cartesian_bind_tensor, flatten_counter, scatter_hd, TupleIndexer
+from src.utils.utils import TupleIndexer, cartesian_bind_tensor, flatten_counter, scatter_hd
 
 # === HYPERDIMENSIONAL MESSAGE PASSING NETWORKS ===
 
@@ -1134,11 +1134,31 @@ class HyperNet(AbstractGraphEncoder):
                 key = key.split(".", 1)[1]
             return Features[key]
 
-        def deserialize_encoder_map(serialized: dict[str, Any]):
+        def deserialize_encoder_map(
+            serialized: dict[str, Any],
+            override_device: str | torch.device | None = None,
+            move_codebook: bool = True,
+        ):
             result = {}
             for feat_key, entry in serialized.items():
-                args = entry["init_args"].copy()
-                args["vsa"] = args["vsa"]
+                args = dict(entry["init_args"])  # copy; don't mutate original
+                # normalize VSA if it was serialized as a string
+                if isinstance(args.get("vsa"), str):
+                    args["vsa"] = args["vsa"]
+
+                # --- decide target device BEFORE calling the encoder ctor ---
+                if override_device is not None:
+                    target = torch.device(override_device)
+                else:
+                    saved = str(args.get("device", "cpu"))
+                    if saved.startswith("mps") and not torch.backends.mps.is_available():
+                        target = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    elif saved.startswith("cuda") and not torch.cuda.is_available():
+                        target = torch.device("cpu")
+                    else:
+                        target = torch.device(saved)
+                args["device"] = str(target)
+
                 enc_cls = encoder_class_map[entry["encoder_class"]]
 
                 # rebuild optional TupleIndexer
@@ -1149,8 +1169,14 @@ class HyperNet(AbstractGraphEncoder):
                 else:
                     encoder = enc_cls(**args)
 
-                encoder.codebook = entry["codebook"]  # CPU tensors
-                encoder.device = torch.device(args["device"])
+                # codebook was saved as CPU tensors; move if desired
+                codebook = entry["codebook"]
+                if move_codebook and target.type != "cpu":
+                    codebook = codebook.to(target, non_blocking=True)
+
+                encoder.codebook = codebook
+                encoder.device = target
+
                 result[_feat_key_to_enum(feat_key)] = (encoder, entry["index_range"])
             return result
 
@@ -1169,9 +1195,9 @@ class HyperNet(AbstractGraphEncoder):
                 setattr(self, k, v)
 
         # encoder maps (encoders already carry their codebooks on CPU)
-        self.node_encoder_map  = deserialize_encoder_map(state["node_encoder_map"])
-        self.edge_encoder_map  = deserialize_encoder_map(state["edge_encoder_map"])
-        self.graph_encoder_map = deserialize_encoder_map(state["graph_encoder_map"])
+        self.node_encoder_map  = deserialize_encoder_map(state["node_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu")
+        self.edge_encoder_map  = deserialize_encoder_map(state["edge_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu")
+        self.graph_encoder_map = deserialize_encoder_map(state["graph_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu")
 
         # restore codebooks (may be None if checkpoint created before codebooks existed)
         self.nodes_codebook         = state.get("nodes_codebook", None)
@@ -1186,8 +1212,8 @@ class HyperNet(AbstractGraphEncoder):
             self._populate_edges_indexer()
 
         # move everything to target device (prefer saved device in attributes; fallback CPU)
-        target_device = torch.device(attrs.get("device", "cpu"))
-        def _to_dev(x): return None if x is None else x.to(target_device)
+        override_device="cuda" if torch.cuda.is_available() else "cpu"
+        def _to_dev(x): return None if x is None else x.to(override_device)
 
         self.nodes_codebook        = _to_dev(self.nodes_codebook)
         self.edge_feature_codebook = _to_dev(self.edge_feature_codebook)
@@ -1195,9 +1221,9 @@ class HyperNet(AbstractGraphEncoder):
 
         for emap in (self.node_encoder_map, self.edge_encoder_map, self.graph_encoder_map):
             for enc, _ in emap.values():
-                enc.device = target_device
+                enc.device = override_device
                 if getattr(enc, "codebook", None) is not None:
-                    enc.codebook = enc.codebook.to(target_device)
+                    enc.codebook = enc.codebook.to(override_device)
 
     @classmethod
     def load(cls, path: str | Path) -> "HyperNet":

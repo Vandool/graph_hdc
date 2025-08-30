@@ -66,7 +66,8 @@ class CategoricalOneHotEncoder(AbstractFeatureEncoder):
         )
 
     def generate_codebook(self) -> torch.Tensor:
-        return torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device=self.device)
+        cb = torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device="cpu")
+        return cb.to(self.device)
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         index = torch.argmax(data).item()
@@ -201,7 +202,8 @@ class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
         self.indexer = indexer
 
     def generate_codebook(self) -> torch.Tensor:
-        return torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device=self.device)
+        cb =  torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device='cpu')
+        return cb.to(self.device)
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         """
