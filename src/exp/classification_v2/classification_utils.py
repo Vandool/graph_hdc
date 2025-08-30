@@ -1,30 +1,26 @@
 import argparse
+import contextlib
+import os
+import random
 import shutil
 import string
-from dataclasses import dataclass, field
-import random
-from typing import Optional
-
-import torch.multiprocessing as mp
-
-from src.datasets.zinc_pairs_v2 import ZincPairsV2
-from src.encoding.the_types import VSAModel
-import contextlib
-with contextlib.suppress(RuntimeError):
-    mp.set_sharing_strategy("file_system")
-
-import os
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
+import torch
+import torch.multiprocessing as mp
 from torch.utils.data import Dataset
 from torch_geometric.data import Batch, Data
 
-import torch
-
+from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.encoding.graph_encoders import AbstractGraphEncoder
+from src.encoding.the_types import VSAModel
 
+with contextlib.suppress(RuntimeError):
+    mp.set_sharing_strategy("file_system")
 
 # ----------------- Single unified experiment config -----------------
 @dataclass

@@ -5,8 +5,8 @@
 # Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
 
 #SBATCH --job-name=MLP_test
-#SBATCH --partition=dev_accelerated
-#SBATCH --time=00:5:00
+#SBATCH --partition=accelerated
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -30,11 +30,12 @@ nvidia-smi || true
 
 
 #   --exp_dir_name "TEST" \
+#  --continue_from "/home/ka/ka_iti/ka_zi9629/projects/graph_hdc/src/exp/classification_v2/results/1_mlp/TEST/models/last.pt"
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --exp_dir_name "TEST" \
-  --epochs 100 \
+  --exp_dir_name "defaults" \
+  --epochs 1 \
   --batch_size 128 \
   --hv_dim 7744 \
   --lr 1e-3 \
@@ -42,8 +43,8 @@ pixi run python "$SCRIPT" \
   --num_workers 0 \
   --micro_bs 64 \
   --train_parents_start 0 \
-  --train_parents_end 10 \
+  --train_parents_end 4000000 \
   --valid_parents_start 0 \
-  --valid_parents_end 1 \
+  --valid_parents_end 100000 \
   --save_every_seconds 1800 \
-  --keep_last_k 2
+  --keep_last_k 2 

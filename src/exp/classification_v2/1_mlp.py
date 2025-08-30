@@ -1,15 +1,9 @@
 import contextlib
 import json
-
-import torch.multiprocessing as mp
-from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
-
-from src.datasets.zinc_pairs_v2 import ZincPairsV2
-import contextlib
-with contextlib.suppress(RuntimeError):
-    mp.set_sharing_strategy("file_system")
-
 import os
+import random
+import shutil
+import string
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -20,14 +14,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.multiprocessing as mp
 from pytorch_lightning import seed_everything
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, confusion_matrix, precision_recall_curve, roc_auc_score, roc_curve
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG
+from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG, Features
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.classification_v2.classification_utils import (
@@ -43,7 +39,8 @@ from src.exp.classification_v2.classification_utils import (
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
-
+with contextlib.suppress(RuntimeError):
+    mp.set_sharing_strategy("file_system")
 # ---------- tiny logger ----------
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -61,8 +58,11 @@ def setup_exp(dir_name: str | None = None) -> dict:
     base_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Setting up experiment in {base_dir}")
-    now = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
-    exp_dir = base_dir / now if not dir_name else base_dir / dir_name
+    if dir_name:
+        exp_dir = base_dir / dir_name
+    else:
+        slug = f"{datetime.now(UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+        exp_dir = base_dir / slug
     exp_dir.mkdir(parents=True, exist_ok=True)
     print(f"Experiment directory created: {exp_dir}")
 
@@ -263,6 +263,7 @@ def train(
         cfg: Config,
         device: torch.device,
         resume_ckpt: dict | None = None,
+        *,
         resume_retrain_last_epoch=True,
 ):
     log("In Training ... ")
@@ -342,7 +343,9 @@ def train(
     last_save_t = time.time()
 
     log(f"Starting training on {device} {gpu_mem(device)}")
+    last_epoch_run = start_epoch - 1
     for epoch in range(start_epoch, cfg.epochs + 1):
+        last_epoch_run = epoch
         model.train()
         epoch_loss_sum, n_seen = 0.0, 0
         pbar = tqdm(train_loader, desc=f"train e{epoch}", dynamic_ncols=True)
@@ -439,11 +442,23 @@ def train(
 
         if metrics["auc"] > best_auc:
             best_auc = metrics["auc"]
-            torch.save(model.state_dict(), models_dir / "best.pt")
+            save_inference_bundle(path=models_dir / "best.pt", model_state=model.state_dict(), config=cfg)
             log(f"[epoch {epoch}] saved best.pt (auc={best_auc:.4f})")
 
     # Always save a final checkpoint
-    torch.save(model.state_dict(), models_dir / "last.pt")
+    save_training_checkpoint(
+        path=models_dir / "last.pt",
+        model_state=model.state_dict(),
+        optim_state=optim.state_dict(),
+        sched_state=None,
+        config=cfg,
+        epoch=last_epoch_run,
+        global_step=global_step,
+        best_metric=best_auc,
+        rng_cpu=torch.get_rng_state(),
+        rng_cuda_all=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        extra={"activation": "GELU", "normalization": "None"},
+    )
     log("Saved last.pt")
 
     # ---- persist metrics history ----
@@ -583,11 +598,14 @@ def run_experiment(cfg: Config):
     # Dataset & Encoder (HRR @ 7744)
     ds_cfg = ZINC_SMILES_HRR_7744_CONFIG
     device = pick_device()
+    log(f"Using device: {device!s}")
+
     log("Loading/creating hypernet …")
     hypernet = (
         load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
     )
     log("Hypernet ready.")
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
 
     # Datasets
     log("Loading pair datasets …")
