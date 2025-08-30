@@ -119,7 +119,7 @@ def save_training_checkpoint(
 
 def load_training_checkpoint(path: Path, device: torch.device = torch.device("cpu")) -> dict:
     # map_location avoids surprise GPU alloc; weights_only reduces pickle surface.
-    return torch.load(path, map_location=device, weights_only=True)
+    return torch.load(path, map_location=device, weights_only=False)
 
 
 def save_inference_bundle(
