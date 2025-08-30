@@ -5,7 +5,7 @@ import torch.multiprocessing as mp
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
-
+import contextlib
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
 
@@ -40,7 +40,6 @@ from src.exp.classification_v2.classification_utils import (
     encode_g2_with_cache,
     get_args,
     gpu_mem,
-    setup_exp,
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
@@ -53,6 +52,36 @@ def log(msg: str) -> None:
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
+def setup_exp(dir_name: str | None = None) -> dict:
+    script_path = Path(__file__).resolve()
+    experiments_path = script_path.parent
+    script_stem = script_path.stem
+
+    base_dir = experiments_path / "results" / script_stem
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Setting up experiment in {base_dir}")
+    now = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+    exp_dir = base_dir / now if not dir_name else base_dir / dir_name
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Experiment directory created: {exp_dir}")
+
+    dirs = {
+        "exp_dir": exp_dir,
+        "models_dir": exp_dir / "models",
+        "evals_dir": exp_dir / "evaluations",
+        "artefacts_dir": exp_dir / "artefacts",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+
+    try:
+        shutil.copy(script_path, exp_dir / script_path.name)
+        print(f"Saved a copy of the script to {exp_dir / script_path.name}")
+    except Exception as e:
+        print(f"Warning: Failed to save script copy: {e}")
+
+    return dirs
 
 # ---------------------------------------------------------------------
 # Model

@@ -6,12 +6,12 @@
 
 #SBATCH --job-name=MLP_test
 #SBATCH --partition=dev_accelerated
-#SBATCH --time=00:10:00
+#SBATCH --time=00:5:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 # CUDA toolchain on HoreKa (generic “devel/cuda” is recommended)
 module load devel/cuda
@@ -37,7 +37,6 @@ pixi run python "$SCRIPT" \
   --epochs 100 \
   --batch_size 128 \
   --hv_dim 7744 \
-  --vsa HRR \
   --lr 1e-3 \
   --weight_decay 1e-4 \
   --num_workers 0 \

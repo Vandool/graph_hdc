@@ -34,7 +34,7 @@ pixi run python "$SCRIPT" \
   --epochs 100 \
   --batch_size 128 \
   --hv_dim 7744 \
-  --vsa HRR \
+  --vsa "HRR" \
   --lr 1e-3 \
   --weight_decay 1e-4 \
   --num_workers 0 \

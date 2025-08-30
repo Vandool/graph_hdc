@@ -2,14 +2,14 @@ import argparse
 import shutil
 import string
 from dataclasses import dataclass, field
-from random import random
+import random
 from typing import Optional
 
 import torch.multiprocessing as mp
 
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.encoding.the_types import VSAModel
-
+import contextlib
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
 
@@ -48,6 +48,7 @@ class Config:
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
     vsa: VSAModel = VSAModel.HRR
+
     # Optim
     lr: float = 1e-3
     weight_decay: float = 1e-4
@@ -71,13 +72,16 @@ def _parse_hidden_dims(s: str) -> list[int]:
     return [int(tok) for tok in s.replace(" ", "").split(",") if tok]
 
 def _parse_vsa(s: str) -> VSAModel:
-    # allow e.g. "HRR"
+    # Accepts e.g. "HRR", not VSAModel.HRR
+    if isinstance(s, VSAModel):
+        return s
     return VSAModel(s)
 
 def get_args(argv: Optional[list[str]] = None) -> Config:
     """
     Build a Config by starting from dataclass defaults and then
     applying ONLY the CLI options the user actually provided.
+    NOTE: For --vsa, pass a string like "HRR", not VSAModel.HRR.
     """
     cfg = Config()  # start with your defaults
 
