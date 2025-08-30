@@ -4,6 +4,8 @@ import json
 import torch.multiprocessing as mp
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
+from src.datasets.zinc_pairs_v2 import ZincPairsV2
+
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
 
@@ -26,7 +28,6 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from src.datasets.zinc_pairs import ZincPairs
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import (ZINC_SMILES_HRR_7744_CONFIG)
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
@@ -80,7 +81,6 @@ def save_training_checkpoint(
         *,
         model_state: dict,
         optim_state: dict,
-        encoder_state: dict,
         config: Config,
         epoch: int,
         global_step: int,
@@ -97,7 +97,6 @@ def save_training_checkpoint(
         "optimizer_state": optim_state,
         "scheduler_state": sched_state,
         "config": asdict(config),
-        "encoder_state": encoder_state,
         "epoch": int(epoch),
         "global_step": int(global_step),
         "best_metric": float(best_metric),
@@ -165,8 +164,7 @@ def _sanitize_for_parquet(d: dict) -> dict:
 # Eval + Train
 # ---------------------------------------------------------------------
 @torch.no_grad()
-def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *,
-             return_details: bool = False,
+def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool = False,
              max_batches: int | None = 50):
     model.eval();
     encoder.eval()
@@ -225,6 +223,8 @@ def train(
         artefacts_dir: Path,
         cfg: Config,
         device: torch.device,
+        resume_ckpt: dict | None = None,
+        resume_retrain_last_epoch=True,
 ):
     log("In Training ... ")
     log("Setting up datasets …")
@@ -240,9 +240,11 @@ def train(
     encoder = encoder.to(device).eval()
 
     # ----- model + optim -----
-    model = MLPClassifier(hv_dim=cfg.hv_dim, hidden_dims=cfg.hidden_dims).to(device)
+    hv_dim = (resume_ckpt["config"]["hv_dim"] if resume_ckpt else cfg.hv_dim)
+    hidden_dims = (resume_ckpt["config"]["hidden_dims"] if resume_ckpt else cfg.hidden_dims)
+    model = MLPClassifier(hv_dim=hv_dim, hidden_dims=hidden_dims).to(device)
     # PairV2: [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
-    ratio = 7483079 / 8266188
+    ratio = 37483079 / 8266188
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([ratio])).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
@@ -266,8 +268,33 @@ def train(
     rows, train_losses, valid_losses, valid_aucs = [], [], [], []
     best_auc, global_step = -float("inf"), 0
 
-    g2_cache_train = ParentH2Cache(max_items=+ 1000)
-    g2_cache_valid = ParentH2Cache(max_items=cfg.valid_parents + 1000)
+    start_epoch = 1
+    if resume_ckpt is not None:
+        # 1) model/optim
+        model.load_state_dict(resume_ckpt["model_state"], strict=True)
+        optim.load_state_dict(resume_ckpt["optimizer_state"])
+
+        # 3) bookkeeping
+        best_auc = float(resume_ckpt.get("best_metric", best_auc))
+        global_step = int(resume_ckpt.get("global_step", 0))
+        last_epoch = int(resume_ckpt.get("epoch", 0))
+
+        # 4) RNG (optional but good for determinism)
+        try:
+            torch.set_rng_state(resume_ckpt["rng_state_cpu"])
+            if torch.cuda.is_available() and resume_ckpt.get("rng_state_cuda") is not None:
+                torch.cuda.set_rng_state_all(resume_ckpt["rng_state_cuda"])
+        except Exception as e:
+            log(f"Resume: RNG restore failed ({e}); continuing without exact determinism.")
+
+        # 5) where to continue
+        start_epoch = last_epoch if resume_retrain_last_epoch else (last_epoch + 1)
+        last_epoch = int(resume_ckpt.get("epoch", 0))
+        log(f"Resuming from epoch={last_epoch}, step={global_step}, best_auc={best_auc:.4f}. "
+            f"Continuing at epoch {start_epoch}.")
+
+    g2_cache_train = ParentH2Cache(max_items=50_000)
+    g2_cache_valid = ParentH2Cache(max_items=5_000)
 
     # Save the run config for provenance
     (evals_dir / "run_config.json").write_text(json.dumps(base_row, indent=2))
@@ -276,7 +303,7 @@ def train(
     last_save_t = time.time()
 
     log(f"Starting training on {device} {gpu_mem(device)}")
-    for epoch in range(1, cfg.epochs + 1):
+    for epoch in range(start_epoch, cfg.epochs + 1):
         model.train()
         epoch_loss_sum, n_seen = 0.0, 0
         pbar = tqdm(train_loader, desc=f"train e{epoch}", dynamic_ncols=True)
@@ -350,7 +377,7 @@ def train(
         train_losses.append(train_loss)
         log(f"[epoch {epoch}] train_loss={train_loss:.6f} | time={time.time() - t0:.1f}s")
 
-        metrics = evaluate(model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid)
+        metrics = evaluate(model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid, max_batches=None)
         valid_losses.append(metrics["loss"])
         valid_aucs.append(metrics["auc"])
         log(
@@ -525,30 +552,50 @@ def run_experiment(cfg: Config):
 
     # Datasets
     log("Loading pair datasets …")
-    train_full = ZincPairs(split="train", base_dataset=ZincSmiles(split="train"))
-    valid_full = ZincPairs(split="valid", base_dataset=ZincSmiles(split="valid"))
+    train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"))
+    valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"))
     log(f"Pairs loaded. train_pairs={len(train_full)} valid_pairs={len(valid_full)}")
 
     # --- pick N parents & wrap as Subset ---
     train_indices = []
     if cfg.train_parents_start or cfg.train_parents_end:
-        train_start = cfg.train_parents_start or 0
-        train_end = cfg.train_parents_end or len(train_full)
-        train_indices = range(train_start, train_end)
-
+        t_start = cfg.train_parents_start or 0
+        t_end = cfg.train_parents_end or len(train_full)
+        train_indices = range(t_start, t_end)
+        log(f"Using training data from {t_start} to {t_end}.")
 
     valid_indices = []
     if cfg.valid_parents_start or cfg.valid_parents_end:
-        train_start = cfg.valid_parents_start or 0
-        train_end = cfg.valid_parents_end or len(train_full)
-        valid_indices = range(train_start, train_end)
+        v_start = cfg.valid_parents_start or 0
+        v_end = cfg.valid_parents_end or len(valid_full)
+        valid_indices = range(v_start, v_end)
+        log(f"Using validation data from {v_start} to {v_end}.")
 
     train_small = torch.utils.data.Subset(train_full, train_indices) if train_indices else train_full
     valid_small = torch.utils.data.Subset(valid_full, valid_indices) if valid_indices else valid_full
 
     log(f"[subset] train_indices={len(train_small):,}  valid_indices={len(valid_small):,}")
 
-    torch.manual_seed(cfg.seed)
+    # --- resume if requested ---
+    resume_ckpt = None
+    if cfg.continue_from is not None:
+        try:
+            # map to CPU; we'll .to(device) after constructing modules
+            resume_ckpt = load_training_checkpoint(cfg.continue_from, device=torch.device("cpu"))
+            log(f"Loaded checkpoint: {cfg.continue_from.name}")
+            # Optional: sanity-check shapes
+            ck = resume_ckpt["config"]
+            if (ck.get("hv_dim") != cfg.hv_dim) or (ck.get("hidden_dims") != cfg.hidden_dims):
+                log("Warning: overriding hv_dim/hidden_dims from checkpoint to ensure compatibility.")
+                cfg.hv_dim = ck["hv_dim"]
+                cfg.hidden_dims = ck["hidden_dims"]
+        except TypeError:
+            # Fallback if your torch version doesn't support weights_only
+            resume_ckpt = torch.load(cfg.continue_from, map_location="cpu")
+        except Exception as e:
+            log(f"Failed to load checkpoint {cfg.continue_from}: {e}")
+            resume_ckpt = None
+
     train(
         train_pairs=train_small,
         valid_pairs=valid_small,
@@ -558,6 +605,8 @@ def run_experiment(cfg: Config):
         artefacts_dir=artefacts_dir,
         cfg=cfg,
         device=device,
+        resume_ckpt=resume_ckpt,
+        resume_retrain_last_epoch=cfg.resume_retrain_last_epoch,
     )
 
 

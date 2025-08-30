@@ -3,9 +3,11 @@ import shutil
 import string
 from dataclasses import dataclass, field
 from random import random
+from typing import Optional
 
 import torch.multiprocessing as mp
 
+from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.encoding.the_types import VSAModel
 
 with contextlib.suppress(RuntimeError):
@@ -19,7 +21,6 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from torch_geometric.data import Batch, Data
 
-from src.datasets.zinc_pairs import ZincPairs
 import torch
 
 from src.encoding.graph_encoders import AbstractGraphEncoder
@@ -42,7 +43,7 @@ class Config:
     valid_parents_end: int | None = None
 
     # Model (shared knobs)
-    hidden_dims: List[int] = field(default_factory=lambda: [4096, 2048, 512, 128])
+    hidden_dims: list[int] = field(default_factory=lambda: [4096, 2048, 512, 128])
 
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
@@ -61,9 +62,11 @@ class Config:
     # Checkpointing
     save_every_seconds: int = 3600  # every 60 minutes
     keep_last_k: int = 2            # rolling snapshots to keep
+    continue_from: Path | None = None
+    resume_retrain_last_epoch: bool = False
 
 # ----------------- CLI parsing that never clobbers defaults -----------------
-def _parse_hidden_dims(s: str) -> List[int]:
+def _parse_hidden_dims(s: str) -> list[int]:
     # accept "4096,2048,512,128" or with spaces
     return [int(tok) for tok in s.replace(" ", "").split(",") if tok]
 
@@ -71,7 +74,7 @@ def _parse_vsa(s: str) -> VSAModel:
     # allow e.g. "HRR"
     return VSAModel(s)
 
-def get_args(argv: Optional[List[str]] = None) -> Config:
+def get_args(argv: Optional[list[str]] = None) -> Config:
     """
     Build a Config by starting from dataclass defaults and then
     applying ONLY the CLI options the user actually provided.
@@ -120,6 +123,8 @@ def get_args(argv: Optional[List[str]] = None) -> Config:
     # Checkpointing
     p.add_argument("--save_every_seconds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--keep_last_k", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--continue_from", type=Path, default=argparse.SUPPRESS)
+    p.add_argument("--resume_retrain_last_epoch", type=bool, default=argparse.SUPPRESS)
 
     ns = p.parse_args(argv)
     provided = vars(ns)  # only the keys the user actually passed
@@ -195,7 +200,7 @@ class PairsGraphsDataset(Dataset):
     Returns raw graphs (no encodings): (g1, g2, k1k2, y, parent_idx)
     """
 
-    def __init__(self, pairs_ds: ZincPairs):
+    def __init__(self, pairs_ds: ZincPairsV2):
         self.ds = pairs_ds
 
     def __len__(self):
