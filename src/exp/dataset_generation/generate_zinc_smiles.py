@@ -52,7 +52,7 @@ def generate():
         ),
     )
 
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(device)
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(device)
 
     # Precompute and cache encodings for each split
     for split in [
