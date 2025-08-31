@@ -1,0 +1,26 @@
+program: 0_real_nvp_actnorm.py
+method: bayes
+metric:
+  name: val_loss
+  goal: minimize
+parameters:
+  vsa:
+    values: ["HRR"]
+  lr:
+    min: 0.00001
+    max: 0.0005
+    distribution: log_uniform_values
+  weight_decay:
+    values: [0.0, 1e-5]
+  batch_size:
+    values: [32, 64]
+  seed:
+    values: [42]
+  num_flows:
+    values: [8, 12]
+  num_hidden_channels:
+    values: [256, 512]
+  epochs:
+    values: [300]
+  hv_dim:
+    values: [7744]
