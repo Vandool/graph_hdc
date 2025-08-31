@@ -96,7 +96,7 @@ class FlowConfig:
     num_hidden_channels: int = 512
 
     smax_initial = 1.0
-    smax_final = 6.0
+    smax_final = 12
     smax_warmup_epochs = 15
 
 
@@ -144,7 +144,7 @@ class RealNVPLightning(AbstractNFModel):
         for _ in range(int(cfg.num_flows)):
             layers = [self.flat_dim, hidden, hidden, self.flat_dim]
             t_net = nf.nets.MLP(layers, init_zeros=True)
-            s_net = BoundedMLP(layers, smax=getattr(cfg, "smax_final", 6.0))
+            s_net = BoundedMLP(layers, smax=getattr(cfg, "smax_final", 12))
             self.s_modules.append(s_net)
 
             flows.append(nf.flows.MaskedAffineFlow(self.mask0, t=t_net, s=s_net))
