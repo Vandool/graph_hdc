@@ -476,7 +476,7 @@ def run_experiment(cfg: FlowConfig):
     val_nll = _evaluate_loader_nll(best_model, validation_dataloader, device)
     if val_nll.size:
         # report bits per dimension
-        bpd = val_nll / ((cfg.hv_dim * cfg.hv_dim) * np.log(2)) # [node|graph]
+        bpd = val_nll / ((2*cfg.hv_dim) * np.log(2)) # [node|graph]
         df = pd.DataFrame({"nll": val_nll, "bpd": bpd})
         df.to_parquet(evals_dir / "val_nll.parquet", index=False)
 
