@@ -274,7 +274,7 @@ def train(
     log(f"Datasets ready. train_size={len(train_ds):,} valid_size={len(valid_ds):,}")
 
     log("Setting up dataloaders …")
-    train_loader = make_loader(train_ds, cfg.batch_size, True, cfg, collate_pairs)
+    train_loader = make_loader(train_ds, cfg.batch_size, False, cfg, collate_pairs)
     valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)
     log("In Training ... Data loaders ready.")
 

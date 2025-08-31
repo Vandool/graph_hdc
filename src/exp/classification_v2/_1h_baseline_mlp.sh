@@ -34,7 +34,7 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --exp_dir_name "defaults" \
+  --exp_dir_name "defaults_longer" \
   --epochs 1 \
   --batch_size 128 \
   --hv_dim 7744 \
