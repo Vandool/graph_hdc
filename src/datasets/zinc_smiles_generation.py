@@ -110,6 +110,32 @@ class ZincSmiles(InMemoryDataset):
     and caches a collated ``data_<split>.pt`` under *root/processed/*.
 
     Pass `transform`, `pre_transform`, or `pre_filter` per the usual PyG API.
+
+    Statistics:
+    ---------train----------ZincSmiles(train, enc_suffix='HRR7744')
+    .. rubric:: Encoded tensor statistics
+
+    **Node terms**
+    - min: -1.0664  max: +1.0895  mean: +0.0008 Median: +0.0006
+    **Graph terms**
+    - min: -29267.9609  max: +28255.9824  mean: +0.0145 Median: +0.3219
+
+
+    ---------valid----------ZincSmiles(valid, enc_suffix='HRR7744')
+    .. rubric:: Encoded tensor statistics
+
+    **Node terms**
+    - min: -0.9017  max: +0.9158  mean: +0.0008 Median: +0.0006
+    **Graph terms**
+    - min: -25233.6641  max: +25318.3516  mean: +0.0135 Median: +0.3074
+
+    ---------test----------ZincSmiles(test, enc_suffix='HRR7744')
+    .. rubric:: Encoded tensor statistics
+
+    **Node terms**
+    - min: -0.7992  max: +0.9377  mean: +0.0008 Median: +0.0006
+    **Graph terms**
+    - min: -16596.3379  max: +16393.8242  mean: +0.0165 Median: +0.3019
     """
 
     def __init__(

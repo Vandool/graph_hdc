@@ -475,7 +475,12 @@ def run_experiment(cfg: FlowConfig):
     # ---- per-sample NLL (really the KL objective) on validation ----
     val_nll = _evaluate_loader_nll(best_model, validation_dataloader, device)
     if val_nll.size:
-        pd.DataFrame({"nll": val_nll}).to_parquet(evals_dir / "val_nll.parquet", index=False)
+        # report bits per dimension
+        bpd = val_nll / ((cfg.hv_dim * cfg.hv_dim) * np.log(2)) # [node|graph]
+        df = pd.DataFrame({"nll": val_nll, "bpd": bpd})
+        df.to_parquet(evals_dir / "val_nll.parquet", index=False)
+
+        _hist(artefacts_dir / "val_bpd_hist.png", bpd, "Validation bpd", "bpd")
         _hist(artefacts_dir / "val_nll_hist.png", val_nll, "Validation NLL", "NLL")
         wandb.log(
             {
@@ -484,6 +489,11 @@ def run_experiment(cfg: FlowConfig):
                 "val_nll_min": float(np.min(val_nll)),
                 "val_nll_max": float(np.max(val_nll)),
                 "val_nll_hist": wandb.Histogram(val_nll),
+                "val_bpd_mean": float(np.mean(bpd)),
+                "val_bpd_std": float(np.std(bpd)),
+                "val_bpd_min": float(np.min(bpd)),
+                "val_bpd_max": float(np.max(bpd)),
+                "val_bpd_hist": wandb.Histogram(bpd),
             }
         )
     else:

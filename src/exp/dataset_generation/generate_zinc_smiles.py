@@ -11,7 +11,7 @@ from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Fea
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
-from src.utils.utils import GLOBAL_MODEL_PATH
+from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 
 def get_device() -> torch.device:
@@ -29,7 +29,7 @@ def generate():
 
     ds_name = "ZincSmilesHRR7744"
     zinc_feature_bins = [9, 6, 3, 4]
-    device = get_device()
+    device = pick_device()
 
     dataset_config = DatasetConfig(
         seed=seed,
