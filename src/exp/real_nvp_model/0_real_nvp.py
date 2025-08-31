@@ -366,7 +366,7 @@ def run_experiment(cfg: FlowConfig):
 
     log("Loading/creating hypernet …")
     hypernet: HyperNet = (
-        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_name, cfg=dataset_config).to(cfg.device).eval()
+        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(cfg.device).eval()
     )
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
