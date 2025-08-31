@@ -50,10 +50,12 @@ LR=1e-3
 WEIGHT_DECAY=0.0
 SEED=42
 # ---------------------------------
+# Available partitions: 
+# Available dev partitions: 
 
 # Partitions and time limits
-PARTITION_NORMAL="gpu_h100_il"      # cpu_il | cpu | highmem | gpu_h100 | gpu_a100_il | gpu_h100_il
-PARTITION_DEV="dev_gpu_h100"     # dev_cpu_il | dev_cpu | dev_highmem | dev_gpu_h100
+PARTITION_NORMAL="accelerated"      # cpuonly large accelerated accelerated-h100 accelerated-200 
+PARTITION_DEV="dev_accelerated"     # ddev_cpuonly dev_accelerated dev_accelerated-h100
 TIME_NORMAL="36:00:00"
 TIME_DEV="00:10:00"
 
@@ -112,7 +114,7 @@ sbatch \
   --nodes=1 \
   --ntasks=1 \
   --mem=64G \
-  --wrap="module load devel/cuda/11.8 && \
+  --wrap="module load devel/cuda && \
     export WANDB_API_KEY=\${WANDB_API_KEY} && \
     export WANDB_ENTITY='${ENTITY}' && \
     export WANDB_PROJECT='${PROJECT}' && \

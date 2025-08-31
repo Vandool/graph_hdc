@@ -8,7 +8,7 @@ import string
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from pprint import pprint
 
@@ -19,7 +19,7 @@ import pandas as pd
 import torch
 import wandb
 from pytorch_lightning import Trainer, seed_everything
-from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
@@ -542,6 +542,8 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     evals_dir = Path(dirs["evals_dir"])
     artefacts_dir = Path(dirs["artefacts_dir"])
 
+    seed_everything(cfg.seed)
+
     # ----- hypernet config (kept for provenance; not needed in this flow) -----
     ds_name = "ZincSmilesHRR7744"
     zinc_feature_bins = [9, 6, 3, 4]
@@ -836,8 +838,6 @@ def sweep_entrypoint():
         num_flows=int(cfg_dict.get("num_flows", 8)),
         num_hidden_channels=int(cfg_dict.get("num_hidden_channels", 128)),
     )
-
-    seed_everything(cfg.seed)
     run_experiment(cfg)
 
 
@@ -890,4 +890,5 @@ if __name__ == "__main__":
             continue_from="/Users/arvandkaveh/Projects/kit/graph_hdc/src/exp/real_nvp_v2/results/0_real_nvp_v2/DEBUG/models/last.ckpt"
         ), local_dev=True)
     else:
+        log("Cluster run ...")
         run_experiment(get_flow_cli_args())
