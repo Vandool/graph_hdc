@@ -43,8 +43,8 @@ pixi run python "$SCRIPT" \
   --num_workers 0 \
   --micro_bs 64 \
   --train_parents_start 0 \
-  --train_parents_end 4000000 \
+  --train_parents_end 12000000 \
   --valid_parents_start 0 \
-  --valid_parents_end 100000 \
-  --save_every_seconds 1800 \
+  --valid_parents_end 1200000 \
+  --save_every_seconds 3600 \
   --keep_last_k 2 

@@ -219,6 +219,7 @@ def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return
         h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, h2_cache, cfg.micro_bs)
 
         logits = model(h1, h2)
+        assert logits.shape == y.shape
         loss = criterion(logits, y)
 
         prob = torch.sigmoid(logits).detach().cpu()
