@@ -313,8 +313,8 @@ class PairData(Data):
 class PairConfig:
     seed = 42
     k_min = 2
-    k_max = None      # ← go up to N
-    k_cap = 12        # main bucket
+    k_max = None  # ← go up to N
+    k_cap = 12  # main bucket
 
     # main bucket (k ≤ k_cap)
     pos_per_k_main = 2
@@ -342,14 +342,21 @@ class PairConfig:
 
 class ZincPairsV2(Dataset):
     """
+    ZincPairsV2 dataset:
     === Aggregated summary (train+valid+test) ===
     [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     [ALL] neg_type histogram: 1:3398852 (9.1%), 2:7131081 (19.0%), 3:8266188 (22.1%), 4:4009247 (10.7%), 5:7019712 (18.7%), 6:7657999 (20.4%)
+
+    ZincPairsV2Dev dataset:
+    === Aggregated summary (train+valid+test) ===
+    [ALL] size=46781 | positives=8438 (18.0%) | negatives=38343 (82.0%)
+    [ALL] neg_type histogram: 1:3365 (8.8%), 2:7300 (19.0%), 3:8437 (22.0%), 4:4222 (11.0%), 5:7174 (18.7%), 6:7845 (20.5%)
     """
+
     def __init__(self, base_dataset, split="train",
                  root=GLOBAL_DATASET_PATH / "ZincPairsV2",
                  cfg=None, transform=None, pre_transform=None, pre_filter=None,
-                 shard_size=25_000, cache_shards=2, force_reprocess=False):
+                 shard_size=25_000, cache_shards=2, *, force_reprocess=False, dev: bool = False):
         # --- set everything process() will need BEFORE super().__init__ ---
         self.base = base_dataset
         self.split = split
@@ -358,6 +365,8 @@ class ZincPairsV2(Dataset):
         self.cache_shards = cache_shards
         self._rng = random.Random(self.cfg.seed)
 
+        if dev:
+            root = GLOBAL_DATASET_PATH / "ZincPairsV2DEV"
         # idx_path must exist for process() to use
         self.idx_path = Path(root) / "processed" / f"index_{split}.pt"
 
@@ -550,7 +559,8 @@ class ZincPairsV2(Dataset):
                     pair = pair if pair[0] <= pair[1] else (pair[1], pair[0])
                     if pair not in allowed:
                         continue  # this is the "forbidden" family handled elsewhere
-                    H2 = H.copy(); H2.add_edge(u, v)
+                    H2 = H.copy()
+                    H2.add_edge(u, v)
                     if nx.is_connected(H2) and not is_induced_subgraph_feature_aware(H2, G):
                         ei = nx_to_edge_index_on_ordered_nodes(H2, S)
                         out.append((S, ei))
@@ -564,7 +574,8 @@ class ZincPairsV2(Dataset):
             H = G.subgraph(S).copy()
             out: list[tuple[list[int], torch.Tensor]] = []
             for (u, v) in list(H.edges()):
-                H2 = H.copy(); H2.remove_edge(u, v)
+                H2 = H.copy()
+                H2.remove_edge(u, v)
                 if nx.is_connected(H2) and not is_induced_subgraph_feature_aware(H2, G):
                     ei = nx_to_edge_index_on_ordered_nodes(H2, S)
                     out.append((S, ei))
@@ -588,8 +599,10 @@ class ZincPairsV2(Dataset):
                         if H.has_edge(*sorted((x, y))) or H.has_edge(*sorted((p, q))):
                             continue
                         H2 = H.copy()
-                        H2.remove_edge(a, b); H2.remove_edge(c, d)
-                        H2.add_edge(*sorted((x, y))); H2.add_edge(*sorted((p, q)))
+                        H2.remove_edge(a, b)
+                        H2.remove_edge(c, d)
+                        H2.add_edge(*sorted((x, y)))
+                        H2.add_edge(*sorted((p, q)))
                         if nx.is_connected(H2) and not is_induced_subgraph_feature_aware(H2, G):
                             ei = nx_to_edge_index_on_ordered_nodes(H2, S)
                             out.append((S, ei))
@@ -598,7 +611,8 @@ class ZincPairsV2(Dataset):
             return out
 
         # ----- Hard negative D: cross-parent indices (verified by VF2) -----
-        def _gen_cross_parent_indices(G_pos: nx.Graph, parents: list[nx.Graph], self_idx: int, max_neg: int) -> list[int]:
+        def _gen_cross_parent_indices(G_pos: nx.Graph, parents: list[nx.Graph], self_idx: int, max_neg: int) -> list[
+            int]:
             out = []
             for j, G_other in enumerate(parents):
                 if j == self_idx:
@@ -665,24 +679,24 @@ class ZincPairsV2(Dataset):
         neg_per_pos_tail = getattr(cfg, "neg_per_pos_tail", 1)
 
         # enable/disable hard negatives
-        use_wrong_edge_allowed    = getattr(cfg, "neg_wrong_edge_allowed", True)
+        use_wrong_edge_allowed = getattr(cfg, "neg_wrong_edge_allowed", True)
         use_missing_edge_verified = getattr(cfg, "neg_missing_edge_verified", True)
-        use_rewire                = getattr(cfg, "neg_rewire", True)
-        use_cross_parent          = getattr(cfg, "neg_cross_parent", True)
-        use_anchor_aware          = getattr(cfg, "neg_anchor_aware", True)
+        use_rewire = getattr(cfg, "neg_rewire", True)
+        use_cross_parent = getattr(cfg, "neg_cross_parent", True)
+        use_anchor_aware = getattr(cfg, "neg_anchor_aware", True)
 
         # per-family caps (shared for main/tail unless *_tail provided)
-        cap_wrong_edge_allowed    = getattr(cfg, "cap_wrong_edge_allowed", 1)
-        cap_missing_edge          = getattr(cfg, "cap_missing_edge", 1)
-        cap_rewire                = getattr(cfg, "cap_rewire", 1)
-        cap_cross_parent          = getattr(cfg, "cap_cross_parent", 1)
-        cap_anchor_aware          = getattr(cfg, "cap_anchor_aware", 1)
+        cap_wrong_edge_allowed = getattr(cfg, "cap_wrong_edge_allowed", 1)
+        cap_missing_edge = getattr(cfg, "cap_missing_edge", 1)
+        cap_rewire = getattr(cfg, "cap_rewire", 1)
+        cap_cross_parent = getattr(cfg, "cap_cross_parent", 1)
+        cap_anchor_aware = getattr(cfg, "cap_anchor_aware", 1)
 
-        cap_wrong_edge_allowed_t  = getattr(cfg, "cap_wrong_edge_allowed_tail", cap_wrong_edge_allowed)
-        cap_missing_edge_t        = getattr(cfg, "cap_missing_edge_tail", cap_missing_edge)
-        cap_rewire_t              = getattr(cfg, "cap_rewire_tail", cap_rewire)
-        cap_cross_parent_t        = getattr(cfg, "cap_cross_parent_tail", cap_cross_parent)
-        cap_anchor_aware_t        = getattr(cfg, "cap_anchor_aware_tail", cap_anchor_aware)
+        cap_wrong_edge_allowed_t = getattr(cfg, "cap_wrong_edge_allowed_tail", cap_wrong_edge_allowed)
+        cap_missing_edge_t = getattr(cfg, "cap_missing_edge_tail", cap_missing_edge)
+        cap_rewire_t = getattr(cfg, "cap_rewire_tail", cap_rewire)
+        cap_cross_parent_t = getattr(cfg, "cap_cross_parent_tail", cap_cross_parent)
+        cap_anchor_aware_t = getattr(cfg, "cap_anchor_aware_tail", cap_anchor_aware)
 
         tail_anchor_fraction = getattr(cfg, "tail_anchor_fraction", 0.5)
 
@@ -858,7 +872,9 @@ class ZincPairsV2(Dataset):
                         take = min(len(bad_pairs2), k2_neg_budget)
                         for (u, v) in rng.sample(bad_pairs2, take):
                             S2 = [u, v]
-                            H2 = nx.Graph(); H2.add_nodes_from(S2); H2.add_edge(u, v)
+                            H2 = nx.Graph()
+                            H2.add_nodes_from(S2)
+                            H2.add_edge(u, v)
                             ei2 = nx_to_edge_index_on_ordered_nodes(H2, S2)
                             g1_neg = make_subgraph_data(full, S2, edge_index_override=ei2)
                             yield PairData(
@@ -888,6 +904,7 @@ class ZincPairsV2(Dataset):
                                 neg_type=torch.tensor([3]),  # cross-parent
                                 parent_idx=torch.tensor([j]),
                             )
+
 
 if __name__ == '__main__':
     # Tiny base split (1 molecule) just for sanity

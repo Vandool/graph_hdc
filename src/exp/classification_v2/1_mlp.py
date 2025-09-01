@@ -17,6 +17,9 @@ import torch
 import torch.multiprocessing as mp
 from pytorch_lightning import seed_everything
 from sklearn.metrics import average_precision_score, confusion_matrix, precision_recall_curve, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    f1_score, balanced_accuracy_score, matthews_corrcoef, brier_score_loss
+)
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -35,12 +38,14 @@ from src.exp.classification_v2.classification_utils import (
     encode_batch,
     encode_g2_with_cache,
     get_args,
-    gpu_mem,
+    gpu_mem, stratified_per_parent_indices, exact_representative_validation_indices,
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
+
+
 # ---------- tiny logger ----------
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -48,6 +53,7 @@ def log(msg: str) -> None:
 
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
 
 def setup_exp(dir_name: str | None = None) -> dict:
     script_path = Path(__file__).resolve()
@@ -83,12 +89,13 @@ def setup_exp(dir_name: str | None = None) -> dict:
 
     return dirs
 
+
 # ---------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------
 # MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
 class MLPClassifier(nn.Module):
-    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None):
+    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None) -> None:
         """
         hv_dim: dimension of each HRR vector (e.g., 7744)
         hidden_dims: e.g., [4096, 2048, 512, 128]
@@ -96,7 +103,7 @@ class MLPClassifier(nn.Module):
         super().__init__()
         hidden_dims = hidden_dims or [2048, 1024, 512, 128]
         d_in = hv_dim * 2
-        layers: list[nn.Module] = []
+        layers: list[nn.Module] = [nn.LayerNorm(d_in)]
         last = d_in
         for h in hidden_dims:
             layers += [nn.Linear(last, h), nn.GELU()]
@@ -213,16 +220,13 @@ def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return
     for bi, (g1_b, g2_b, y, parent_ids) in enumerate(loader):
         if max_batches is not None and bi >= max_batches:
             break
-
-        y = y.to(device)
+        y = y.to(device).float().view(-1)
         h1 = encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs)
         h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, h2_cache, cfg.micro_bs)
-
         logits = model(h1, h2)
-        assert logits.shape == y.shape
         loss = criterion(logits, y)
-
         prob = torch.sigmoid(logits).detach().cpu()
+
         ys.append(y.detach().cpu())
         ps.append(prob)
         if return_details:
@@ -234,22 +238,67 @@ def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return
     if total_n == 0:
         return {"auc": float("nan"), "ap": float("nan"), "loss": float("nan")}
 
-    y = torch.cat(ys).numpy()
+    y = torch.cat(ys).numpy().astype(int)
     p = torch.cat(ps).numpy()
 
-    # Safe metrics: small slices may be single-class
+    # Class prevalence
+    pi = float(y.mean())  # fraction positives
+    p_std = float(p.std())
+
+    # Safe metrics
     unique = np.unique(y)
     if unique.size < 2:
         auc = float("nan");
         ap = float("nan")
+        fpr = tpr = thr_roc = None
+        prec = rec = thr_pr = None
     else:
         auc = roc_auc_score(y, p)
         ap = average_precision_score(y, p)
+        fpr, tpr, thr_roc = roc_curve(y, p)
+        prec, rec, thr_pr = precision_recall_curve(y, p)  # thr_pr has len = len(prec)-1
 
-    out = {"auc": auc, "ap": ap, "loss": total_loss / max(1, total_n)}
+    # AP baselines/lifts
+    ap_lift = float(ap / pi) if (ap == ap and pi > 0) else float("nan")
+    ap_norm = float((ap - pi) / (1 - pi)) if (ap == ap and 0 < pi < 1) else float("nan")
+
+    # Thresholded metrics
+    def _metrics_at(thr: float):
+        yhat = (p >= thr).astype(int)
+        return {
+            "acc": float((yhat == y).mean()),
+            "f1": f1_score(y, yhat, zero_division=0),
+            "bal_acc": balanced_accuracy_score(y, yhat),
+            "mcc": matthews_corrcoef(y, yhat) if yhat.sum() and (1 - yhat).sum() else 0.0,
+        }
+
+    # τ=0.5
+    m_05 = _metrics_at(0.5)
+
+    # best-F1 (diagnostic)
+    if unique.size == 2 and thr_pr is not None and len(thr_pr) > 0:
+        # f1 defined only where prec/rec defined; thr_pr aligns with prec[1:], rec[1:]
+        f1s = 2 * prec[1:] * rec[1:] / (prec[1:] + rec[1:] + 1e-12)
+        best_i = int(np.nanargmax(f1s))
+        best_thr = float(thr_pr[best_i])
+        m_best = _metrics_at(best_thr)
+    else:
+        best_thr = float("nan")
+        m_best = {"acc": float("nan"), "f1": float("nan"), "bal_acc": float("nan"), "mcc": float("nan")}
+
+    # Probabilistic metrics
+    brier = brier_score_loss(y, p) if unique.size == 2 else float("nan")
+
+    out = {
+        "auc": float(auc), "ap": float(ap), "loss": total_loss / max(1, total_n),
+        "prevalence": pi, "ap_lift": ap_lift, "ap_norm": ap_norm, "p_std": p_std,
+        "f1_at_0p5": m_05["f1"], "bal_acc_0p5": m_05["bal_acc"], "acc_0p5": m_05["acc"], "mcc_0p5": m_05["mcc"],
+        "best_f1_thr": best_thr, "f1_best": m_best["f1"], "bal_acc_best": m_best["bal_acc"],
+        "acc_best": m_best["acc"], "mcc_best": m_best["mcc"], "brier": brier,
+    }
     if return_details:
-        out["y"] = y
-        out["p"] = p
+        out["y"] = y;
+        out["p"] = p;
         out["logits"] = torch.cat(ls).numpy()
     return out
 
@@ -286,6 +335,9 @@ def train(
     model = MLPClassifier(hv_dim=hv_dim, hidden_dims=hidden_dims).to(device)
     # PairV2: [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     ratio = 37483079 / 8266188
+    if cfg.stratify:
+        ratio = cfg.n_per_parent / cfg.p_per_parent
+    log(f"Applying pos_weight: {ratio:.2f} to the BCEWithLogitsLoss...")
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([ratio])).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
@@ -424,7 +476,12 @@ def train(
         valid_losses.append(metrics["loss"])
         valid_aucs.append(metrics["auc"])
         log(
-            f"[epoch {epoch}] valid_loss={metrics['loss']:.6f}  valid_auc={metrics['auc']:.4f}  valid_ap={metrics['ap']:.4f}"
+            "[epoch {}] valid_loss={:.6f}  AUC={:.4f}  AP={:.4f}  π={:.3f}  AP_lift={:.2f}  "
+            "F1@0.5={:.3f}  BalAcc@0.5={:.3f}  F1*={:.3f} (τ*={:.3f})  Brier={:.4f}".format(
+                epoch, metrics["loss"], metrics["auc"], metrics["ap"], metrics["prevalence"],
+                metrics["ap_lift"], metrics["f1_at_0p5"], metrics["bal_acc_0p5"],
+                metrics["f1_best"], metrics["best_f1_thr"], metrics["brier"]
+            )
         )
 
         rows.append(
@@ -432,11 +489,38 @@ def train(
                 {
                     **base_row,
                     "epoch": epoch,
+                    "global_step": int(global_step),
+
+                    # core
                     "train_loss": float(train_loss),
                     "valid_loss": float(metrics["loss"]),
                     "valid_auc": float(metrics["auc"]),
                     "valid_ap": float(metrics["ap"]),
-                    "global_step": int(global_step),
+
+                    # extras
+                    "valid_prevalence": float(metrics.get("prevalence", float("nan"))),
+                    "valid_ap_lift": float(metrics.get("ap_lift", float("nan"))),
+                    "valid_ap_norm": float(metrics.get("ap_norm", float("nan"))),
+                    "valid_prob_std": float(metrics.get("p_std", float("nan"))),
+                    "valid_brier": float(metrics.get("brier", float("nan"))),
+
+                    # thresholded @ 0.5
+                    "valid_acc@0.5": float(metrics.get("acc_0p5", float("nan"))),
+                    "valid_bal_acc@0.5": float(metrics.get("bal_acc_0p5", float("nan"))),
+                    "valid_f1@0.5": float(metrics.get("f1_at_0p5", float("nan"))),
+                    "valid_mcc@0.5": float(metrics.get("mcc_0p5", float("nan"))),
+
+                    # best-F1 on val (diagnostic)
+                    "valid_best_thr": float(metrics.get("best_f1_thr", float("nan"))),
+                    "valid_acc@best": float(metrics.get("acc_best", float("nan"))),
+                    "valid_bal_acc@best": float(metrics.get("bal_acc_best", float("nan"))),
+                    "valid_f1@best": float(metrics.get("f1_best", float("nan"))),
+                    "valid_mcc@best": float(metrics.get("mcc_best", float("nan"))),
+
+                    # optional: record the pos_weight actually used
+                    "train_pos_weight_used": float(
+                        getattr(cfg, "n_per_parent", 0) / max(1, getattr(cfg, "p_per_parent", 1))
+                        if getattr(cfg, "stratify", False) else 37483079 / 8266188),
                 }
             )
         )
@@ -587,7 +671,7 @@ def train(
 # ---------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------
-def run_experiment(cfg: Config):
+def run_experiment(cfg: Config, is_dev: bool = False):
     log("Parsing args done. Starting run_experiment …")
     dirs = setup_exp(cfg.exp_dir_name)
     models_dir = Path(dirs["models_dir"])
@@ -610,24 +694,40 @@ def run_experiment(cfg: Config):
 
     # Datasets
     log("Loading pair datasets …")
-    train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"))
-    valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"))
+    train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=is_dev)
+    valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=is_dev)
     log(f"Pairs loaded. train_pairs={len(train_full)} valid_pairs={len(valid_full)}")
 
-    # --- pick N parents & wrap as Subset ---
+    # Stratification
     train_indices = []
-    if cfg.train_parents_start or cfg.train_parents_end:
-        t_start = cfg.train_parents_start or 0
-        t_end = cfg.train_parents_end or len(train_full)
-        train_indices = range(t_start, t_end)
-        log(f"Using training data from {t_start} to {t_end}.")
-
     valid_indices = []
-    if cfg.valid_parents_start or cfg.valid_parents_end:
-        v_start = cfg.valid_parents_start or 0
-        v_end = cfg.valid_parents_end or len(valid_full)
-        valid_indices = range(v_start, v_end)
-        log(f"Using validation data from {v_start} to {v_end}.")
+    if cfg.stratify:
+        log("Applying stratification ...")
+        train_indices = stratified_per_parent_indices(ds=train_full,
+                                                      pos_per_parent=cfg.p_per_parent,
+                                                      neg_per_parent=cfg.n_per_parent,
+                                                      exclude_neg_types=cfg.exclude_negs,
+                                                      seed=cfg.seed
+                                                      )
+        valid_indices = exact_representative_validation_indices(ds=valid_full,
+                                                                target_total=int(len(train_indices) / 5),
+                                                                exclude_neg_types=cfg.exclude_negs,
+                                                                by_neg_type=True,
+                                                                seed=cfg.seed
+                                                                )
+        # --- pick N parents & wrap as Subset ---
+    else:
+        if cfg.train_parents_start or cfg.train_parents_end:
+            t_start = cfg.train_parents_start or 0
+            t_end = cfg.train_parents_end or len(train_full)
+            train_indices = range(t_start, t_end)
+            log(f"Using training data from {t_start} to {t_end}.")
+
+        if cfg.valid_parents_start or cfg.valid_parents_end:
+            v_start = cfg.valid_parents_start or 0
+            v_end = cfg.valid_parents_end or len(valid_full)
+            valid_indices = range(v_start, v_end)
+            log(f"Using validation data from {v_start} to {v_end}.")
 
     train_small = torch.utils.data.Subset(train_full, train_indices) if train_indices else train_full
     valid_small = torch.utils.data.Subset(valid_full, valid_indices) if valid_indices else valid_full
@@ -656,7 +756,7 @@ def run_experiment(cfg: Config):
 
     train(
         train_pairs=train_small,
-        valid_pairs=valid_small,
+        valid_pairs=valid_small if not is_dev else train_small,
         encoder=hypernet,
         models_dir=models_dir,
         evals_dir=evals_dir,
@@ -670,6 +770,38 @@ def run_experiment(cfg: Config):
 
 if __name__ == "__main__":
     log(f"Running {Path(__file__).resolve()}")
-    cfg = get_args()
+    is_dev = os.getenv("LOCAL_HDC", False)
+    if is_dev:
+        log("Running in local HDC (DEV) ...")
+        cfg: Config = Config(
+            exp_dir_name="DEBUG_LAYERNORM",
+            seed=42,
+            epochs=10,
+            batch_size=16,
+            train_parents_start=None,
+            train_parents_end=None,
+            valid_parents_start=None,
+            valid_parents_end=None,
+            hidden_dims=[256, 128, 64, 32],
+            hv_dim=88 * 88,
+            vsa=VSAModel.HRR,
+            lr=5e-4,
+            weight_decay=0.0,
+            num_workers=0,
+            prefetch_factor=1,
+            pin_memory=False,
+            micro_bs=4,
+            hv_scale=None,
+            save_every_seconds=60,
+            keep_last_k=1,
+            continue_from=None,
+            resume_retrain_last_epoch=False,
+            stratify=True,
+            p_per_parent=20,
+            n_per_parent=20,
+        )
+    else:
+        cfg = get_args()
+
     pprint(asdict(cfg), indent=2)
-    run_experiment(cfg)
+    run_experiment(cfg, is_dev=is_dev)

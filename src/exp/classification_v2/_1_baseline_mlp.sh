@@ -4,9 +4,9 @@
 # Partitions:
 # cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
 
-#SBATCH --job-name=MLP
+#SBATCH --job-name=MLP_stratified_base
 #SBATCH --partition=gpu_h100
-#SBATCH --time=50:00:00
+#SBATCH --time=36:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -31,7 +31,7 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --exp_dir_name "defaults_longer" \
+  --exp_dir_name "mlp_stratified_base" \
   --epochs 1 \
   --batch_size 128 \
   --hv_dim 7744 \
@@ -39,9 +39,8 @@ pixi run python "$SCRIPT" \
   --weight_decay 1e-4 \
   --num_workers 0 \
   --micro_bs 64 \
-  --train_parents_start 0 \
-  --train_parents_end 12000000 \
-  --valid_parents_start 0 \
-  --valid_parents_end 1200000 \
   --save_every_seconds 3600 \
-  --keep_last_k 2 
+  --keep_last_k 2 \
+  --stratify=True \
+  --p_per_parent=25 \
+  --n_per_parent=25
