@@ -46,7 +46,7 @@ class Config:
 
     # Optim
     lr: float = 1e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 0.0
 
     # Loader
     num_workers: int = 0

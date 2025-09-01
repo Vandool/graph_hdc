@@ -779,7 +779,7 @@ if __name__ == "__main__":
     if is_dev:
         log("Running in local HDC (DEV) ...")
         cfg: Config = Config(
-            exp_dir_name="overfitting_per_parent_2_NO_laynorm",
+            exp_dir_name="overfitting_per_parent_2_NO_laynorm_with_wd",
             seed=42,
             epochs=30,
             batch_size=16,
@@ -809,5 +809,7 @@ if __name__ == "__main__":
     else:
         cfg = get_args()
 
+    # Force WD 0.0 for the already scheduled jobs, it seems to not do good
+    cfg.weight_decay = 0.0
     pprint(asdict(cfg), indent=2)
     run_experiment(cfg, is_dev=is_dev)
