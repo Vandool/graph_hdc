@@ -38,7 +38,7 @@ from src.exp.classification_v2.classification_utils import (
     encode_batch,
     encode_g2_with_cache,
     get_args,
-    gpu_mem, stratified_per_parent_indices, exact_representative_validation_indices,
+    stratified_per_parent_indices, exact_representative_validation_indices,
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
@@ -95,7 +95,8 @@ def setup_exp(dir_name: str | None = None) -> dict:
 # ---------------------------------------------------------------------
 # MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
 class MLPClassifier(nn.Module):
-    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None) -> None:
+    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None,
+                 use_layer_norm: bool = False) -> None:
         """
         hv_dim: dimension of each HRR vector (e.g., 7744)
         hidden_dims: e.g., [4096, 2048, 512, 128]
@@ -103,7 +104,10 @@ class MLPClassifier(nn.Module):
         super().__init__()
         hidden_dims = hidden_dims or [2048, 1024, 512, 128]
         d_in = hv_dim * 2
-        layers: list[nn.Module] = [nn.LayerNorm(d_in)]
+        layers: list[nn.Module] = []
+        if use_layer_norm:
+            log("Using layer normalization...")
+            layers.append(nn.LayerNorm(d_in))
         last = d_in
         for h in hidden_dims:
             layers += [nn.Linear(last, h), nn.GELU()]
@@ -212,7 +216,7 @@ def _sanitize_for_parquet(d: dict) -> dict:
 @torch.no_grad()
 def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool = False,
              max_batches: int | None = 50):
-    model.eval();
+    model.eval()
     encoder.eval()
     ys, ps, ls = [], [], []
     total_loss, total_n = 0.0, 0
@@ -332,7 +336,7 @@ def train(
     # ----- model + optim -----
     hv_dim = (resume_ckpt["config"]["hv_dim"] if resume_ckpt else cfg.hv_dim)
     hidden_dims = (resume_ckpt["config"]["hidden_dims"] if resume_ckpt else cfg.hidden_dims)
-    model = MLPClassifier(hv_dim=hv_dim, hidden_dims=hidden_dims).to(device)
+    model = MLPClassifier(hv_dim=hv_dim, hidden_dims=hidden_dims, use_layer_norm=cfg.use_layer_norm).to(device)
     # PairV2: [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     ratio = 37483079 / 8266188
     if cfg.stratify:
@@ -354,7 +358,7 @@ def train(
             "hidden_dims": cfg.hidden_dims,
             "activation": "GELU",
             "dropout": 0.0,
-            "normalization": "None",
+            "normalization": "LayerNorm" if cfg.use_layer_norm else "None",
         }
     )
 
@@ -395,7 +399,7 @@ def train(
     # Since training can take long, we save based on time
     last_save_t = time.time()
 
-    log(f"Starting training on {device} {gpu_mem(device)}")
+    log(f"Starting training on {device}")
     last_epoch_run = start_epoch - 1
     for epoch in range(start_epoch, cfg.epochs + 1):
         last_epoch_run = epoch
@@ -429,21 +433,22 @@ def train(
             should_save = cfg.save_every_seconds and (time.time() - last_save_t) >= cfg.save_every_seconds
             if should_save:
                 snap_path = models_dir / f"autosnap_e{epoch:03d}_s{global_step:08d}.pt"
-                save_training_checkpoint(
-                    path=snap_path,
-                    model_state=model.state_dict(),
-                    optim_state=optim.state_dict(),
-                    sched_state=None,
-                    config=cfg,
-                    epoch=epoch,
-                    global_step=global_step,
-                    best_metric=best_auc,
-                    rng_cpu=torch.get_rng_state(),
-                    rng_cuda_all=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-                    extra={"activation": "GELU", "normalization": "None"},
-                )
-                last_save_t = time.time()
-                log(f"[autosave] saved {snap_path.name}")
+                if not is_dev:
+                    save_training_checkpoint(
+                        path=snap_path,
+                        model_state=model.state_dict(),
+                        optim_state=optim.state_dict(),
+                        sched_state=None,
+                        config=cfg,
+                        epoch=epoch,
+                        global_step=global_step,
+                        best_metric=best_auc,
+                        rng_cpu=torch.get_rng_state(),
+                        rng_cuda_all=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                        extra={"activation": "GELU", "normalization": "None"},
+                    )
+                    last_save_t = time.time()
+                    log(f"[autosave] saved {snap_path.name}")
 
                 # --- periodic mid-epoch validation After saving also eval (Or before it?) so we can save the best?---
                 mid = evaluate(model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid,
@@ -462,11 +467,10 @@ def train(
                 }))
                 log(f"[mid-eval step {global_step}] valid_loss={mid['loss']:.6f} valid_auc={mid['auc']} valid_ap={mid['ap']}")
                 # optional: update best on mid-epoch too
-                if (mid["auc"] == mid["auc"]) and (mid["auc"] > best_auc):  # NaN-safe compare
+                if (mid["auc"] == mid["auc"]) and (mid["auc"] > best_auc) and not is_dev:  # NaN-safe compare
                     best_auc = mid["auc"]
                     save_inference_bundle(path=models_dir / "inf-best-auc.pt", model_state=model.state_dict(),
                                           config=cfg)
-                    # Optional: inference bundle here using your save_inference_bundle(...)
 
         train_loss = epoch_loss_sum / max(1, n_seen)
         train_losses.append(train_loss)
@@ -525,26 +529,27 @@ def train(
             )
         )
 
-        if metrics["auc"] > best_auc:
+        if metrics["auc"] > best_auc and not is_dev:
             best_auc = metrics["auc"]
             save_inference_bundle(path=models_dir / "best.pt", model_state=model.state_dict(), config=cfg)
             log(f"[epoch {epoch}] saved best.pt (auc={best_auc:.4f})")
 
     # Always save a final checkpoint
-    save_training_checkpoint(
-        path=models_dir / "last.pt",
-        model_state=model.state_dict(),
-        optim_state=optim.state_dict(),
-        sched_state=None,
-        config=cfg,
-        epoch=last_epoch_run,
-        global_step=global_step,
-        best_metric=best_auc,
-        rng_cpu=torch.get_rng_state(),
-        rng_cuda_all=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-        extra={"activation": "GELU", "normalization": "None"},
-    )
-    log("Saved last.pt")
+    if not is_dev:
+        save_training_checkpoint(
+            path=models_dir / "last.pt",
+            model_state=model.state_dict(),
+            optim_state=optim.state_dict(),
+            sched_state=None,
+            config=cfg,
+            epoch=last_epoch_run,
+            global_step=global_step,
+            best_metric=best_auc,
+            rng_cpu=torch.get_rng_state(),
+            rng_cuda_all=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            extra={"activation": "GELU", "normalization": "None"},
+        )
+        log("Saved last.pt")
 
     # ---- persist metrics history ----
     df = pd.DataFrame(rows)
@@ -774,9 +779,9 @@ if __name__ == "__main__":
     if is_dev:
         log("Running in local HDC (DEV) ...")
         cfg: Config = Config(
-            exp_dir_name="DEBUG_LAYERNORM",
+            exp_dir_name="overfitting_per_parent_2_NO_laynorm",
             seed=42,
-            epochs=10,
+            epochs=30,
             batch_size=16,
             train_parents_start=None,
             train_parents_end=None,
@@ -785,20 +790,21 @@ if __name__ == "__main__":
             hidden_dims=[256, 128, 64, 32],
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
-            lr=5e-4,
+            lr=1e-3,
             weight_decay=0.0,
             num_workers=0,
             prefetch_factor=1,
             pin_memory=False,
             micro_bs=4,
             hv_scale=None,
-            save_every_seconds=60,
+            save_every_seconds=3600,
             keep_last_k=1,
             continue_from=None,
             resume_retrain_last_epoch=False,
             stratify=True,
-            p_per_parent=20,
-            n_per_parent=20,
+            p_per_parent=2,
+            n_per_parent=2,
+            use_layer_norm=False,
         )
     else:
         cfg = get_args()

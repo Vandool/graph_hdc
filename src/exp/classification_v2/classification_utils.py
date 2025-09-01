@@ -38,6 +38,7 @@ class Config:
 
     # Model (shared knobs)
     hidden_dims: list[int] = field(default_factory=lambda: [4096, 2048, 512, 128])
+    use_layer_norm: bool = False
 
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
@@ -112,6 +113,7 @@ def get_args(argv: Optional[list[str]] = None) -> Config:
 
     # HDC
     p.add_argument("--hv_dim", "-hd", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--use_layer_norm", "-ln", type=bool, default=argparse.SUPPRESS)
     p.add_argument("--vsa", "-v", type=_parse_vsa, default=argparse.SUPPRESS,
                    choices=[m.value for m in VSAModel])  # accepts strings like "HRR"
     p.add_argument("--device", "-dev", type=str, choices=["cpu", "cuda"], default=argparse.SUPPRESS)
@@ -163,14 +165,6 @@ def atomic_save(obj: dict, path: Path) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     torch.save(obj, tmp)
     os.replace(tmp, path)
-
-
-def gpu_mem(device: torch.device) -> str:
-    if device.type != "cuda":
-        return "cpu"
-    a = torch.cuda.memory_allocated() / 1e9
-    r = torch.cuda.memory_reserved() / 1e9
-    return f"gpu_mem: alloc={a:.2f}G reserved={r:.2f}G"
 
 
 # ---------------------------------------------------------------------
