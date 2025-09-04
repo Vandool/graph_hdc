@@ -40,6 +40,7 @@ from src.exp.classification_v2.classification_utils import (
     get_args,
     stratified_per_parent_indices, exact_representative_validation_indices,
 )
+from src.utils.registery import register_model
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 with contextlib.suppress(RuntimeError):

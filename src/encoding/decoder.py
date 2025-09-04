@@ -189,7 +189,6 @@ def greedy_oracle_decoder(
     total_nodes = sum(full_ctr.values())
 
     # -- local helpers --
-
     def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
         """WL hash that respects `feat`."""
         H = G.copy()

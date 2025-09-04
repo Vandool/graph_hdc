@@ -96,8 +96,6 @@ def setup_exp(dir_name: str | None = None) -> dict:
 # Model
 # ---------------------------------------------------------------------
 # MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
-
-
 class TwinTower(nn.Module):
     def __init__(self, hv_dim: int, hidden_dim: int = 512):
         super().__init__()

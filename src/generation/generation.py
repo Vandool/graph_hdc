@@ -2,20 +2,21 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from pprint import pprint
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import rdkit.Chem
 import torch
 from torch_geometric.data import Data
-
 from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.graph_encoders import load_or_create_hypernet
+from src.encoding.oracles import Oracle, MLPClassifier
 from src.encoding.the_types import VSAModel
 from src.encoding.decoder import greedy_oracle_decoder
-from src.encoding.oracles import Oracle, get_oracle_classifier_config_cls
 from src.normalizing_flow.models import AbstractNFModel, RealNVPLightning, FlowConfig
 from src.utils import visualisations
+from src.utils.registery import resolve_model
 from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer
 
 ## For unpickling
@@ -26,7 +27,7 @@ class Generator:
     def __init__(self, gen_model: AbstractNFModel, oracle: Oracle, ds_config):
         device = torch.device('cpu')
         print(f"Using device: {device}")
-        self.encoder = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, ds_name=ds_config.name, cfg=ds_config).to(device)
+        self.encoder = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
         self.gen_model: torch.nn.Module = gen_model
         self.oracle = oracle
         self.oracle.encoder = self.encoder
@@ -64,29 +65,45 @@ def read_json(path: Path) -> dict:
 
 if __name__ == '__main__':
     device = torch.device('cpu')
-    generate_model_path = Path(
-        "/Users/arvandkaveh/Projects/kit/graph_hdc/_models/2_real_nvp/2025-08-27_15-11-23_qahf/models/last.ckpt")
+    for gen_model_path in [
+        Path(
+            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_02-45-49_qahf/models/last.ckpt"),
+        Path(
+            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_06-43-25_qahf/models/last.ckpt"),
+        Path(
+            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_16-34-49_qahf/models/last.ckpt"),
+        Path(
+            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-02_02-22-22_qahf/models/last.ckpt"),
+    ]:
+        print("----")
+        print(gen_model_path)
 
-    gen_model = RealNVPLightning.load_from_checkpoint(generate_model_path, map_location="cpu", strict=True).to(
-        device).eval()
+        gen_model = RealNVPLightning.load_from_checkpoint(gen_model_path, map_location="cpu", strict=True).to(
+            device).eval()
 
-    classifier_model_path = Path(
-        "/Users/arvandkaveh/Projects/kit/graph_hdc/_models/2_base_line_mlp_mirror/2025-08-26_22-08-39_qahf/models/last.pt")
-    classifier_config_path = Path(
-        "/Users/arvandkaveh/Projects/kit/graph_hdc/_models/2_base_line_mlp_mirror/2025-08-26_22-08-39_qahf/evaluations/run_config.json")
-    classifier_cls = get_oracle_classifier_config_cls("mirror_mlp")
-    cfg = read_json(classifier_config_path)
-    classifier = classifier_cls(cfg.get("hv_dim"), cfg.get("hidden_dims")).to(device).eval()
-    oracle = Oracle(model=classifier)
+        ## Classifier
+        for model_path in [
+            Path("/Users/akaveh/projects/kit/graph_hdc/_models/classifier_mlp_baseline.pt"),
+            Path("/Users/akaveh/projects/kit/graph_hdc/_models/classifier_mlp_baseline_laynorm.pt"),
+        ]:
+            chkpt = torch.load(model_path, map_location="cpu", weights_only=False)
+            cfg = chkpt["config"]
+            print(f"Classifier's best metric (AUC): {chkpt['best_metric']}")
+            print(f"Classifier's cfg")
+            pprint(cfg, indent=4)
 
-    generator = Generator(gen_model=gen_model, oracle=oracle, ds_config=ZINC_SMILES_HRR_7744_CONFIG)
-    Gs = generator.generate(n_samples=16)
-    print(len(Gs))
-    print(Gs)
-    GS = list(filter(None, Gs))
-    for i, gs in enumerate(Gs):
-        print(f"Graph Nr: {i}")
-        for j, g in enumerate(gs):
-            print(f"Graph Nr: {i}-{j}")
-            visualisations.draw_nx_with_atom_colorings(g)
-            plt.show()
+            classifier = MLPClassifier(hv_dim=cfg.get("hv_dim"), hidden_dims=cfg.get("hidden_dims"), use_layer_norm=cfg.get("use_layer_norm")).to(device).eval()
+            classifier.load_state_dict(chkpt["model_state"], strict=True)
+            oracle = Oracle(model=classifier)
+
+            generator = Generator(gen_model=gen_model, oracle=oracle, ds_config=ZINC_SMILES_HRR_7744_CONFIG)
+            Gs = generator.generate(n_samples=16)
+            print(len(Gs))
+            print(Gs)
+            GS = list(filter(None, Gs))
+            for i, gs in enumerate(Gs):
+                print(f"Graph Nr: {i}")
+                for j, g in enumerate(gs):
+                    print(f"Graph Nr: {i}-{j}")
+                    visualisations.draw_nx_with_atom_colorings(g)
+                    plt.show()
