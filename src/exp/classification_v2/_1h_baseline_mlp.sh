@@ -4,7 +4,7 @@
 # Available partitions: cpuonly large accelerated accelerated-h100 accelerated-200 
 # Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
 
-#SBATCH --job-name=MLP_stratified_base
+#SBATCH --job-name=1MLP_BASE_LayNorm
 #SBATCH --partition=accelerated
 #SBATCH --time=36:00:00
 #SBATCH --gres=gpu:1
@@ -34,8 +34,8 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --exp_dir_name "mlp_stratified_base" \
-  --epochs 1 \
+  --exp_dir_name "1MLP_BASE_LayNorm" \
+  --epochs 2 \
   --batch_size 128 \
   --hv_dim 7744 \
   --lr 1e-3 \
@@ -44,6 +44,7 @@ pixi run python "$SCRIPT" \
   --micro_bs 64 \
   --save_every_seconds 3600 \
   --keep_last_k 2 \
-  --stratify=True \
-  --p_per_parent=25 \
-  --n_per_parent=25
+  --stratify True \
+  --p_per_parent 25 \
+  --n_per_parent 25 \
+  --use_layer_norm True
