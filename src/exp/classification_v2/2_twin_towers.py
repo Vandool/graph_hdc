@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
+import torch.nn.functional as F
 from pytorch_lightning import seed_everything
 from sklearn.metrics import average_precision_score, confusion_matrix, precision_recall_curve, roc_auc_score, roc_curve
 from sklearn.metrics import (
@@ -22,6 +23,7 @@ from sklearn.metrics import (
 )
 from torch import nn
 from torch.utils.data import DataLoader
+from torchhd import VSATensor
 from tqdm.auto import tqdm
 
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
@@ -94,31 +96,51 @@ def setup_exp(dir_name: str | None = None) -> dict:
 # Model
 # ---------------------------------------------------------------------
 # MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
-class MLPClassifier(nn.Module):
-    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None,
-                 use_layer_norm: bool = False) -> None:
-        """
-        hv_dim: dimension of each HRR vector (e.g., 7744)
-        hidden_dims: e.g., [4096, 2048, 512, 128]
-        """
-        super().__init__()
-        hidden_dims = hidden_dims or [2048, 1024, 512, 128]
-        d_in = hv_dim * 2
-        layers: list[nn.Module] = []
-        if use_layer_norm:
-            log("Using layer normalization...")
-            layers.append(nn.LayerNorm(d_in))
-        last = d_in
-        for h in hidden_dims:
-            layers += [nn.Linear(last, h), nn.GELU()]
-            last = h
-        layers += [nn.Linear(last, 1)]
-        self.net = nn.Sequential(*layers)
 
-    def forward(self, h1: torch.Tensor, h2: torch.Tensor) -> torch.Tensor:
-        # h1,h2: [B, hv_dim]
-        x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
-        return self.net(x).squeeze(-1)  # [B]
+
+class TwinTower(nn.Module):
+    def __init__(self, hv_dim: int, hidden_dim: int = 512):
+        super().__init__()
+        # per-graph towers (keep raw magnitudes; no cross-vector LayerNorm)
+        tower_hidden_dim = 2048
+        self.f = nn.Sequential(nn.Linear(hv_dim, tower_hidden_dim), nn.GELU(),
+                               nn.Linear(tower_hidden_dim, hidden_dim), nn.GELU())
+        self.q = nn.Sequential(nn.Linear(hv_dim, tower_hidden_dim), nn.GELU(),
+                               nn.Linear(tower_hidden_dim, hidden_dim), nn.GELU())
+        # project unbinding vector (same dim as HV)
+        self.g = nn.Sequential(nn.Linear(hv_dim, 512), nn.GELU(),
+                               nn.Linear(512, hidden_dim), nn.GELU())
+        # project scalars
+        self.s = nn.Sequential(nn.LayerNorm(6), nn.Linear(6, hidden_dim // 4), nn.GELU())
+        self.head = nn.Sequential(nn.Linear(5 * hidden_dim + (hidden_dim // 4), 512), nn.GELU(),
+                                  nn.Linear(512, 1))
+
+    def forward(self, G1: VSATensor, G2: VSATensor):
+        a, b = self.f(G1), self.q(G2)
+
+        # core interactions
+        diff = (a - b).abs()
+        hamard_prod = a.mul(b)
+
+        # scalars from raw HVs (commutative overlap)
+        g1n = G1.norm(dim=-1, keepdim=True)
+        g2n = G2.norm(dim=-1, keepdim=True)
+
+        dot = torch.mul(G1, G2).sum(dim=-1, keepdim=True)
+        cos = F.cosine_similarity(G1, G2, dim=-1, eps=1e-9).unsqueeze(-1)
+        alpha = dot / torch.mul(G1, G1).sum(dim=-1, keepdim=True).clamp_min(1e-9)
+        resid = (G2 - alpha * G1).norm(dim=-1, keepdim=True)
+
+        # asymmetric unbinding (context of G1 inside G2)
+        # HRR inverse = frequency conjugate; torchhd handles it
+        u21 = G2.bind(G1.inverse())  # same shape as HV
+        u21p = self.g(u21)
+
+        scalars = torch.cat([dot, cos, g1n, g2n, resid, alpha], dim=-1)  # [B, 6]
+        s_proj = self.s(scalars)
+
+        x = torch.cat([a, b, diff, hamard_prod, u21p, s_proj], dim=-1)
+        return self.head(x).squeeze(-1)
 
 
 # ---------------------------------------------------------------------
@@ -216,7 +238,7 @@ def _sanitize_for_parquet(d: dict) -> dict:
 @torch.no_grad()
 def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool = False,
              max_batches: int | None = 50):
-    model.eval()
+    model.eval();
     encoder.eval()
     ys, ps, ls = [], [], []
     total_loss, total_n = 0.0, 0
@@ -336,12 +358,16 @@ def train(
     # ----- model + optim -----
     hv_dim = (resume_ckpt["config"]["hv_dim"] if resume_ckpt else cfg.hv_dim)
     hidden_dims = (resume_ckpt["config"]["hidden_dims"] if resume_ckpt else cfg.hidden_dims)
-    model = MLPClassifier(hv_dim=hv_dim, hidden_dims=hidden_dims, use_layer_norm=cfg.use_layer_norm).to(device)
+    model = TwinTower(hv_dim=hv_dim, hidden_dim=hidden_dims[0]).to(device)
     # PairV2: [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     ratio = 37483079 / 8266188
     if cfg.stratify:
         ratio = cfg.n_per_parent / cfg.p_per_parent
     log(f"Applying pos_weight: {ratio:.2f} to the BCEWithLogitsLoss...")
+    import math
+    pi = cfg.p_per_parent / (cfg.p_per_parent + cfg.n_per_parent) if cfg.stratify else 8266188 / (8266188 + 37483079)
+    with torch.no_grad():
+        model.head[-1].bias.fill_(math.log(pi / (1 - pi)))
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([ratio])).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
@@ -354,11 +380,11 @@ def train(
             "train_size": len(train_pairs),
             "valid_size": len(valid_pairs),
             "model_params": sum(p.numel() for p in model.parameters()),
-            "type": "MLPClassifier",
+            "type": "TwinTower",
             "hidden_dims": cfg.hidden_dims,
             "activation": "GELU",
             "dropout": 0.0,
-            "normalization": "LayerNorm" if cfg.use_layer_norm else "None",
+            "normalization": "None",
         }
     )
 
@@ -467,10 +493,11 @@ def train(
                 }))
                 log(f"[mid-eval step {global_step}] valid_loss={mid['loss']:.6f} valid_auc={mid['auc']} valid_ap={mid['ap']}")
                 # optional: update best on mid-epoch too
-                if (mid["auc"] == mid["auc"]) and (mid["auc"] > best_auc) and not is_dev:  # NaN-safe compare
+                if (mid["auc"] == mid["auc"]) and (mid["auc"] > best_auc):  # NaN-safe compare
                     best_auc = mid["auc"]
                     save_inference_bundle(path=models_dir / "inf-best-auc.pt", model_state=model.state_dict(),
                                           config=cfg)
+                    # Optional: inference bundle here using your save_inference_bundle(...)
 
         train_loss = epoch_loss_sum / max(1, n_seen)
         train_losses.append(train_loss)
@@ -779,15 +806,15 @@ if __name__ == "__main__":
     if is_dev:
         log("Running in local HDC (DEV) ...")
         cfg: Config = Config(
-            exp_dir_name="overfitting_per_parent_2_NO_laynorm_with_wd",
+            exp_dir_name="overfitting_per_parent_2_untied_larger_init_s_proj",
             seed=42,
-            epochs=30,
+            epochs=100,
             batch_size=16,
             train_parents_start=None,
             train_parents_end=None,
             valid_parents_start=None,
             valid_parents_end=None,
-            hidden_dims=[256, 128, 64, 32],
+            hidden_dims=[1024],
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
             lr=1e-3,
@@ -804,12 +831,9 @@ if __name__ == "__main__":
             stratify=True,
             p_per_parent=2,
             n_per_parent=2,
-            use_layer_norm=False,
         )
     else:
         cfg = get_args()
 
-    # Force WD 0.0 for the already scheduled jobs, it seems to not do good
-    cfg.weight_decay = 0.0
     pprint(asdict(cfg), indent=2)
     run_experiment(cfg, is_dev=is_dev)
