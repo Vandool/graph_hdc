@@ -5,8 +5,8 @@
 # cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
 
 #SBATCH --job-name=MLP
-#SBATCH --partition=gpu_h100
-#SBATCH --time=50:00:00
+#SBATCH --partition=gpu_a100_il
+#SBATCH --time=48:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

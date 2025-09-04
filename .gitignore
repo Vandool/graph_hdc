@@ -15,6 +15,7 @@ _models/
 .idea/
 .pytest_cache
 results/
+*.code-workspace
 
 
 # pixi environments
