@@ -49,7 +49,7 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 # Python args (edit as needed)
 # -----------------------------
 # Aligned with classification_v2/1_mlp.py parameters in your example.
-EPOCHS="${EPOCHS:-3}"
+EPOCHS="${EPOCHS:-5}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 HV_DIM="${HV_DIM:-7744}"
 LR="${LR:-1e-4}"
@@ -103,9 +103,9 @@ case "$CLUSTER" in
     # cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il
     TUPLES=$(
       cat <<'EOF'
-gpu_h100|24:00:00|64G
-gpu_a100_il|24:00:00|64G
-gpu_h100_il|24:00:00|64G
+gpu_h100|36:00:00|64G
+gpu_a100_il|36:00:00|64G
+gpu_h100_il|36:00:00|64G
 EOF
     )
     ;;
@@ -116,8 +116,8 @@ EOF
     # (accelerated-h100, 24:00:00, 64G) # max 48:00:00
     TUPLES=$(
       cat <<'EOF'
-accelerated|24:00:00|64G
-accelerated-h100|24:00:00|64G
+accelerated|36:00:00|64G
+accelerated-h100|36:00:00|64G
 EOF
     )
     ;;
@@ -128,8 +128,8 @@ EOF
     # (advanced, 24:00:00, 64G) # max 72:00:00
     TUPLES=$(
       cat <<'EOF'
-normal|24:00:00|64G
-advanced|24:00:00|64G
+normal|36:00:00|64G
+advanced|36:00:00|64G
 EOF
     )
     ;;
