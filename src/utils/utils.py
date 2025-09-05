@@ -143,6 +143,9 @@ def scatter_hd(
         Tensor: scattered & reduced hypervectors of shape
                 [dim_size, D, ...], same dtype/device as src.
     """
+    # Ensure device
+    index = index.to(src.device, dtype=torch.long, non_blocking=True)
+
     # infer output size
     if dim_size is None:
         dim_size = int(index.max().item()) + 1

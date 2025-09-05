@@ -925,7 +925,7 @@ if __name__ == "__main__":
             exp_dir_name="overfitting_batch_norm",
             seed=42,
             epochs=3,
-            batch_size=256,
+            batch_size=512,
             train_parents_start=None,
             train_parents_end=None,
             valid_parents_start=None,
@@ -950,7 +950,7 @@ if __name__ == "__main__":
             use_layer_norm=True,
             use_batch_norm=True,
             oracle_beam_size=8,
-            oracle_num_evals=2,
+            oracle_num_evals=8,
             resample_training_data_on_batch=True,
         )
     else:
