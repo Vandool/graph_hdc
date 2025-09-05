@@ -6,8 +6,16 @@
 #       Available Nodes : cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
 #   hk   -> HoreKa
 #       Available Nodes: # Available partitions: cpuonly large accelerated accelerated-h100 accelerated-200
-                         ## Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
+#                        # Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
 #   else -> HAICORE (default)
+# Usage for dry-run:
+# ```sh
+# CLUSTER=uc3 DRY_RUN=1 ./universal_cluster_submit.sh
+# ```
+# Usage for targeting partitions:
+# ```sh
+# CLUSTER=uc3 ONLY_PARTITIONS=gpu_h100,gpu_a100_il ./universal_cluster_submit.sh
+# ```
 
 set -euo pipefail
 
