@@ -58,17 +58,17 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 # -----------------------------
 # Aligned with classification_v2/1_mlp.py parameters in your example.
 EPOCHS="${EPOCHS:-5}"
-BATCH_SIZE="${BATCH_SIZE:-256}"
+BATCH_SIZE="${BATCH_SIZE:-512}"
 HV_DIM="${HV_DIM:-7744}"
-LR="${LR:-1e-4}"
+LR="${LR:-5e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 MICRO_BS="${MICRO_BS:-64}"
 SAVE_EVERY_SECONDS="${SAVE_EVERY_SECONDS:-3600}"
 KEEP_LAST_K="${KEEP_LAST_K:-2}"
 STRATIFY="${STRATIFY:-True}"
-P_PER_PARENT="${P_PER_PARENT:-20}"
-N_PER_PARENT="${N_PER_PARENT:-20}"
+P_PER_PARENT="${P_PER_PARENT:-25}"
+N_PER_PARENT="${N_PER_PARENT:-25}"
 ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-8}"
 ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-4}"
 RESAMPLE_TRAINING_DATA_ON_BATCH="${RESAMPLE_TRAINING_DATA_ON_BATCH:-True}"
@@ -133,11 +133,10 @@ EOF
     # HAICORE default
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     # (normal, 24:00:00, 64G)   # max 72:00:00
-    # (advanced, 24:00:00, 64G) # max 72:00:00
+    # (advanced, 24:00:00, 64G) # max 72:00:00 -> not allowed for me = (
     TUPLES=$(
       cat <<'EOF'
-normal|36:00:00|64G
-advanced|36:00:00|64G
+normal|48:00:00|64G
 EOF
     )
     ;;
