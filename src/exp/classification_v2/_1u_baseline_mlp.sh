@@ -45,7 +45,7 @@ SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 # W&B (optional)
 ENTITY="${ENTITY:-akaveh}"
 PROJECT="${PROJECT:-graph_hdc}"
-EXP_NAME="${EXP_NAME:-mlp_stratified_base_batchnorm_lr5e-4}"
+EXP_NAME="${EXP_NAME:-mlp_stratified_base_batchnorm}"
 
 # Dry run to preview sbatch commands without submitting: 0 or 1
 DRY_RUN="${DRY_RUN:-0}"
@@ -57,7 +57,7 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 # Python args (edit as needed)
 # -----------------------------
 # Aligned with classification_v2/1_mlp.py parameters in your example.
-EPOCHS="${EPOCHS:-20}"
+EPOCHS="${EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 HV_DIM="${HV_DIM:-7744}"
 LR="${LR:-1e-4}"
@@ -69,8 +69,8 @@ KEEP_LAST_K="${KEEP_LAST_K:-2}"
 STRATIFY="${STRATIFY:-True}"
 P_PER_PARENT="${P_PER_PARENT:-20}"
 N_PER_PARENT="${N_PER_PARENT:-20}"
-ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-8}"
-ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-4}"
+ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-32}"
+ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-32}"
 RESAMPLE_TRAINING_DATA_ON_BATCH="${RESAMPLE_TRAINING_DATA_ON_BATCH:-True}"
 USE_BATCH_NORM="${USE_BATCH_NORM:-True}"
 USE_LAYER_NORM="${USE_LAYER_NORM:-False}"
