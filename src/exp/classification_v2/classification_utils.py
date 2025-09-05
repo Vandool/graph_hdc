@@ -39,6 +39,11 @@ class Config:
     # Model (shared knobs)
     hidden_dims: list[int] = field(default_factory=lambda: [4096, 2048, 512, 128])
     use_layer_norm: bool = False
+    use_batch_norm: bool = False
+
+    # Evals
+    oracle_num_evals: int = 1
+    oracle_beam_size: int = 8
 
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
@@ -65,7 +70,8 @@ class Config:
     stratify: bool = True
     p_per_parent: int = 20
     n_per_parent: int = 20
-    exclude_negs: set[int] = field(default_factory=lambda: [])
+    exclude_negs: set[int] = field(default_factory=list)
+    resample_training_data_on_batch: bool = False
 
 
 # ----------------- CLI parsing that never clobbers defaults -----------------
@@ -81,7 +87,7 @@ def _parse_vsa(s: str) -> VSAModel:
     return VSAModel(s)
 
 
-def get_args(argv: Optional[list[str]] = None) -> Config:
+def get_args(argv: list[str] | None = None) -> Config:
     """
     Build a Config by starting from dataclass defaults and then
     applying ONLY the CLI options the user actually provided.
@@ -92,10 +98,10 @@ def get_args(argv: Optional[list[str]] = None) -> Config:
     p = argparse.ArgumentParser(description="Experiment Config (unified)")
 
     # IMPORTANT: default=SUPPRESS so unspecified flags don't overwrite dataclass defaults
-    p.add_argument("--project_dir", "-pdir", type=Path, default=argparse.SUPPRESS,
-                   help="Project root (will be created if missing)")
-    p.add_argument("--exp_dir_name", type=str, default=argparse.SUPPRESS,
-                   help="Optional experiment subfolder name")
+    p.add_argument(
+        "--project_dir", "-pdir", type=Path, default=argparse.SUPPRESS, help="Project root (will be created if missing)"
+    )
+    p.add_argument("--exp_dir_name", type=str, default=argparse.SUPPRESS, help="Optional experiment subfolder name")
 
     p.add_argument("--seed", type=int, default=argparse.SUPPRESS)
     p.add_argument("--epochs", "-e", type=int, default=argparse.SUPPRESS)
@@ -107,15 +113,26 @@ def get_args(argv: Optional[list[str]] = None) -> Config:
     p.add_argument("--valid_parents_start", type=int, default=argparse.SUPPRESS)
     p.add_argument("--valid_parents_end", type=int, default=argparse.SUPPRESS)
 
+    # Evals
+    p.add_argument("--oracle_num_evals", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--oracle_beam_size", type=int, default=argparse.SUPPRESS)
+
     # Model knobs
-    p.add_argument("--hidden_dims", type=_parse_hidden_dims, default=argparse.SUPPRESS,
-                   help="Comma-separated: e.g. '4096,2048,512,128'")
+    p.add_argument(
+        "--hidden_dims",
+        type=_parse_hidden_dims,
+        default=argparse.SUPPRESS,
+        help="Comma-separated: e.g. '4096,2048,512,128'",
+    )
+    p.add_argument("--use_layer_norm", "-ln", type=bool, default=argparse.SUPPRESS)
+    p.add_argument("--use_batch_norm", "-bn", type=bool, default=argparse.SUPPRESS)
 
     # HDC
     p.add_argument("--hv_dim", "-hd", type=int, default=argparse.SUPPRESS)
-    p.add_argument("--use_layer_norm", "-ln", type=bool, default=argparse.SUPPRESS)
-    p.add_argument("--vsa", "-v", type=_parse_vsa, default=argparse.SUPPRESS,
-                   choices=[m.value for m in VSAModel])  # accepts strings like "HRR"
+
+    p.add_argument(
+        "--vsa", "-v", type=_parse_vsa, default=argparse.SUPPRESS, choices=[m.value for m in VSAModel]
+    )  # accepts strings like "HRR"
     p.add_argument("--device", "-dev", type=str, choices=["cpu", "cuda"], default=argparse.SUPPRESS)
 
     # Optim
@@ -140,6 +157,7 @@ def get_args(argv: Optional[list[str]] = None) -> Config:
     p.add_argument("--p_per_parent", type=int, default=argparse.SUPPRESS)
     p.add_argument("--n_per_parent", type=int, default=argparse.SUPPRESS)
     p.add_argument("--exclude_negs", type=set[int], default=argparse.SUPPRESS)
+    p.add_argument("--resample_training_data_on_batch", type=int, default=argparse.SUPPRESS)
 
     ns = p.parse_args(argv)
     provided = vars(ns)  # only the keys the user actually passed
@@ -223,12 +241,12 @@ class ParentH2Cache:
 
 @torch.no_grad()
 def encode_g2_with_cache(
-        encoder: AbstractGraphEncoder,
-        g2_b: Batch,
-        parent_ids: torch.Tensor,  # shape [B], Long
-        device: torch.device,
-        cache: ParentH2Cache,
-        micro_bs: int,
+    encoder: AbstractGraphEncoder,
+    g2_b: Batch,
+    parent_ids: torch.Tensor,  # shape [B], Long
+    device: torch.device,
+    cache: ParentH2Cache,
+    micro_bs: int,
 ) -> torch.Tensor:
     """
     Returns h2 for the whole batch [B, D], encoding each parent only once.
@@ -259,7 +277,7 @@ def encode_g2_with_cache(
         # (use the existing micro-batch encoder)
         encoded = []
         for j in range(0, len(uniq_graphs), micro_bs):
-            chunk = Batch.from_data_list(uniq_graphs[j: j + micro_bs]).to(device)
+            chunk = Batch.from_data_list(uniq_graphs[j : j + micro_bs]).to(device)
             out = encoder.forward(chunk)["graph_embedding"]  # [b, D] on device
             encoded.append(out.to("cpu"))
             del chunk
@@ -278,11 +296,11 @@ def encode_g2_with_cache(
 
 @torch.no_grad()
 def encode_batch(
-        encoder: AbstractGraphEncoder,
-        g_batch: Batch,
-        *,
-        device: torch.device,
-        micro_bs: int,
+    encoder: AbstractGraphEncoder,
+    g_batch: Batch,
+    *,
+    device: torch.device,
+    micro_bs: int,
 ) -> torch.Tensor:
     """
     Encode a big PyG Batch in micro-chunks to avoid OOM.
@@ -292,7 +310,7 @@ def encode_batch(
     data_list = g_batch.to_data_list()  # (keeps tensors; we’ll move to device below)
     outs = []
     for i in range(0, len(data_list), micro_bs):
-        chunk_list = data_list[i: i + micro_bs]
+        chunk_list = data_list[i : i + micro_bs]
         chunk = Batch.from_data_list(chunk_list).to(device)
         with torch.no_grad():
             out = encoder.forward(chunk)["graph_embedding"]  # [b, D]
@@ -306,19 +324,20 @@ def encode_batch(
 
 import random
 from collections import defaultdict
-from typing import Set, List
+from typing import List, Set
 
 import torch
 
 
 def stratified_per_parent_indices(
-        ds, *,
-        pos_per_parent: int,
-        neg_per_parent: int,
-        exclude_neg_types: Set[int] = frozenset(),
-        seed: int = 42,
-        log_every_shards: int = 50,
-) -> List[int]:
+    ds,
+    *,
+    pos_per_parent: int,
+    neg_per_parent: int,
+    exclude_neg_types: set[int] = frozenset(),
+    seed: int = 42,
+    log_every_shards: int = 50,
+) -> list[int]:
     """
     Uniform random sampling per parent using per-parent reservoirs.
 
@@ -368,14 +387,14 @@ def stratified_per_parent_indices(
             gidx = global_offset + li
 
             # scalar reads (each is a 1-length slice)
-            y = int(y_all[sy[li]: sy[li + 1]].item())
-            pid = int(pid_all[spid[li]: spid[li + 1]].item())
+            y = int(y_all[sy[li] : sy[li + 1]].item())
+            pid = int(pid_all[spid[li] : spid[li + 1]].item())
 
             if y == 1:
                 pos_seen[pid] += 1
                 _reservoir_push(pos_res[pid], pos_seen[pid], pos_per_parent, gidx)
             else:
-                nt = int(nt_all[snt[li]: snt[li + 1]].item())
+                nt = int(nt_all[snt[li] : snt[li + 1]].item())
                 if nt in exclude_neg_types:
                     continue
                 neg_seen[pid] += 1
@@ -398,13 +417,13 @@ def stratified_per_parent_indices(
 
 
 def exact_representative_validation_indices(
-        ds,
-        *,
-        target_total: int,
-        exclude_neg_types=frozenset(),
-        by_neg_type: bool = True,
-        seed: int = 42,
-        log_fn=print,
+    ds,
+    *,
+    target_total: int,
+    exclude_neg_types=frozenset(),
+    by_neg_type: bool = True,
+    seed: int = 42,
+    log_fn=print,
 ):
     """
     Select exactly `min(target_total, available_after_exclusion)` validation indices.
@@ -436,11 +455,11 @@ def exact_representative_validation_indices(
         y, nt = data.y, data.neg_type
         sy, snt = slices["y"], slices["neg_type"]
         for li in range(m):
-            yy = int(y[sy[li]:sy[li + 1]].item())
+            yy = int(y[sy[li] : sy[li + 1]].item())
             if yy == 1:
                 total_pos += 1
             else:
-                t = int(nt[snt[li]:snt[li + 1]].item())
+                t = int(nt[snt[li] : snt[li + 1]].item())
                 if t not in exclude_neg_types:
                     neg_counts_by_type[t] += 1
 
@@ -472,12 +491,14 @@ def exact_representative_validation_indices(
         pos_target = min(total_pos, target_total - neg_target)
         capped = True
 
-    log_fn(f"[val-sample] target_total={target_total:,} → pos_target={pos_target:,} neg_target={neg_target:,}"
-           + (" (capped by availability)" if capped else ""))
+    log_fn(
+        f"[val-sample] target_total={target_total:,} → pos_target={pos_target:,} neg_target={neg_target:,}"
+        + (" (capped by availability)" if capped else "")
+    )
 
     # per-neg_type targets
     if by_neg_type and neg_target > 0 and total_neg > 0:
-        nt_targets = {t: 0 for t in neg_counts_by_type}
+        nt_targets = dict.fromkeys(neg_counts_by_type, 0)
         shares = {t: (neg_counts_by_type[t] / total_neg) * neg_target for t in neg_counts_by_type}
         # floors
         for t, s in shares.items():
@@ -485,8 +506,7 @@ def exact_representative_validation_indices(
         assigned = sum(nt_targets.values())
         remaining = neg_target - assigned
         # largest remainders
-        rema = sorted(((t, shares[t] - math.floor(shares[t])) for t in shares),
-                      key=lambda x: x[1], reverse=True)
+        rema = sorted(((t, shares[t] - math.floor(shares[t])) for t in shares), key=lambda x: x[1], reverse=True)
         i = 0
         while remaining > 0 and i < len(rema):
             t = rema[i][0]
@@ -534,12 +554,12 @@ def exact_representative_validation_indices(
         sy, snt = slices["y"], slices["neg_type"]
         for li in range(m):
             gidx = global_offset + li
-            yy = int(y[sy[li]:sy[li + 1]].item())
+            yy = int(y[sy[li] : sy[li + 1]].item())
             if yy == 1:
                 pos_seen += 1
                 reservoir_push(pos_res, pos_seen, pos_target, gidx)
             else:
-                t = int(nt[snt[li]:snt[li + 1]].item())
+                t = int(nt[snt[li] : snt[li + 1]].item())
                 if t in exclude_neg_types:
                     continue
                 key = t if nt_targets is not None else -1
@@ -554,6 +574,5 @@ def exact_representative_validation_indices(
         selected.extend(lst)
     selected.sort()
 
-    log_fn(f"[val-sample] selected={len(selected):,} "
-           f"(pos={len(pos_res):,}, neg={len(selected) - len(pos_res):,})")
+    log_fn(f"[val-sample] selected={len(selected):,} (pos={len(pos_res):,}, neg={len(selected) - len(pos_res):,})")
     return selected

@@ -11,23 +11,34 @@ from pathlib import Path
 from pprint import pprint
 
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
 from pytorch_lightning import seed_everything
-from sklearn.metrics import average_precision_score, confusion_matrix, precision_recall_curve, roc_auc_score, roc_curve
 from sklearn.metrics import (
-    f1_score, balanced_accuracy_score, matthews_corrcoef, brier_score_loss
+    average_precision_score,
+    balanced_accuracy_score,
+    brier_score_loss,
+    confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
 )
 from torch import nn
-from torch.utils.data import DataLoader
+from torch_geometric.loader import DataLoader
+from torchhd import HRRTensor
 from tqdm.auto import tqdm
 
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG, Features
+from src.encoding.decoder import greedy_oracle_decoder
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
+from src.encoding.oracles import Oracle
 from src.encoding.the_types import VSAModel
 from src.exp.classification_v2.classification_utils import (
     Config,
@@ -37,11 +48,11 @@ from src.exp.classification_v2.classification_utils import (
     collate_pairs,
     encode_batch,
     encode_g2_with_cache,
+    exact_representative_validation_indices,
     get_args,
-    stratified_per_parent_indices, exact_representative_validation_indices,
+    stratified_per_parent_indices,
 )
-from src.utils.registery import register_model
-from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
+from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, pick_device
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -68,7 +79,9 @@ def setup_exp(dir_name: str | None = None) -> dict:
     if dir_name:
         exp_dir = base_dir / dir_name
     else:
-        slug = f"{datetime.now(UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+        slug = (
+            f"{datetime.now(UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+        )
         exp_dir = base_dir / slug
     exp_dir.mkdir(parents=True, exist_ok=True)
     print(f"Experiment directory created: {exp_dir}")
@@ -96,8 +109,13 @@ def setup_exp(dir_name: str | None = None) -> dict:
 # ---------------------------------------------------------------------
 # MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
 class MLPClassifier(nn.Module):
-    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None,
-                 use_layer_norm: bool = False) -> None:
+    def __init__(
+        self,
+        hv_dim: int = 88 * 88,
+        hidden_dims: list[int] | None = None,
+        use_layer_norm: bool = False,
+        use_batch_norm: bool = False,
+    ) -> None:
         """
         hv_dim: dimension of each HRR vector (e.g., 7744)
         hidden_dims: e.g., [4096, 2048, 512, 128]
@@ -106,12 +124,15 @@ class MLPClassifier(nn.Module):
         hidden_dims = hidden_dims or [2048, 1024, 512, 128]
         d_in = hv_dim * 2
         layers: list[nn.Module] = []
+        log(f"Using Layer Normalization: {use_layer_norm}\nUsing Batch Normalization: {use_batch_norm}")
         if use_layer_norm:
-            log("Using layer normalization...")
             layers.append(nn.LayerNorm(d_in))
         last = d_in
         for h in hidden_dims:
-            layers += [nn.Linear(last, h), nn.GELU()]
+            layers.append(nn.Linear(last, h))
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(h))
+            layers.append(nn.GELU())
             last = h
         layers += [nn.Linear(last, 1)]
         self.net = nn.Sequential(*layers)
@@ -128,18 +149,18 @@ class MLPClassifier(nn.Module):
 
 
 def save_training_checkpoint(
-        path: Path,
-        *,
-        model_state: dict,
-        optim_state: dict,
-        config: Config,
-        epoch: int,
-        global_step: int,
-        best_metric: float,
-        rng_cpu: torch.ByteTensor,
-        rng_cuda_all: list[torch.ByteTensor] | None = None,
-        sched_state: dict | None = None,
-        extra: dict | None = None,
+    path: Path,
+    *,
+    model_state: dict,
+    optim_state: dict,
+    config: Config,
+    epoch: int,
+    global_step: int,
+    best_metric: float,
+    rng_cpu: torch.ByteTensor,
+    rng_cuda_all: list[torch.ByteTensor] | None = None,
+    sched_state: dict | None = None,
+    extra: dict | None = None,
 ) -> None:
     ckpt = {
         "created_at": datetime.now(tz=UTC).isoformat() + "Z",
@@ -164,11 +185,11 @@ def load_training_checkpoint(path: Path, device: torch.device = torch.device("cp
 
 
 def save_inference_bundle(
-        path: Path,
-        *,
-        model_state: dict,
-        config: Config,
-        metadata: dict | None = None,
+    path: Path,
+    *,
+    model_state: dict,
+    config: Config,
+    metadata: dict | None = None,
 ) -> None:
     bundle = {
         "created_at": datetime.now(UTC).isoformat() + "Z",
@@ -178,6 +199,21 @@ def save_inference_bundle(
         "metadata": metadata or {},
     }
     atomic_save(bundle, path)
+
+
+def _sanitize_for_parquet(d: dict) -> dict:
+    """Make dict Arrow-friendly (Path/Enum/etc → str, tensors → int/float)."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, Path):
+            out[k] = str(v)
+        elif isinstance(v, VSAModel):
+            out[k] = v.value
+        elif torch.is_tensor(v):
+            out[k] = v.item() if v.numel() == 1 else v.detach().cpu().tolist()
+        else:
+            out[k] = v
+    return out
 
 
 def make_loader(ds, batch_size, shuffle, cfg, collate_fn):
@@ -196,27 +232,137 @@ def make_loader(ds, batch_size, shuffle, cfg, collate_fn):
     return DataLoader(**kwargs)
 
 
-def _sanitize_for_parquet(d: dict) -> dict:
-    """Make dict Arrow-friendly (Path/Enum/etc → str, tensors → int/float)."""
-    out = {}
-    for k, v in d.items():
-        if isinstance(v, Path):
-            out[k] = str(v)
-        elif isinstance(v, VSAModel):
-            out[k] = v.value
-        elif torch.is_tensor(v):
-            out[k] = v.item() if v.numel() == 1 else v.detach().cpu().tolist()
-        else:
-            out[k] = v
-    return out
+# ---------------------------------------------------------------------
+# Datasets
+# ---------------------------------------------------------------------
+
+
+def get_loaders(cfg: Config, is_dev: bool = False, use_random_seed: bool = False) -> tuple[DataLoader, DataLoader]:
+    # Datasets
+    log("Loading pair datasets …")
+    train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=is_dev)
+    valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=is_dev)
+    log(f"Pairs loaded. train_pairs={len(train_full)} valid_pairs={len(valid_full)}")
+
+    # Stratification
+    train_indices = []
+    valid_indices = []
+    if cfg.stratify:
+        log("Applying stratification ...")
+        train_indices = stratified_per_parent_indices(
+            ds=train_full,
+            pos_per_parent=cfg.p_per_parent,
+            neg_per_parent=cfg.n_per_parent,
+            exclude_neg_types=cfg.exclude_negs,
+            seed=cfg.seed if not use_random_seed else random.randint(cfg.seed + 1, 10000),
+        )
+        valid_indices = exact_representative_validation_indices(
+            ds=valid_full,
+            target_total=int(len(train_indices) / 5),
+            exclude_neg_types=cfg.exclude_negs,
+            by_neg_type=True,
+            seed=cfg.seed,
+        )
+        # --- pick N parents & wrap as Subset ---
+    else:
+        if cfg.train_parents_start or cfg.train_parents_end:
+            t_start = cfg.train_parents_start or 0
+            t_end = cfg.train_parents_end or len(train_full)
+            train_indices = range(t_start, t_end)
+            log(f"Using training data from {t_start} to {t_end}.")
+
+        if cfg.valid_parents_start or cfg.valid_parents_end:
+            v_start = cfg.valid_parents_start or 0
+            v_end = cfg.valid_parents_end or len(valid_full)
+            valid_indices = range(v_start, v_end)
+            log(f"Using validation data from {v_start} to {v_end}.")
+
+    train_small = torch.utils.data.Subset(train_full, train_indices) if train_indices else train_full
+    valid_small = torch.utils.data.Subset(valid_full, valid_indices) if valid_indices else valid_full
+
+    log(f"[subset] train_indices={len(train_small):,}  valid_indices={len(valid_small):,}")
+
+    log("Setting up datasets …")
+    train_ds = PairsGraphsDataset(train_small)
+    valid_ds = PairsGraphsDataset(valid_small)
+    log(f"Datasets ready. train_size={len(train_ds):,} valid_size={len(valid_ds):,}")
+
+    log("Setting up dataloaders …")
+    train_loader = make_loader(train_ds, cfg.batch_size, False, cfg, collate_pairs)
+    valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)
+    log("In Training ... Data loaders ready.")
+    return train_loader, valid_loader
 
 
 # ---------------------------------------------------------------------
-# Eval + Train
+# Eval
 # ---------------------------------------------------------------------
 @torch.no_grad()
-def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return_details: bool = False,
-             max_batches: int | None = 50):
+def evaluate_as_oracle(
+    model, encoder, oracle_num_evals: int = 8, oracle_beam_size: int = 8, oracle_threshold: float = 0.5
+):
+    log(f"Evaluation classifier as oracle for {oracle_num_evals} examples @threshold:{oracle_threshold}...")
+
+    # Helpers
+    # Real Oracle
+    def is_induced_subgraph_feature_aware(G_small: nx.Graph, G_big: nx.Graph) -> bool:
+        """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
+        nm = lambda a, b: a["feat"] == b["feat"]
+        GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
+        return GM.subgraph_is_isomorphic()
+
+    model.eval()
+    encoder.eval()
+    ys = []
+
+    zinc_smiles = ZincSmiles(split="valid")[:oracle_num_evals]
+    dataloader = DataLoader(dataset=zinc_smiles, batch_size=oracle_num_evals, shuffle=False)
+    batch = next(iter(dataloader))
+
+    # Encode the whole graph in one HV
+    graph_term = encoder.forward(batch)["graph_embedding"]
+    graph_terms_hd = graph_term.as_subclass(HRRTensor)
+
+    # Create Oracle
+    oracle = Oracle(model=model)
+    oracle.encoder = encoder
+
+    ground_truth_counters = {}
+    datas = batch.to_data_list()
+    for i in range(oracle_num_evals):
+        full_graph_nx = DataTransformer.pyg_to_nx(data=datas[i])
+        node_multiset = DataTransformer.get_node_counter_from_batch(batch=i, data=batch)
+
+        nx_GS: list[nx.Graph] = greedy_oracle_decoder(
+            node_multiset=node_multiset,
+            oracle=oracle,
+            full_g_h=graph_terms_hd[i],
+            beam_size=oracle_beam_size,
+            oracle_threshold=oracle_threshold,
+        )
+        nx_GS = list(filter(None, nx_GS))
+        for j, g in enumerate(nx_GS):
+            is_induced = is_induced_subgraph_feature_aware(g, full_graph_nx)
+            # print("Is Induced subgraph: ", is_induced)
+            ys.append(int(is_induced))
+    acc = 0.0 if len(ys) == 0 else float(sum(ys) / len(ys))
+    log(f"Oracle Accuracy within the graph decoder : {acc:.4f}")
+    return acc
+
+
+@torch.no_grad()
+def evaluate(
+    model,
+    encoder,
+    loader,
+    device,
+    criterion,
+    cfg,
+    h2_cache,
+    *,
+    return_details: bool = False,
+    max_batches: int | None = 50,
+):
     model.eval()
     encoder.eval()
     ys, ps, ls = [], [], []
@@ -253,7 +399,7 @@ def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return
     # Safe metrics
     unique = np.unique(y)
     if unique.size < 2:
-        auc = float("nan");
+        auc = float("nan")
         ap = float("nan")
         fpr = tpr = thr_roc = None
         prec = rec = thr_pr = None
@@ -295,49 +441,58 @@ def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache, *, return
     brier = brier_score_loss(y, p) if unique.size == 2 else float("nan")
 
     out = {
-        "auc": float(auc), "ap": float(ap), "loss": total_loss / max(1, total_n),
-        "prevalence": pi, "ap_lift": ap_lift, "ap_norm": ap_norm, "p_std": p_std,
-        "f1_at_0p5": m_05["f1"], "bal_acc_0p5": m_05["bal_acc"], "acc_0p5": m_05["acc"], "mcc_0p5": m_05["mcc"],
-        "best_f1_thr": best_thr, "f1_best": m_best["f1"], "bal_acc_best": m_best["bal_acc"],
-        "acc_best": m_best["acc"], "mcc_best": m_best["mcc"], "brier": brier,
+        "auc": float(auc),
+        "ap": float(ap),
+        "loss": total_loss / max(1, total_n),
+        "prevalence": pi,
+        "ap_lift": ap_lift,
+        "ap_norm": ap_norm,
+        "p_std": p_std,
+        "f1_at_0p5": m_05["f1"],
+        "bal_acc_0p5": m_05["bal_acc"],
+        "acc_0p5": m_05["acc"],
+        "mcc_0p5": m_05["mcc"],
+        "best_f1_thr": best_thr,
+        "f1_best": m_best["f1"],
+        "bal_acc_best": m_best["bal_acc"],
+        "acc_best": m_best["acc"],
+        "mcc_best": m_best["mcc"],
+        "brier": brier,
     }
     if return_details:
-        out["y"] = y;
-        out["p"] = p;
+        out["y"] = y
+        out["p"] = p
         out["logits"] = torch.cat(ls).numpy()
     return out
 
 
+# ---------------------------------------------------------------------
+# Eval
+# ---------------------------------------------------------------------
+
+
 def train(
-        train_pairs,
-        valid_pairs,
-        encoder: AbstractGraphEncoder,
-        models_dir: Path,
-        evals_dir: Path,
-        artefacts_dir: Path,
-        cfg: Config,
-        device: torch.device,
-        resume_ckpt: dict | None = None,
-        *,
-        resume_retrain_last_epoch=True,
+    train_loader,
+    valid_loader,
+    encoder: AbstractGraphEncoder,
+    models_dir: Path,
+    evals_dir: Path,
+    artefacts_dir: Path,
+    cfg: Config,
+    device: torch.device,
+    resume_ckpt: dict | None = None,
+    *,
+    resume_retrain_last_epoch=True,
+    resample_training_data: bool = False,
 ):
-    log("In Training ... ")
-    log("Setting up datasets …")
-    train_ds = PairsGraphsDataset(train_pairs)
-    valid_ds = PairsGraphsDataset(valid_pairs)
-    log(f"Datasets ready. train_size={len(train_ds):,} valid_size={len(valid_ds):,}")
-
-    log("Setting up dataloaders …")
-    train_loader = make_loader(train_ds, cfg.batch_size, False, cfg, collate_pairs)
-    valid_loader = make_loader(valid_ds, cfg.batch_size, False, cfg, collate_pairs)
-    log("In Training ... Data loaders ready.")
-
     encoder = encoder.to(device).eval()
 
     # ----- model + optim -----
-    hv_dim = (resume_ckpt["config"]["hv_dim"] if resume_ckpt else cfg.hv_dim)
-    hidden_dims = (resume_ckpt["config"]["hidden_dims"] if resume_ckpt else cfg.hidden_dims)
-    model = MLPClassifier(hv_dim=hv_dim, hidden_dims=hidden_dims, use_layer_norm=cfg.use_layer_norm).to(device)
+    hv_dim = resume_ckpt["config"]["hv_dim"] if resume_ckpt else cfg.hv_dim
+    hidden_dims = resume_ckpt["config"]["hidden_dims"] if resume_ckpt else cfg.hidden_dims
+    model = MLPClassifier(
+        hv_dim=hv_dim, hidden_dims=hidden_dims, use_layer_norm=cfg.use_layer_norm, use_batch_norm=cfg.use_batch_norm
+    ).to(device)
     # PairV2: [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     ratio = 37483079 / 8266188
     if cfg.stratify:
@@ -352,14 +507,14 @@ def train(
     base_row = _sanitize_for_parquet(
         {
             **asdict(cfg),
-            "train_size": len(train_pairs),
-            "valid_size": len(valid_pairs),
+            "train_size": len(train_loader),
+            "valid_size": len(valid_loader),
             "model_params": sum(p.numel() for p in model.parameters()),
             "type": "MLPClassifier",
             "hidden_dims": cfg.hidden_dims,
             "activation": "GELU",
             "dropout": 0.0,
-            "normalization": "LayerNorm" if cfg.use_layer_norm else "None",
+            "normalization": "LayerNorm" if cfg.use_layer_norm else "BatchNorm" if cfg.use_batch_norm else "None",
         }
     )
 
@@ -388,8 +543,10 @@ def train(
         # 5) where to continue
         start_epoch = last_epoch if resume_retrain_last_epoch else (last_epoch + 1)
         last_epoch = int(resume_ckpt.get("epoch", 0))
-        log(f"Resuming from epoch={last_epoch}, step={global_step}, best_auc={best_auc:.4f}. "
-            f"Continuing at epoch {start_epoch}.")
+        log(
+            f"Resuming from epoch={last_epoch}, step={global_step}, best_auc={best_auc:.4f}. "
+            f"Continuing at epoch {start_epoch}."
+        )
 
     g2_cache_train = ParentH2Cache(max_items=50_000)
     g2_cache_valid = ParentH2Cache(max_items=5_000)
@@ -452,26 +609,34 @@ def train(
                     log(f"[autosave] saved {snap_path.name}")
 
                 # --- periodic mid-epoch validation After saving also eval (Or before it?) so we can save the best?---
-                mid = evaluate(model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid,
-                               return_details=False)
+                mid = evaluate(
+                    model, encoder, valid_loader, device, criterion, cfg, g2_cache_valid, return_details=False
+                )
                 valid_losses.append(mid["loss"])
                 valid_aucs.append(mid["auc"])
-                rows.append(_sanitize_for_parquet({
-                    **base_row,
-                    "epoch": epoch,
-                    "train_loss": float(epoch_loss_sum / max(1, n_seen)),
-                    "valid_loss": float(mid["loss"]),
-                    "valid_auc": float(mid["auc"]),
-                    "valid_ap": float(mid["ap"]),
-                    "global_step": int(global_step),
-                    "mid_epoch": True,
-                }))
-                log(f"[mid-eval step {global_step}] valid_loss={mid['loss']:.6f} valid_auc={mid['auc']} valid_ap={mid['ap']}")
+                rows.append(
+                    _sanitize_for_parquet(
+                        {
+                            **base_row,
+                            "epoch": epoch,
+                            "train_loss": float(epoch_loss_sum / max(1, n_seen)),
+                            "valid_loss": float(mid["loss"]),
+                            "valid_auc": float(mid["auc"]),
+                            "valid_ap": float(mid["ap"]),
+                            "global_step": int(global_step),
+                            "mid_epoch": True,
+                        }
+                    )
+                )
+                log(
+                    f"[mid-eval step {global_step}] valid_loss={mid['loss']:.6f} valid_auc={mid['auc']} valid_ap={mid['ap']}"
+                )
                 # optional: update best on mid-epoch too
                 if (mid["auc"] == mid["auc"]) and (mid["auc"] > best_auc) and not is_dev:  # NaN-safe compare
                     best_auc = mid["auc"]
-                    save_inference_bundle(path=models_dir / "inf-best-auc.pt", model_state=model.state_dict(),
-                                          config=cfg)
+                    save_inference_bundle(
+                        path=models_dir / "inf-best-auc.pt", model_state=model.state_dict(), config=cfg
+                    )
 
         train_loss = epoch_loss_sum / max(1, n_seen)
         train_losses.append(train_loss)
@@ -483,10 +648,26 @@ def train(
         log(
             "[epoch {}] valid_loss={:.6f}  AUC={:.4f}  AP={:.4f}  π={:.3f}  AP_lift={:.2f}  "
             "F1@0.5={:.3f}  BalAcc@0.5={:.3f}  F1*={:.3f} (τ*={:.3f})  Brier={:.4f}".format(
-                epoch, metrics["loss"], metrics["auc"], metrics["ap"], metrics["prevalence"],
-                metrics["ap_lift"], metrics["f1_at_0p5"], metrics["bal_acc_0p5"],
-                metrics["f1_best"], metrics["best_f1_thr"], metrics["brier"]
+                epoch,
+                metrics["loss"],
+                metrics["auc"],
+                metrics["ap"],
+                metrics["prevalence"],
+                metrics["ap_lift"],
+                metrics["f1_at_0p5"],
+                metrics["bal_acc_0p5"],
+                metrics["f1_best"],
+                metrics["best_f1_thr"],
+                metrics["brier"],
             )
+        )
+
+        oracle_acc = evaluate_as_oracle(
+            model=model,
+            encoder=encoder,
+            oracle_num_evals=cfg.oracle_num_evals,
+            oracle_beam_size=cfg.oracle_beam_size,
+            oracle_threshold=metrics["best_f1_thr"],
         )
 
         rows.append(
@@ -495,37 +676,35 @@ def train(
                     **base_row,
                     "epoch": epoch,
                     "global_step": int(global_step),
-
                     # core
                     "train_loss": float(train_loss),
                     "valid_loss": float(metrics["loss"]),
                     "valid_auc": float(metrics["auc"]),
                     "valid_ap": float(metrics["ap"]),
-
+                    "oracle_acc": float(oracle_acc),
                     # extras
                     "valid_prevalence": float(metrics.get("prevalence", float("nan"))),
                     "valid_ap_lift": float(metrics.get("ap_lift", float("nan"))),
                     "valid_ap_norm": float(metrics.get("ap_norm", float("nan"))),
                     "valid_prob_std": float(metrics.get("p_std", float("nan"))),
                     "valid_brier": float(metrics.get("brier", float("nan"))),
-
                     # thresholded @ 0.5
                     "valid_acc@0.5": float(metrics.get("acc_0p5", float("nan"))),
                     "valid_bal_acc@0.5": float(metrics.get("bal_acc_0p5", float("nan"))),
                     "valid_f1@0.5": float(metrics.get("f1_at_0p5", float("nan"))),
                     "valid_mcc@0.5": float(metrics.get("mcc_0p5", float("nan"))),
-
                     # best-F1 on val (diagnostic)
                     "valid_best_thr": float(metrics.get("best_f1_thr", float("nan"))),
                     "valid_acc@best": float(metrics.get("acc_best", float("nan"))),
                     "valid_bal_acc@best": float(metrics.get("bal_acc_best", float("nan"))),
                     "valid_f1@best": float(metrics.get("f1_best", float("nan"))),
                     "valid_mcc@best": float(metrics.get("mcc_best", float("nan"))),
-
                     # optional: record the pos_weight actually used
                     "train_pos_weight_used": float(
                         getattr(cfg, "n_per_parent", 0) / max(1, getattr(cfg, "p_per_parent", 1))
-                        if getattr(cfg, "stratify", False) else 37483079 / 8266188),
+                        if getattr(cfg, "stratify", False)
+                        else 37483079 / 8266188
+                    ),
                 }
             )
         )
@@ -534,6 +713,11 @@ def train(
             best_auc = metrics["auc"]
             save_inference_bundle(path=models_dir / "best.pt", model_state=model.state_dict(), config=cfg)
             log(f"[epoch {epoch}] saved best.pt (auc={best_auc:.4f})")
+
+        # Reset the training dataloader if we stratify and sample, with new seed
+        if resample_training_data:
+            log("Creating a new Dataloader for the next batch ...")
+            data_loader, _ = get_loaders(cfg, is_dev=is_dev, use_random_seed=True)
 
     # Always save a final checkpoint
     if not is_dev:
@@ -692,53 +876,9 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     log(f"Using device: {device!s}")
 
     log("Loading/creating hypernet …")
-    hypernet = (
-        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
-    )
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
     log("Hypernet ready.")
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-
-    # Datasets
-    log("Loading pair datasets …")
-    train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=is_dev)
-    valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=is_dev)
-    log(f"Pairs loaded. train_pairs={len(train_full)} valid_pairs={len(valid_full)}")
-
-    # Stratification
-    train_indices = []
-    valid_indices = []
-    if cfg.stratify:
-        log("Applying stratification ...")
-        train_indices = stratified_per_parent_indices(ds=train_full,
-                                                      pos_per_parent=cfg.p_per_parent,
-                                                      neg_per_parent=cfg.n_per_parent,
-                                                      exclude_neg_types=cfg.exclude_negs,
-                                                      seed=cfg.seed
-                                                      )
-        valid_indices = exact_representative_validation_indices(ds=valid_full,
-                                                                target_total=int(len(train_indices) / 5),
-                                                                exclude_neg_types=cfg.exclude_negs,
-                                                                by_neg_type=True,
-                                                                seed=cfg.seed
-                                                                )
-        # --- pick N parents & wrap as Subset ---
-    else:
-        if cfg.train_parents_start or cfg.train_parents_end:
-            t_start = cfg.train_parents_start or 0
-            t_end = cfg.train_parents_end or len(train_full)
-            train_indices = range(t_start, t_end)
-            log(f"Using training data from {t_start} to {t_end}.")
-
-        if cfg.valid_parents_start or cfg.valid_parents_end:
-            v_start = cfg.valid_parents_start or 0
-            v_end = cfg.valid_parents_end or len(valid_full)
-            valid_indices = range(v_start, v_end)
-            log(f"Using validation data from {v_start} to {v_end}.")
-
-    train_small = torch.utils.data.Subset(train_full, train_indices) if train_indices else train_full
-    valid_small = torch.utils.data.Subset(valid_full, valid_indices) if valid_indices else valid_full
-
-    log(f"[subset] train_indices={len(train_small):,}  valid_indices={len(valid_small):,}")
 
     # --- resume if requested ---
     resume_ckpt = None
@@ -760,9 +900,10 @@ def run_experiment(cfg: Config, is_dev: bool = False):
             log(f"Failed to load checkpoint {cfg.continue_from}: {e}")
             resume_ckpt = None
 
+    train_loader, valid_loader = get_loaders(cfg, is_dev)
     train(
-        train_pairs=train_small,
-        valid_pairs=valid_small if not is_dev else train_small,
+        train_loader,
+        valid_loader if not is_dev else train_loader,
         encoder=hypernet,
         models_dir=models_dir,
         evals_dir=evals_dir,
@@ -771,6 +912,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         device=device,
         resume_ckpt=resume_ckpt,
         resume_retrain_last_epoch=cfg.resume_retrain_last_epoch,
+        resample_training_data=cfg.resample_training_data_on_batch,
     )
 
 
@@ -780,10 +922,10 @@ if __name__ == "__main__":
     if is_dev:
         log("Running in local HDC (DEV) ...")
         cfg: Config = Config(
-            exp_dir_name="overfitting_per_parent_2_NO_laynorm_with_wd",
+            exp_dir_name="overfitting_batch_norm",
             seed=42,
-            epochs=30,
-            batch_size=16,
+            epochs=3,
+            batch_size=256,
             train_parents_start=None,
             train_parents_end=None,
             valid_parents_start=None,
@@ -791,26 +933,28 @@ if __name__ == "__main__":
             hidden_dims=[256, 128, 64, 32],
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
-            lr=1e-3,
+            lr=1e-4,
             weight_decay=0.0,
             num_workers=0,
             prefetch_factor=1,
             pin_memory=False,
             micro_bs=4,
             hv_scale=None,
-            save_every_seconds=3600,
+            save_every_seconds=30,
             keep_last_k=1,
             continue_from=None,
             resume_retrain_last_epoch=False,
             stratify=True,
             p_per_parent=2,
             n_per_parent=2,
-            use_layer_norm=False,
+            use_layer_norm=True,
+            use_batch_norm=True,
+            oracle_beam_size=8,
+            oracle_num_evals=2,
+            resample_training_data_on_batch=True,
         )
     else:
         cfg = get_args()
 
-    # Force WD 0.0 for the already scheduled jobs, it seems to not do good
-    cfg.weight_decay = 0.0
     pprint(asdict(cfg), indent=2)
     run_experiment(cfg, is_dev=is_dev)

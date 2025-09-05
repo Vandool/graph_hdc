@@ -34,17 +34,21 @@ nvidia-smi || true
 # Run (pixi must be on PATH)
 pixi run python "$SCRIPT" \
   --project_dir "$PROJECT_DIR" \
-  --exp_dir_name "1MLP_BASE_LayNorm" \
-  --epochs 2 \
-  --batch_size 128 \
+  --exp_dir_name "mlp_stratified_base" \
+  --epochs 3 \
+  --batch_size 256 \
   --hv_dim 7744 \
-  --lr 1e-3 \
-  --weight_decay 1e-4 \
+  --lr 1e-4 \
+  --weight_decay 0 \
   --num_workers 0 \
   --micro_bs 64 \
   --save_every_seconds 3600 \
   --keep_last_k 2 \
   --stratify True \
-  --p_per_parent 25 \
-  --n_per_parent 25 \
-  --use_layer_norm True
+  --p_per_parent 20 \
+  --n_per_parent 20 \
+  --oracle_beam_size 8 \
+  --oracle_num_evals 4 \
+  --resample_training_data_on_batch True \
+  --use_batch_norm True \
+  --use_layer_norm False

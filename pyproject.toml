@@ -30,7 +30,7 @@ matplotlib = ">=3.5.3"
 numpy = ">=1.23.2"
 python-decouple = ">=3.6"
 poetry-bumpversion = ">=0.3.0"
-rich-click = ">=1.7.0,<=1.8.0"
+rich-click = ">=1.8.0,<=1.9.0"
 jsonpickle = ">=4.0.1,<=5.0.0"
 torch = ">=2.5,<2.7"
 torch_geometric = "==2.6.1"
@@ -38,6 +38,7 @@ pytorch_lightning = "==2.4.0"
 torch_hd = "*"
 orjson = "^3.10.18"
 normflows = "^1.7.3"
+auto-slurm = { git = "https://github.com/the16thpythonist/AutoSlurm.git", rev = "aslurmx" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

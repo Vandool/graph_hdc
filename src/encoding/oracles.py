@@ -30,20 +30,23 @@ class Oracle:
             h2 = final_h.unsqueeze(0).expand(batch_size, -1)
 
             cosines = torch.nn.functional.cosine_similarity(h1, h2, dim=-1)
-            print("cosine similarities:", (cosines > 0).tolist())
+            # print("cosine similarities:", (cosines > 0).tolist())
 
             logits = self.model(h1, h2)
             return torch.sigmoid(logits)
+
 
 # ---------- tiny logger ----------
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
 
+
 ## -------- MLP Classifier -------
 @register_model("MLPClassifier")
 class MLPClassifier(nn.Module):
-    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None, use_layer_norm: bool = False) -> None:
+    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None, use_layer_norm: bool = False,
+                 use_batch_norm: bool = False) -> None:
         """
         hv_dim: dimension of each HRR vector (e.g., 7744)
         hidden_dims: e.g., [4096, 2048, 512, 128]
@@ -57,8 +60,11 @@ class MLPClassifier(nn.Module):
             layers.append(nn.LayerNorm(d_in))
         last = d_in
         for h in hidden_dims:
-            layers += [nn.Linear(last, h), nn.GELU()]
-            last = h
+            layers.append(nn.Linear(last, h))
+            if use_batch_norm:
+                log("Using batch normalization...")
+                layers.append(nn.BatchNorm1d(h))
+            layers.append(nn.GELU())
         layers += [nn.Linear(last, 1)]
         self.net = nn.Sequential(*layers)
 
@@ -66,10 +72,3 @@ class MLPClassifier(nn.Module):
         # h1,h2: [B, hv_dim]
         x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
         return self.net(x).squeeze(-1)  # [B]
-
-
-
-
-
-
-

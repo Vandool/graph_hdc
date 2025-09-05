@@ -170,7 +170,7 @@ def greedy_oracle_decoder(
         beam_size: int = 32,
         draw: bool = False,
         oracle_threshold: float = 0.5,
-):
+) -> list[nx.Graph]:
     """Greedy/beam search decoder outline using an oracle.
 
     :param full_g_h: final graph hypervector
@@ -208,7 +208,7 @@ def greedy_oracle_decoder(
 
     def _call_oracle(Gs: list[nx.Graph]) -> list[bool]:
         probs = oracle.is_induced_graph(small_gs=Gs, final_h=full_g_h)
-        print(probs)
+        # print(probs)
         return (probs > oracle_threshold).tolist()
 
 
@@ -258,7 +258,7 @@ def greedy_oracle_decoder(
             continue
         global_seen.add(key)
         first_pop.append(G)
-    print(f"First population size: {len(first_pop)}")
+    # print(f"First population size: {len(first_pop)}")
 
     # oracle filter for 2-node graphs; also learn pair feasibility
     healthy_pop: list[nx.Graph] = []
@@ -274,7 +274,7 @@ def greedy_oracle_decoder(
         if oracle_results[i]:
             healthy_pop.append(G)
     # Don't limit the first population
-    print(f"Healthy population size: {len(healthy_pop)}")
+    # print(f"Healthy population size: {len(healthy_pop)}")
 
     if not healthy_pop:
         return []
@@ -290,7 +290,7 @@ def greedy_oracle_decoder(
 
     while iters < max_iters:
         iters += 1
-        print(f"Iteration: {iters} | max pop: {len(population)}")
+        # print(f"Iteration: {iters} | max pop: {len(population)}")
         if draw:
             print("Drawings...")
             for G in population:
