@@ -26,14 +26,14 @@
 
 # ---------- tweak these ----------
 ENTITY="arvand-kaveh-karlsruhe-institute-of-technology"
-PROJECT="real_nvp_v3_dev"
+PROJECT="real_nvp_v3"
 EXPERIMENTS_PATH="${GHDC_HOME}/src/exp/real_nvp_v2"
 
 # run mode
 DEV=0                     # 1 = dev queue (00:10:00), 0 = normal (24:00:00)
 
 # Leave empty to build a deterministic name from params below. Or set it to be used
-EXP_NAME="real_nvp_v3_dev"
+EXP_NAME=""
 
 # resume from last checkpoint in this EXP_NAME (if it exists)
 RESUME=0
@@ -43,8 +43,8 @@ EPOCHS=500
 BATCH_SIZE=256
 DEVICE="cuda"
 HV_DIM=$((88*88))
-NUM_FLOWS=8
-NUM_HIDDEN=512
+NUM_FLOWS=4
+NUM_HIDDEN=256
 USE_ACT_NORM=1            # 1 = pass flag, 0 = don’t
 LR=1e-4
 WEIGHT_DECAY=0.0
@@ -57,7 +57,7 @@ SEED=42
 PARTITION_NORMAL="accelerated"      # cpuonly large accelerated accelerated-h100 accelerated-200 
 PARTITION_DEV="dev_accelerated"     # ddev_cpuonly dev_accelerated dev_accelerated-h100
 TIME_NORMAL="36:00:00"
-TIME_DEV="00:10:00"
+TIME_DEV="00:20:00"
 
 if [[ "$DEV" -eq 1 ]]; then
   PARTITION="$PARTITION_DEV"

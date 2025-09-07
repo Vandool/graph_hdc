@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import torch
 import wandb
-from pytorch_lightning import Trainer, seed_everything
+from pytorch_lightning import Trainer, seed_everything, LightningModule
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from torch_geometric.loader import DataLoader
@@ -364,6 +364,88 @@ def pick_precision():
         return "16-mixed"  # widely supported fallback
     return 32  # CPU or MPS
 
+def sample_and_decode_preview(
+        model,
+        hypernet,
+        *,
+        max_print: int = 16,
+        logger=print,
+) -> None:
+
+    model.eval()
+    with torch.no_grad():
+        node_s, graph_s, _ = model.sample_split(max_print)  # [K, D] each
+
+    # If your tensors subclass needs to be enforced (as in your code)
+    node_s = node_s.as_subclass(HRRTensor)
+    graph_s = graph_s.as_subclass(HRRTensor)
+
+    logger(f"[preview] node_s device: {node_s.device}")
+    logger(f"[preview] graph_s device: {graph_s.device}")
+    with contextlib.suppress(Exception):
+        logger(f"[preview] Hypernet node codebook device: {hypernet.nodes_codebook.device}")
+
+    # Decode and print a few
+    node_counters = hypernet.decode_order_zero_counter(node_s)
+    for i, (n, ctr) in enumerate(node_counters.items()):
+        if i >= max_print:
+            break
+        logger(f"[preview] Sample {n}: nodes={ctr.total()}, edges={sum(e + 1 for _, e, _, _ in ctr)}\n{ctr}")
+
+
+
+class PeriodicSampleDecodeCallback(Callback):
+    r"""
+    Periodically samples from the model and decodes with the hypernet, printing
+    a small textual preview for quick qualitative inspection.
+
+    Triggers every ``interval_epochs`` epochs at train-epoch end.
+    """
+
+    def __init__(
+            self,
+            hypernet,
+            *,
+            interval_epochs: int = 10,
+            max_print: int = 16,
+            use_wandb_text: bool = True,
+    ):
+        super().__init__()
+        self.hypernet = hypernet
+        self.interval = int(interval_epochs)
+        self.max_print = int(max_print)
+        self.use_wandb_text = bool(use_wandb_text)
+
+    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        epoch = int(getattr(trainer, "current_epoch", 0))
+        if self.interval <= 0 or ((epoch + 1) % self.interval) != 0:
+            return
+
+        # Route logs to either W&B text panel (if available) or stdout
+        logs_buffer = []
+
+        def _collect(msg: str):
+            logs_buffer.append(str(msg))
+
+        sample_and_decode_preview(
+            pl_module,
+            self.hypernet,
+            max_print=self.max_print,
+            logger=_collect,
+        )
+
+        text_blob = "\n".join(logs_buffer)
+        try:
+            if self.use_wandb_text and wandb.run is not None:
+                wandb.log({"preview/decoded_samples": wandb.Html(f"<pre>{text_blob}</pre>"),
+                           "preview/epoch": epoch + 1})
+            else:
+                trainer.logger.log_text("preview/decoded_samples", text_blob)  # some loggers support this
+                print(text_blob, flush=True)
+        except Exception:
+            # Fallback to stdout
+            print(text_blob, flush=True)
+
 
 class TimeLoggingCallback(Callback):
     def setup(self, trainer, pl_module, stage=None):
@@ -635,6 +717,8 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         verbose=True,
     )
 
+    sample_and_decode_cb = PeriodicSampleDecodeCallback(hypernet, interval_epochs=10, max_print=16)
+
     # ----- W&B -----
     loggers = [csv_logger]
     if not local_dev:
@@ -658,7 +742,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping, sample_and_decode_cb],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
@@ -673,7 +757,6 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     resume_path: Path | None = str(cfg.continue_from) if cfg.continue_from else None
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader, ckpt_path=resume_path)
 
-    # ----- curves to parquet / png -----
     # ----- curves to parquet / png -----
     metrics_path = Path(csv_logger.log_dir) / "metrics.csv"
     if metrics_path.exists():
@@ -864,7 +947,6 @@ def sweep_entrypoint():
     )
     run_experiment(cfg)
 
-
 if __name__ == "__main__":
 
     def get_flow_cli_args() -> FlowConfig:
@@ -875,7 +957,7 @@ if __name__ == "__main__":
         p.add_argument("--batch_size", "-bs", type=int, default=64)
         p.add_argument("--vsa", "-v", type=VSAModel, default=VSAModel.HRR)
         p.add_argument("--hv_dim", "-hd", type=int, default=88 * 88)
-        p.add_argument("--lr", type=float, default=1e-3)
+        p.add_argument("--lr", type=float, default=1e-4)
         p.add_argument("--weight_decay", "-wd", type=float, default=0.0)
         p.add_argument(
             "--device", "-dev", choices=["cpu", "cuda", "mps"], default="cuda" if torch.cuda.is_available() else "cpu"
@@ -906,7 +988,7 @@ if __name__ == "__main__":
                 seed=42,
                 epochs=500,
                 batch_size=128,
-                lr=1e-3,
+                lr=1e-4,
                 device="cuda",
                 hv_dim=88 * 88,
                 vsa=VSAModel.HRR,
