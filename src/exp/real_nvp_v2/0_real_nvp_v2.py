@@ -518,84 +518,196 @@ def _norm_cdf(x):
 @torch.no_grad()
 def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | None = None):
     """
-    Returns arrays for core comparable metrics:
-      - bpd_model, bpd_gauss, delta_bpd, bpd_stdspace, nll_model
+    Eval for normalizing flows trained with exact likelihood.
+
+    We report ONLY arrays with the same length so they can be dropped into a single
+    pandas DataFrame without shape errors. Per-dimension diagnostics are summarized
+    to scalars and *broadcast* to per-sample length (so they’re easy to join & plot).
+
+    Why these metrics (high level):
+      • nll/bpd: core objective the model optimizes; should go down if the flow
+        learns a better density than a naive Gaussian after your μ/σ standardization.
+      • Gaussian baseline: tells you how much "structure" the flow actually learns
+        beyond mean/variance re-scaling (important because your features have wildly
+        different scales; standardization already fixes some of that).
+      • Δbpd (model − Gaussian): the *value add* of the flow; negative values mean
+        the flow beats the Gaussian baseline in bits-per-dim (good).
+      • PIT KS & 90% coverage: calibration in base space; checks whether the learned
+        transform truly maps data → N(0, I). If this fails, sampling and tail behavior
+        can be off even if NLL looks okay.
+      • sum_log_sigma_bits / const_bpd: isolates the contribution from your fixed
+        standardization step; helps detect cases where most of the “good” bpd is due
+        to μ/σ rather than the flow layers (a real risk with highly heteroscedastic data).
+
+    Returns arrays (all same length) for easy DataFrame construction:
+      bpd_model, bpd_gauss, delta_bpd, bpd_stdspace, nll_model,
+      sum_log_sigma_bits, const_bpd,
+      pit_ks_mean/std/max, cov90_abs_err_mean/std/max
     """
     model.eval()
     ln2 = math.log(2.0)
     dim = 2 * hv_dim
+
+    # log p(z) of a standard normal factorizes; this is the constant term in nats
     const_term = 0.5 * dim * math.log(2 * math.pi)
 
     nll_model_list, bpd_std_list, bpd_gauss_list = [], [], []
     pit_ks_list, cov90_err_list = [], []
+
+    # Helper: push from standardized z to the base N(0, I) to test calibration.
+    # We try the fast path (flow.inverse on the aggregate), then safely fall back
+    # to layer-by-layer inversion. This ensures reversibility is actually exercised.
+    def _to_base(flow, z_std: torch.Tensor) -> torch.Tensor:
+        if hasattr(flow, "inverse"):
+            try:
+                zb, _ = flow.inverse(z_std)
+                return zb
+            except Exception:
+                pass
+        zb = z_std
+        for f in reversed(flow.flows):
+            zb, _ = f.inverse(zb)
+        return zb
+
     for bi, batch in enumerate(loader):
         if max_batches is not None and bi >= max_batches:
             break
+
         batch = batch.to(device)
-        flat = model._flat_from_batch(batch)
+        flat = model._flat_from_batch(batch)  # [B, dim]
 
-        z, log_det_corr = model._pretransform(flat)  # z: [B, dim]; log_det_corr: float
-        nll_stdspace = -model.flow.log_prob(z)  # [B] nats
-        quad = 0.5 * (z**2).sum(dim=1)  # [B]
-        nll_gauss_stdspace = quad + const_term  # [B]
+        # Standardize with your learned/fitted μ, σ.
+        # This is a *determinantful* pre-transform; we track its log-det so that
+        # likelihood is computed in the original data measure (not in z-space).
+        z, log_det_corr = model._pretransform(flat)  # z ∼ data standardized
 
-        nll_model = nll_stdspace + log_det_corr  # [B]
-        nll_gauss = nll_gauss_stdspace + log_det_corr  # [B]
+        # Likelihood under the FLOW in standardized space (the thing being learned).
+        # This is the exact objective the flow trains on.
+        nll_stdspace = -model.flow.log_prob(z)  # [B] nats, exact
 
+        # Likelihood of a *plain Gaussian* in the same standardized space.
+        # This is your "no flow layers" baseline: only μ/σ but no higher-order structure.
+        quad = 0.5 * (z**2).sum(dim=1)  # ∑ z_i^2 / 2
+        nll_gauss_stdspace = quad + const_term  # exact NLL of N(0, I)
+
+        # Move both NLLs back to the *data* space by adding the pre-transform’s
+        # log-det correction. This keeps the comparison fair and truly reversible.
+        nll_model = nll_stdspace + log_det_corr  # flow NLL in data space
+        nll_gauss = nll_gauss_stdspace + log_det_corr  # Gaussian baseline in data space
+
+        # Numerical hygiene: drop non-finite samples consistently.
         mask = torch.isfinite(nll_model) & torch.isfinite(nll_stdspace) & torch.isfinite(nll_gauss)
         if not mask.any():
             continue
 
         nll_model = nll_model[mask]
-        bpd_stdspace = nll_stdspace[mask] / (dim * ln2)
-        bpd_gauss = nll_gauss[mask] / (dim * ln2)
+        nll_stdspace = nll_stdspace[mask]
+        nll_gauss = nll_gauss[mask]
+        z_masked = z[mask]
+
+        # Bits-per-dim is the standard unit for flows (scale-invariant across dims).
+        # bpd_stdspace reflects the flow’s coding cost in the *standardized* space.
+        bpd_stdspace = nll_stdspace / (dim * ln2)  # [B] bits/dim (model, standardized)
+        bpd_gauss = nll_gauss / (dim * ln2)  # [B] bits/dim (Gaussian baseline, data space)
 
         nll_model_list.append(nll_model.detach().cpu())
         bpd_std_list.append(bpd_stdspace.detach().cpu())
         bpd_gauss_list.append(bpd_gauss.detach().cpu())
 
-        # z: standardized x (after your μ/σ)
-        z_base, _ = model.flow.inverse(z)  # push to base N(0, I)
-        u = _norm_cdf(z_base).clamp_(0, 1)  # PIT uniforms in [0,1]
+        # ---------------- Calibration diagnostics in base space ----------------
+        # If the flow learned a correct, invertible map to N(0, I), then pushing
+        # standardized data through "inverse" should yield z_base ~ N(0, I).
+        z_base = _to_base(model.flow, z_masked)  # [B, dim]
 
-        # KS per-dimension on a random subset (e.g., 512 dims)
-        B, D = u.shape
+        # PIT (Probability Integral Transform): Φ(z_base) should be Uniform(0,1).
+        # KS statistic per-dimension quantifies mismatch; smaller is better.
+        u = _norm_cdf(z_base).clamp_(0, 1)  # [B, dim] uniforms if calibrated
+
+        # Compute KS on a random subset of dims to keep it cheap. We summarize later.
+        Bm, D = u.shape
         take = min(512, D)
-        idx = torch.randperm(D, device=u.device)[:take]
-        U = u[:, idx]  # [B, take]
-        U_sorted, _ = torch.sort(U, dim=0)
-        grid = (torch.arange(1, B + 1, device=u.device) / B).unsqueeze(1)  # [B,1]
-        ks = torch.max(torch.abs(U_sorted - grid), dim=0).values  # [take]
-        pit_ks_list.append(ks.detach().cpu())
+        if take > 0 and Bm > 0:
+            idx = torch.randperm(D, device=u.device)[:take]
+            U = u[:, idx]  # [B, take]
+            U_sorted, _ = torch.sort(U, dim=0)
+            # Theoretical CDF grid for uniforms
+            grid = (torch.arange(1, Bm + 1, device=u.device) / Bm).unsqueeze(1)  # [B, 1]
+            ks = torch.max(torch.abs(U_sorted - grid), dim=0).values  # [take]
+            pit_ks_list.append(ks.detach().cpu())
 
-        # 90% central coverage in base: ±1.64485
-        inside = (z_base.abs() <= 1.6448536269514722).float()  # [B,D]
-        cov = inside.mean(dim=0)  # per-dim
-        cov_err = (cov - 0.90).abs()
-        cov90_err_list.append(cov_err.detach().cpu())
+            # 90% central coverage per coordinate in base space should be ~0.90 for N(0,1).
+            # This probes *tail calibration*. Important for your setting because
+            # branch-2 had huge raw scale; after standardization + flow, bad tails would
+            # show up as systematic under/over-coverage here.
+            inside = (z_base.abs() <= 1.6448536269514722).float()  # [B, dim]
+            cov = inside.mean(dim=0)  # per-dim coverage rate
+            cov_err = (cov - 0.90).abs()
+            cov90_err_list.append(cov_err.detach().cpu())
 
+    # If nothing was collected (e.g., all masked), return empty dict.
     if not nll_model_list:
         return {}
 
+    # Flatten per-sample metrics to numpy
     nll_model = torch.cat(nll_model_list).numpy()
     bpd_stdspace = torch.cat(bpd_std_list).numpy()
     bpd_gauss = torch.cat(bpd_gauss_list).numpy()
-    bpd_model = nll_model / (dim * ln2)
-    delta_bpd = bpd_model - bpd_gauss
-    sum_log_sigma_bits = float(model.log_sigma.sum().item() / math.log(2.0))
 
-    pit_ks = torch.cat(pit_ks_list).numpy() if pit_ks_list else np.array([])
-    cov90_err = torch.cat(cov90_err_list).numpy() if cov90_err_list else np.array([])
+    # bpd_model is the final coding cost (in data space) the model assigns.
+    bpd_model = nll_model / (dim * ln2)
+
+    # Δbpd shows the *net* improvement of the learned flow over the Gaussian baseline.
+    # Negative is better (fewer bits to code the data).
+    delta_bpd = bpd_model - bpd_gauss
+
+    # How much of your bpd is a constant due to standardization’s log|σ|?
+    # This is useful to diagnose when most “gain” comes from μ/σ rather than learned transforms.
+    sum_log_sigma_bits = float(model.log_sigma.sum().item() / math.log(2.0))
+    const_bpd = sum_log_sigma_bits / dim  # per-dim constant bits from the pre-transform
+
+    # Summarize calibration diagnostics across dims (mean/std/max are enough).
+    if pit_ks_list:
+        pit_ks = torch.cat(pit_ks_list).numpy()
+        pit_mean = float(np.mean(pit_ks))
+        pit_std = float(np.std(pit_ks))
+        pit_max = float(np.max(pit_ks))
+    else:
+        pit_mean = pit_std = pit_max = float("nan")
+
+    if cov90_err_list:
+        cov90 = torch.cat(cov90_err_list).numpy()
+        cov_mean = float(np.mean(cov90))
+        cov_std = float(np.std(cov90))
+        cov_max = float(np.max(cov90))
+    else:
+        cov_mean = cov_std = cov_max = float("nan")
+
+    # Broadcast scalar summaries so all columns align in a single DataFrame.
+    def _broadcast(val: float, ref: np.ndarray) -> np.ndarray:
+        return np.full_like(ref, val, dtype=np.float64)
 
     return {
-        "bpd_model": bpd_model,
-        "bpd_gauss": bpd_gauss,
-        "delta_bpd": delta_bpd,
-        "bpd_stdspace": bpd_stdspace,
-        "nll_model": nll_model,
-        "sum_log_sigma_bits": np.full_like(bpd_model, sum_log_sigma_bits),
-        "pit_ks": pit_ks,
-        "cov90_abs_err": cov90_err,
+        # Core objective (in data space): should decrease as the model learns structure.
+        "bpd_model": bpd_model,  # per-sample bits-per-dim under the flow
+        # Baseline with no flow layers: isolates the benefit of learning beyond μ/σ.
+        "bpd_gauss": bpd_gauss,  # per-sample bits-per-dim under Gaussian baseline
+        # Net benefit of the flow: negative = flow better than baseline (good).
+        "delta_bpd": delta_bpd,  # per-sample improvement (model - Gaussian)
+        # The same objective but in the *standardized* space (helps debug μ/σ vs flow).
+        "bpd_stdspace": bpd_stdspace,  # per-sample bits-per-dim in standardized space
+        # Raw NLL in data space (for completeness / alternative plotting).
+        "nll_model": nll_model,  # per-sample negative log-likelihood (nats)
+        # Constant contributions & calibration summaries (broadcast to match length):
+        "sum_log_sigma_bits": _broadcast(sum_log_sigma_bits, bpd_model),  # total bits from log σ
+        "const_bpd": _broadcast(const_bpd, bpd_model),  # per-dim constant bits
+        # PIT KS (smaller is better): marginal calibration of base-space coordinates.
+        "pit_ks_mean": _broadcast(pit_mean, bpd_model),
+        "pit_ks_std": _broadcast(pit_std, bpd_model),
+        "pit_ks_max": _broadcast(pit_max, bpd_model),
+        # 90% coverage abs error (smaller is better): tail calibration in base space.
+        "cov90_abs_err_mean": _broadcast(cov_mean, bpd_model),
+        "cov90_abs_err_std": _broadcast(cov_std, bpd_model),
+        "cov90_abs_err_max": _broadcast(cov_max, bpd_model),
     }
 
 
