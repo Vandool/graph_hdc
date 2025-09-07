@@ -421,7 +421,7 @@ class HyperNet(AbstractGraphEncoder):
 
     def forward(
             self,
-            data: Data,
+            data: Data | Batch,
             *,
             bidirectional: bool = False,  # PyG datasets come already bidirectional
             normalize: bool = False,

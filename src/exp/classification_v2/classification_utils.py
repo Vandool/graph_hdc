@@ -15,6 +15,7 @@ from torch_geometric.data import Batch, Data
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.encoding.graph_encoders import AbstractGraphEncoder
 from src.encoding.the_types import VSAModel
+from src.utils.utils import str2bool
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -124,8 +125,8 @@ def get_args(argv: list[str] | None = None) -> Config:
         default=argparse.SUPPRESS,
         help="Comma-separated: e.g. '4096,2048,512,128'",
     )
-    p.add_argument("--use_layer_norm", "-ln", type=bool, default=argparse.SUPPRESS)
-    p.add_argument("--use_batch_norm", "-bn", type=bool, default=argparse.SUPPRESS)
+    p.add_argument("--use_batch_norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+    p.add_argument("--use_layer_norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
 
     # HDC
     p.add_argument("--hv_dim", "-hd", type=int, default=argparse.SUPPRESS)

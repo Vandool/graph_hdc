@@ -45,8 +45,13 @@ def log(msg: str) -> None:
 ## -------- MLP Classifier -------
 @register_model("MLPClassifier")
 class MLPClassifier(nn.Module):
-    def __init__(self, hv_dim: int = 88 * 88, hidden_dims: list[int] | None = None, use_layer_norm: bool = False,
-                 use_batch_norm: bool = False) -> None:
+    def __init__(
+            self,
+            hv_dim: int = 88 * 88,
+            hidden_dims: list[int] | None = None,
+            use_layer_norm: bool = False,
+            use_batch_norm: bool = False,
+    ) -> None:
         """
         hv_dim: dimension of each HRR vector (e.g., 7744)
         hidden_dims: e.g., [4096, 2048, 512, 128]
@@ -55,16 +60,16 @@ class MLPClassifier(nn.Module):
         hidden_dims = hidden_dims or [2048, 1024, 512, 128]
         d_in = hv_dim * 2
         layers: list[nn.Module] = []
+        log(f"Using Layer Normalization: {use_layer_norm}\nUsing Batch Normalization: {use_batch_norm}")
         if use_layer_norm:
-            log("Using layer normalization...")
             layers.append(nn.LayerNorm(d_in))
         last = d_in
         for h in hidden_dims:
             layers.append(nn.Linear(last, h))
             if use_batch_norm:
-                log("Using batch normalization...")
                 layers.append(nn.BatchNorm1d(h))
             layers.append(nn.GELU())
+            last = h
         layers += [nn.Linear(last, 1)]
         self.net = nn.Sequential(*layers)
 
@@ -72,3 +77,4 @@ class MLPClassifier(nn.Module):
         # h1,h2: [B, hv_dim]
         x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
         return self.net(x).squeeze(-1)  # [B]
+

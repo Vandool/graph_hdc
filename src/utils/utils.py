@@ -1,11 +1,13 @@
+import argparse
 import itertools
 import os
 import sys
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from random import random
-from typing import Literal, Union, Sequence, Mapping, Any
+from typing import Any, Literal, Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -22,7 +24,7 @@ from torchhd import VSATensor
 from torchhd.tensors.hrr import HRRTensor
 from torchhd.tensors.map import MAPTensor
 
-from src.encoding.the_types import VSAModel, Feat
+from src.encoding.the_types import Feat, VSAModel
 
 # ========= Paths =========
 ROOT = Path(__file__)
@@ -40,6 +42,17 @@ TEST_ASSETS_PATH = ROOT / "tests_new/assets"
 FORMAL_CHARGE_IDX_TO_VAL: dict[int, int] = {0: 0, 1: +1, 2: -1}
 
 
+def str2bool(v: str) -> bool:
+    if isinstance(v, bool):
+        return v
+    v = v.lower()
+    if v in ("1", "true", "t", "yes", "y"):
+        return True
+    if v in ("0", "false", "f", "no", "n"):
+        return False
+    raise argparse.ArgumentTypeError("boolean value expected")
+
+
 # ========= Utils =========
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -52,14 +65,22 @@ def set_seed(seed: int) -> None:
 
 
 def jsonable(x: Any):
-    if x is None or isinstance(x, (bool, int, float, str)): return x
-    if isinstance(x, (np.generic,)): return x.item()
-    if isinstance(x, Path): return str(x)
-    if isinstance(x, torch.device): return str(x)
-    if torch.is_tensor(x): return x.item() if x.numel() == 1 else x.detach().cpu().tolist()
-    if isinstance(x, Enum): return x.value
-    if isinstance(x, dict): return {k: jsonable(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple, set)): return [jsonable(v) for v in x]
+    if x is None or isinstance(x, (bool, int, float, str)):
+        return x
+    if isinstance(x, (np.generic,)):
+        return x.item()
+    if isinstance(x, Path):
+        return str(x)
+    if isinstance(x, torch.device):
+        return str(x)
+    if torch.is_tensor(x):
+        return x.item() if x.numel() == 1 else x.detach().cpu().tolist()
+    if isinstance(x, Enum):
+        return x.value
+    if isinstance(x, dict):
+        return {k: jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)):
+        return [jsonable(v) for v in x]
     return str(x)
 
 
@@ -120,11 +141,11 @@ ReductionOP = Literal["bind", "bundle"]
 
 
 def scatter_hd(
-        src: Tensor,
-        index: Tensor,
-        *,
-        op: ReductionOP,
-        dim_size: int | None = None,
+    src: Tensor,
+    index: Tensor,
+    *,
+    op: ReductionOP,
+    dim_size: int | None = None,
 ) -> Tensor:
     """
     Scatter-reduce a batch of hypervectors along dim=0 using
@@ -523,10 +544,10 @@ class DataTransformer:
 
     @staticmethod
     def pyg_to_nx(
-            data: "Data",
-            *,
-            strict_undirected: bool = True,
-            allow_self_loops: bool = False,
+        data: "Data",
+        *,
+        strict_undirected: bool = True,
+        allow_self_loops: bool = False,
     ) -> nx.Graph:
         """
         Convert a PyG ``Data`` (undirected, bidirectional edges) to a mutable NetworkX graph.
@@ -586,7 +607,7 @@ class DataTransformer:
 
         # Build undirected edge set (dedup, optional self-loop handling)
         pairs = set()
-        for u, v in zip(src.tolist(), dst.tolist()):
+        for u, v in zip(src.tolist(), dst.tolist(), strict=False):
             if u == v and not allow_self_loops:
                 continue
             a, b = (u, v) if u < v else (v, u)
@@ -594,8 +615,8 @@ class DataTransformer:
 
         if strict_undirected:
             # Check that for every (u,v) there is a (v,u) in the original directed list
-            dir_pairs = set(zip(src.tolist(), dst.tolist()))
-            for (u, v) in list(pairs):
+            dir_pairs = set(zip(src.tolist(), dst.tolist(), strict=False))
+            for u, v in list(pairs):
                 if (u, v) not in dir_pairs or (v, u) not in dir_pairs:
                     raise ValueError(f"edge_index is not symmetric for undirected edge ({u},{v}).")
 
@@ -616,16 +637,16 @@ class DataTransformer:
 
     @staticmethod
     def nx_to_mol(
-            G: nx.Graph,
-            *,
-            atom_symbols=None,
-            infer_bonds: bool = True,
-            set_no_implicit: bool = True,
-            set_explicit_hs: bool = True,
-            set_atom_map_nums: bool = False,
-            sanitize: bool = True,
-            kekulize: bool = True,
-            validate_heavy_degree: bool = False,
+        G: nx.Graph,
+        *,
+        atom_symbols=None,
+        infer_bonds: bool = True,
+        set_no_implicit: bool = True,
+        set_explicit_hs: bool = True,
+        set_atom_map_nums: bool = False,
+        sanitize: bool = True,
+        kekulize: bool = True,
+        validate_heavy_degree: bool = False,
     ) -> tuple["Chem.Mol", dict[int, int]]:
         """
         Build an RDKit molecule from an **undirected** NetworkX graph with frozen features.
@@ -653,7 +674,7 @@ class DataTransformer:
         """
 
         if atom_symbols is None:
-            atom_symbols = ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
+            atom_symbols = ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"]
 
         def _as_tuple(feat_obj) -> tuple[int, int, int, int]:
             if hasattr(feat_obj, "to_tuple"):
@@ -688,7 +709,8 @@ class DataTransformer:
             for n in G.nodes:
                 if G.degree[n] != target_deg[n]:
                     raise AssertionError(
-                        f"Heavy degree mismatch at node {n}: NX={G.degree[n]} vs target={target_deg[n]}")
+                        f"Heavy degree mismatch at node {n}: NX={G.degree[n]} vs target={target_deg[n]}"
+                    )
 
         # --- optional bond-order inference on the NX graph ---
         # Bond orders: dict of undirected edge -> order (1,2,3)
@@ -706,7 +728,10 @@ class DataTransformer:
                 "O": {0: (2,), -1: (1, 2), +1: (3,)},
                 "P": {0: (3, 5), +1: (4, 5)},
                 "S": {0: (2, 4, 6), +1: (3, 5), -1: (1, 2)},
-                "F": {0: (1,)}, "Cl": {0: (1,)}, "Br": {0: (1,)}, "I": {0: (1,)},
+                "F": {0: (1,)},
+                "Cl": {0: (1,)},
+                "Br": {0: (1,)},
+                "I": {0: (1,)},
             }
 
             # ring preference: small cycles first
@@ -730,7 +755,7 @@ class DataTransformer:
                 return s
 
             def target_valence(n: int) -> int:
-                sym = symbols[n];
+                sym = symbols[n]
                 ch = charges[n]
                 menu = valence_menu.get(sym, {0: (target_deg[n] + expHs[n],)})
                 opts = menu.get(ch, menu.get(0, (target_deg[n] + expHs[n],)))
@@ -835,12 +860,14 @@ class DataTransformer:
                 idx_map = {}
                 for n in sorted(G.nodes):
                     at_idx, deg_idx, ch_idx, hs = feats[n]
-                    sym = symbols[n];
+                    sym = symbols[n]
                     ch = charges[n]
-                    a = Chem.Atom(sym);
+                    a = Chem.Atom(sym)
                     a.SetFormalCharge(int(ch))
-                    if set_explicit_hs: a.SetNumExplicitHs(int(expHs[n]))
-                    if set_no_implicit: a.SetNoImplicit(True)
+                    if set_explicit_hs:
+                        a.SetNumExplicitHs(int(expHs[n]))
+                    if set_no_implicit:
+                        a.SetNoImplicit(True)
                     idx_map[n] = rw2.AddAtom(a)
                 for u, v in G.edges:
                     rw2.AddBond(idx_map[u], idx_map[v], Chem.BondType.SINGLE)
