@@ -50,7 +50,7 @@ from src.exp.classification_v2.classification_utils import (
     encode_g2_with_cache,
     exact_representative_validation_indices,
     get_args,
-    stratified_per_parent_indices,
+    stratified_per_parent_indices_with_caps,
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, pick_device
 
@@ -248,13 +248,14 @@ def get_loaders(cfg: Config, is_dev: bool = False, use_random_seed: bool = False
     train_indices = []
     valid_indices = []
     if cfg.stratify:
-        log("Applying stratification ...")
-        train_indices = stratified_per_parent_indices(
+        sampling_seed = cfg.seed if not use_random_seed else random.randint(cfg.seed + 1, 10000)
+        log(f"Applying stratification with seed {sampling_seed}...")
+        train_indices = stratified_per_parent_indices_with_caps(
             ds=train_full,
             pos_per_parent=cfg.p_per_parent,
             neg_per_parent=cfg.n_per_parent,
             exclude_neg_types=cfg.exclude_negs,
-            seed=cfg.seed if not use_random_seed else random.randint(cfg.seed + 1, 10000),
+            seed=sampling_seed,
         )
         valid_indices = exact_representative_validation_indices(
             ds=valid_full,
@@ -940,14 +941,14 @@ if __name__ == "__main__":
             pin_memory=False,
             micro_bs=4,
             hv_scale=None,
-            save_every_seconds=30,
+            save_every_seconds=48*60*60,
             keep_last_k=1,
             continue_from=None,
             resume_retrain_last_epoch=False,
             stratify=True,
-            p_per_parent=2,
-            n_per_parent=2,
-            use_layer_norm=True,
+            p_per_parent=20,
+            n_per_parent=20,
+            use_layer_norm=False,
             use_batch_norm=True,
             oracle_beam_size=8,
             oracle_num_evals=8,

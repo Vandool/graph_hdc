@@ -95,12 +95,12 @@ def sanity_check_split(pairs_ds: ZincPairs, split_name: str, n_samples: int = 50
     print(f"[{split_name}] Sanity OK ✓  positives: {n_pos}, negatives: {n_neg}")
 
 
-def run_pipeline_for_split(split_name: str, cfg: PairConfig, sanity_n: int, seed: int):
+def run_pipeline_for_split(split_name: str, cfg: PairConfig, sanity_n: int, seed: int, k):
     print(f"\n=== Split: {split_name} ===")
-    base = ZincSmiles(split=split_name)[:10]
+    base = ZincSmiles(split=split_name)[:k]
     print(f"[{split_name}] base graphs: {len(base)}")
 
-    pairs = ZincPairs(base_dataset=base, split=split_name, cfg=cfg)
+    pairs = ZincPairs(base_dataset=base, split=split_name, cfg=cfg, dev=True)
     print(f"[{split_name}] pair samples: {len(pairs)}")
 
     stats = summarize_split(pairs, split_name)
@@ -113,9 +113,9 @@ def main():
     sanity_check_samples = 10_000  # capped by dataset size
 
     # Run all splits
-    t_n, t_pos, t_neg, t_hist = run_pipeline_for_split("test",  cfg, sanity_check_samples, seed=0)
-    v_n, v_pos, v_neg, v_hist = run_pipeline_for_split("valid", cfg, sanity_check_samples, seed=1)
-    tr_n, tr_pos, tr_neg, tr_hist = run_pipeline_for_split("train", cfg, sanity_check_samples, seed=2)
+    t_n, t_pos, t_neg, t_hist = run_pipeline_for_split("test",  cfg, sanity_check_samples, seed=0, k=200)
+    v_n, v_pos, v_neg, v_hist = run_pipeline_for_split("valid", cfg, sanity_check_samples, seed=1, k=25)
+    tr_n, tr_pos, tr_neg, tr_hist = run_pipeline_for_split("train", cfg, sanity_check_samples, seed=2,k=25)
 
     # Final aggregated summary
     print("\n=== Aggregated summary (train+valid+test) ===")

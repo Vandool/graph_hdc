@@ -11,17 +11,17 @@ Positive Sampling:
 
 
 """
+
 import collections
 import random
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Optional
-from typing import Sequence
 
 import networkx as nx
 import torch
 from torch import Tensor
-from torch_geometric.data import Data
-from torch_geometric.data import Dataset
+from torch_geometric.data import Data, Dataset
 from torch_geometric.data import InMemoryDataset as _IMD
 from tqdm.auto import tqdm
 
@@ -42,7 +42,7 @@ def pyg_to_nx(data: Data) -> nx.Graph:
     for i in range(x.shape[0]):
         G.add_node(i, label=_as_int_tuple_row(x[i]))
     ei = data.edge_index.cpu().numpy()
-    for u, v in zip(ei[0], ei[1]):
+    for u, v in zip(ei[0], ei[1], strict=False):
         if u < v:
             G.add_edge(int(u), int(v))
     return G
@@ -54,7 +54,7 @@ def induced_edge_index_from_node_set(edge_index: Tensor, nodes: Sequence[int]) -
     pos = {n: i for i, n in enumerate(nodes)}
     src, dst = edge_index.tolist()
     undirected = set()
-    for u, v in zip(src, dst):
+    for u, v in zip(src, dst, strict=False):
         if u in pos and v in pos and u < v:
             undirected.add((pos[u], pos[v]))
     if not undirected:
@@ -66,13 +66,15 @@ def induced_edge_index_from_node_set(edge_index: Tensor, nodes: Sequence[int]) -
     return torch.tensor([s, d], dtype=torch.long)
 
 
-def make_subgraph_data(full: Data, node_indices: Sequence[int], *,
-                       edge_index_override: Optional[Tensor] = None) -> Data:
+def make_subgraph_data(full: Data, node_indices: Sequence[int], *, edge_index_override: Tensor | None = None) -> Data:
     """Create subgraph Data with features copied from the parent (no recompute)."""
     node_indices = list(node_indices)
     x_sub = full.x[node_indices].clone()
-    ei_sub = edge_index_override if edge_index_override is not None \
+    ei_sub = (
+        edge_index_override
+        if edge_index_override is not None
         else induced_edge_index_from_node_set(full.edge_index, node_indices)
+    )
     out = Data(x=x_sub, edge_index=ei_sub)
     out.parent_size = torch.tensor([full.num_nodes], dtype=torch.long)
     return out
@@ -101,6 +103,7 @@ def low_degree_anchor_order(G: nx.Graph) -> list[int]:
 
 # ───────── helpers to guarantee negatives by construction ─────────
 
+
 def node_label(G: nx.Graph, v: int) -> tuple[int, ...]:
     return G.nodes[v]["label"]
 
@@ -118,9 +121,9 @@ def unordered_label_pair(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[
 
 
 def wrong_add_candidates_anywhere(
-        G_parent: nx.Graph,
-        S: Sequence[int],
-        parent_label_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+    G_parent: nx.Graph,
+    S: Sequence[int],
+    parent_label_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
 ) -> list[tuple[int, int]]:
     """All non-edges (u,v) in G_parent[S] such that residual[u]>0, residual[v]>0,
     and unordered label pair (label(u),label(v)) DOES NOT occur as an edge anywhere in parent."""
@@ -128,8 +131,12 @@ def wrong_add_candidates_anywhere(
     res = residual_capacity_vector(G_parent, S)
     # all unordered pairs in S that are non-edges
     S_list = list(S)
-    non_edges = [(S_list[i], S_list[j]) for i in range(len(S_list)) for j in range(i + 1, len(S_list))
-                 if not H.has_edge(S_list[i], S_list[j])]
+    non_edges = [
+        (S_list[i], S_list[j])
+        for i in range(len(S_list))
+        for j in range(i + 1, len(S_list))
+        if not H.has_edge(S_list[i], S_list[j])
+    ]
     bad = []
     for u, v in non_edges:
         if res[u] <= 0 or res[v] <= 0:
@@ -162,8 +169,8 @@ def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
 
 
 def forbidden_pairs_k2(
-        G: nx.Graph,
-        parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+    G: nx.Graph,
+    parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
 ) -> list[tuple[int, int]]:
     """
     All unordered node pairs (u,v), u<v, such that:
@@ -177,7 +184,7 @@ def forbidden_pairs_k2(
         lu = node_label(G, u)
         if target_degree_from_label(lu) < 1:
             continue
-        for v in nodes[i + 1:]:
+        for v in nodes[i + 1 :]:
             if G.has_edge(u, v):
                 continue
             lv = node_label(G, v)
@@ -190,14 +197,15 @@ def forbidden_pairs_k2(
 
 # ────────────────────────────── positive samplers ─────────────────────────────
 
+
 def sample_connected_kset_with_anchor(
-        G: nx.Graph,
-        k: int,
-        anchor: int,
-        *,
-        rng: random.Random,
-        max_expands: int = 4,
-) -> Optional[list[int]]:
+    G: nx.Graph,
+    k: int,
+    anchor: int,
+    *,
+    rng: random.Random,
+    max_expands: int = 4,
+) -> list[int] | None:
     """
     Sample a connected k-node subset that **contains** a given anchor.
 
@@ -310,6 +318,7 @@ class PairData(Data):
 
 # ───────── minimal PairConfig (no bloated switches) ─────────
 
+
 class PairConfig:
     seed = 42
     k_min = 2
@@ -340,6 +349,47 @@ class PairConfig:
     tail_anchor_fraction = 0.5
 
 
+from enum import IntEnum
+
+class PairType(IntEnum):
+    r"""
+    Enumeration of pair sample types.
+
+    Members
+    -------
+    POSITIVE : 0
+        Connected induced subgraph (label-frozen) — y=1.
+    FORBIDDEN_ADD : 1
+        Add a non-edge (u,v) in S whose **label pair never occurs** as an edge anywhere in the parent.
+    WRONG_EDGE_ALLOWED : 2
+        Add a non-edge (u,v) in S whose label pair **does occur somewhere** in the parent (contextually wrong).
+    CROSS_PARENT : 3
+        Use a positive G[S] from parent *i* against a different parent *j* that **does not** contain it.
+    MISSING_EDGE : 4
+        Remove an existing edge from G[S]; keep connected; verified **not** induced.
+    REWIRE : 5
+        Degree-preserving rewire of two disjoint edges inside S; keep connected; verified **not** induced.
+    ANCHOR_AWARE : 6
+        Add one real node w∉S and connect to feasible anchors in S; verified **not** induced.
+
+    Notes
+    -----
+    - This matches the emitted ``neg_type`` values in ``_generate_pairs_stream``:
+      1,2,3,4,5,6 as above; positives use 0.
+    - Training policy: keep **Type 4** (MISSING_EDGE) and **Type 5** (REWIRE) each around **3–5%**.
+    """
+    POSITIVE = 0
+    FORBIDDEN_ADD = 1
+    WRONG_EDGE_ALLOWED = 2
+    CROSS_PARENT = 3
+    MISSING_EDGE = 4
+    REWIRE = 5
+    ANCHOR_AWARE = 6
+
+
+# Optional: convenient reverse lookup for logging/summaries.
+NEG_TYPE_NAME = {t.value: t.name for t in PairType}
+
 class ZincPairsV2(Dataset):
     """
     ZincPairsV2 dataset:
@@ -347,16 +397,29 @@ class ZincPairsV2(Dataset):
     [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     [ALL] neg_type histogram: 1:3398852 (9.1%), 2:7131081 (19.0%), 3:8266188 (22.1%), 4:4009247 (10.7%), 5:7019712 (18.7%), 6:7657999 (20.4%)
 
+    In training the type 4 and Type 5 should be kept each around 3-5 %
+
     ZincPairsV2Dev dataset:
     === Aggregated summary (train+valid+test) ===
     [ALL] size=46781 | positives=8438 (18.0%) | negatives=38343 (82.0%)
     [ALL] neg_type histogram: 1:3365 (8.8%), 2:7300 (19.0%), 3:8437 (22.0%), 4:4222 (11.0%), 5:7174 (18.7%), 6:7845 (20.5%)
     """
 
-    def __init__(self, base_dataset, split="train",
-                 root=GLOBAL_DATASET_PATH / "ZincPairsV2",
-                 cfg=None, transform=None, pre_transform=None, pre_filter=None,
-                 shard_size=25_000, cache_shards=2, *, force_reprocess=False, dev: bool = False):
+    def __init__(
+        self,
+        base_dataset,
+        split="train",
+        root=GLOBAL_DATASET_PATH / "ZincPairsV2",
+        cfg=None,
+        transform=None,
+        pre_transform=None,
+        pre_filter=None,
+        shard_size=25_000,
+        cache_shards=2,
+        *,
+        force_reprocess=False,
+        dev: bool = False,
+    ):
         # --- set everything process() will need BEFORE super().__init__ ---
         self.base = base_dataset
         self.split = split
@@ -394,9 +457,7 @@ class ZincPairsV2(Dataset):
 
     def download(self):
         Path(self.raw_dir).mkdir(parents=True, exist_ok=True)
-        (Path(self.raw_dir) / self.raw_file_names[0]).write_text(
-            f"split={self.split}; base_len={len(self.base)}\n"
-        )
+        (Path(self.raw_dir) / self.raw_file_names[0]).write_text(f"split={self.split}; base_len={len(self.base)}\n")
 
     def len(self):
         return len(self._index)
@@ -491,13 +552,29 @@ class ZincPairsV2(Dataset):
         1) Positives: connected induced subgraphs G[S] with **frozen** node labels.
         2) Negatives:
            • Guaranteed-by-construction:
-             - Wrong-add with a **globally forbidden** label pair inside S.
+             Type1) Wrong-add with a **globally forbidden** label pair inside S.
+                Add an edge (u,v) inside S where the label pair never occurs as an edge anywhere in the parent.
+                Residual-respecting.
            • VF2-verified hard negatives (always correct):
-             A) Wrong-edge (allowed pair): add a non-edge (u,v) in G[S] where the **label pair is allowed** somewhere in G.
-             B) Missing-edge: remove an existing edge from G[S].
-             C) Degree-preserving rewire: swap endpoints of two disjoint edges within S.
-             D) Cross-parent: use positive G[S] against a *different* parent that does not contain it.
-             E) Anchor-aware (decoder-like): add **one real node** w∉S (its label from G), connect to feasible anchors in S.
+             Type2) Wrong-edge (allowed pair): add a non-edge (u,v) in G[S] where the **label pair is allowed**
+                somewhere in G.
+             Type3) Cross-parent: use positive G[S] against a *different* parent that does not contain it.
+                Ensures the oracle actually uses full_g_h and doesn’t devolve into a graph-only classifier. It’s a
+                helpful regularizer for generalization (same motif may or may not be present depending on target).
+                Should be kept capped in training
+             Type4) Missing-edge: remove an existing edge from G[S].
+                any candidate missing a required edge between already-selected nodes must be rejected by an
+                induced-subgraph oracle. This will enforce the oracle to reject subgraphs, that are missing an edge to
+                become a ring structure.
+             Type5) Degree-preserving rewire: swap endpoints of two disjoint edges within S.
+                This might help the decoder, to correct the previously wrnogly made decisions!
+                The decoder can grow into a topology with the same degree sequence yet wrong adjacency due to a wrong
+                early attachment. This family creates strong “looks plausible by degrees, but wrong by structure”
+                examples. Good as hard negatives. Should be kept capped in training
+             Type6) Anchor-aware (decoder-like): add **one real node** w∉S (its label from G), connect to feasible
+                anchors in S. This is the closest simulation of what the decoder actually does: add one real node,
+                attach to anchors by residuals, and see if the (k+1) candidate remains induced in the target. This
+                directly teaches the boundary between “good next step” and “bad next step.” Core.
 
         All VF2 checks use `is_induced_subgraph_feature_aware`, ensuring labels are correct even without VF2 at inference.
 
@@ -544,8 +621,7 @@ class ZincPairsV2(Dataset):
             return sample_connected_kset_with_anchor(G, k, anchor=anchor, rng=rng)
 
         # ----- Hard negative A: wrong-edge (allowed pair), return (S, edge_index_override) -----
-        def _gen_wrong_edge_allowed(G: nx.Graph, S: list[int], max_neg: int
-                                    ) -> list[tuple[list[int], torch.Tensor]]:
+        def _gen_wrong_edge_allowed(G: nx.Graph, S: list[int], max_neg: int) -> list[tuple[list[int], torch.Tensor]]:
             H = G.subgraph(S).copy()
             allowed = _allowed_label_pairs(G)
             out: list[tuple[list[int], torch.Tensor]] = []
@@ -569,11 +645,10 @@ class ZincPairsV2(Dataset):
             return out
 
         # ----- Hard negative B: missing-edge (verified), return (S, edge_index_override) -----
-        def _gen_missing_edge_verified(G: nx.Graph, S: list[int], max_neg: int
-                                       ) -> list[tuple[list[int], torch.Tensor]]:
+        def _gen_missing_edge_verified(G: nx.Graph, S: list[int], max_neg: int) -> list[tuple[list[int], torch.Tensor]]:
             H = G.subgraph(S).copy()
             out: list[tuple[list[int], torch.Tensor]] = []
-            for (u, v) in list(H.edges()):
+            for u, v in list(H.edges()):
                 H2 = H.copy()
                 H2.remove_edge(u, v)
                 if nx.is_connected(H2) and not is_induced_subgraph_feature_aware(H2, G):
@@ -584,8 +659,9 @@ class ZincPairsV2(Dataset):
             return out
 
         # ----- Hard negative C: degree-preserving rewire (verified), return (S, edge_index_override) -----
-        def _gen_rewire_degree_preserving(G: nx.Graph, S: list[int], max_neg: int
-                                          ) -> list[tuple[list[int], torch.Tensor]]:
+        def _gen_rewire_degree_preserving(
+            G: nx.Graph, S: list[int], max_neg: int
+        ) -> list[tuple[list[int], torch.Tensor]]:
             H = G.subgraph(S).copy()
             out: list[tuple[list[int], torch.Tensor]] = []
             E = list(H.edges())
@@ -611,8 +687,9 @@ class ZincPairsV2(Dataset):
             return out
 
         # ----- Hard negative D: cross-parent indices (verified by VF2) -----
-        def _gen_cross_parent_indices(G_pos: nx.Graph, parents: list[nx.Graph], self_idx: int, max_neg: int) -> list[
-            int]:
+        def _gen_cross_parent_indices(
+            G_pos: nx.Graph, parents: list[nx.Graph], self_idx: int, max_neg: int
+        ) -> list[int]:
             out = []
             for j, G_other in enumerate(parents):
                 if j == self_idx:
@@ -624,8 +701,7 @@ class ZincPairsV2(Dataset):
             return out
 
         # ----- Hard negative E: anchor-aware (decoder-like), return (S_plus, edge_index_override) -----
-        def _gen_anchor_aware(G: nx.Graph, S: list[int], max_neg: int
-                              ) -> list[tuple[list[int], torch.Tensor]]:
+        def _gen_anchor_aware(G: nx.Graph, S: list[int], max_neg: int) -> list[tuple[list[int], torch.Tensor]]:
             """
             Add ONE real node w ∉ S (keep its label), connect to a feasible subset of anchors in S.
             Keep only if connected and NOT induced anywhere in G. Returns exact edge_index override.
@@ -714,7 +790,7 @@ class ZincPairsV2(Dataset):
             parent_pairs = _allowed_label_pairs(G)
 
             N = G.number_of_nodes()
-            if N < k_min:
+            if k_min > N:
                 continue
 
             k_hi = N if (k_max is None) else min(k_max, N)
@@ -729,7 +805,7 @@ class ZincPairsV2(Dataset):
 
             for k in k_iter:
                 # -------- pick budgets for this k (main vs tail) --------
-                is_tail = (k > k_cap)
+                is_tail = k > k_cap
                 pos_budget = pos_per_k_tail if is_tail else pos_per_k_main
                 neg_per_pos = neg_per_pos_tail if is_tail else neg_per_pos_main
 
@@ -791,10 +867,13 @@ class ZincPairsV2(Dataset):
                     # Positive
                     g1_pos = make_subgraph_data(full, S)
                     yield PairData(
-                        x1=g1_pos.x, edge_index1=g1_pos.edge_index,
-                        x2=full.x, edge_index2=full.edge_index,
-                        y=torch.tensor([1]), k=torch.tensor([k]),
-                        neg_type=torch.tensor([0]),  # positive
+                        x1=g1_pos.x,
+                        edge_index1=g1_pos.edge_index,
+                        x2=full.x,
+                        edge_index2=full.edge_index,
+                        y=torch.tensor([1]),
+                        k=torch.tensor([k]),
+                        neg_type=torch.tensor([PairType.POSITIVE]),  # positive
                         parent_idx=torch.tensor([parent_idx]),
                     )
 
@@ -802,16 +881,19 @@ class ZincPairsV2(Dataset):
                     bad_pairs_forbidden = wrong_add_candidates_anywhere(G, S, parent_pairs)
                     if bad_pairs_forbidden and neg_per_pos > 0:
                         m = min(len(bad_pairs_forbidden), neg_per_pos)
-                        for (u, v) in rng.sample(bad_pairs_forbidden, m):
+                        for u, v in rng.sample(bad_pairs_forbidden, m):
                             H = G.subgraph(S).copy()
                             H.add_edge(u, v)
                             ei_neg = nx_to_edge_index_on_ordered_nodes(H, S)
                             g1_neg = make_subgraph_data(full, S, edge_index_override=ei_neg)
                             yield PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
-                                y=torch.tensor([0]), k=torch.tensor([k]),
-                                neg_type=torch.tensor([1]),  # forbidden-pair wrong-add
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.FORBIDDEN_ADD]),  # forbidden-pair wrong-add
                                 parent_idx=torch.tensor([parent_idx]),
                             )
 
@@ -820,10 +902,13 @@ class ZincPairsV2(Dataset):
                         for Sx, ei in _gen_wrong_edge_allowed(G, S, max_neg=capA):
                             g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
                             yield PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
-                                y=torch.tensor([0]), k=torch.tensor([k]),
-                                neg_type=torch.tensor([2]),  # allowed-pair wrong-edge
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.WRONG_EDGE_ALLOWED]),  # allowed-pair wrong-edge
                                 parent_idx=torch.tensor([parent_idx]),
                             )
 
@@ -832,10 +917,13 @@ class ZincPairsV2(Dataset):
                         for Sx, ei in _gen_missing_edge_verified(G, S, max_neg=capB):
                             g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
                             yield PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
-                                y=torch.tensor([0]), k=torch.tensor([k]),
-                                neg_type=torch.tensor([4]),  # missing-edge
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.MISSING_EDGE]),  # missing-edge
                                 parent_idx=torch.tensor([parent_idx]),
                             )
 
@@ -844,10 +932,13 @@ class ZincPairsV2(Dataset):
                         for Sx, ei in _gen_rewire_degree_preserving(G, S, max_neg=capC):
                             g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
                             yield PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
-                                y=torch.tensor([0]), k=torch.tensor([k]),
-                                neg_type=torch.tensor([5]),  # rewire
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.REWIRE]),  # rewire
                                 parent_idx=torch.tensor([parent_idx]),
                             )
 
@@ -856,11 +947,13 @@ class ZincPairsV2(Dataset):
                         for Sx, ei in _gen_anchor_aware(G, S, max_neg=capE):
                             g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
                             yield PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
                                 y=torch.tensor([0]),
                                 k=torch.tensor([len(Sx)]),  # note: this is k+1
-                                neg_type=torch.tensor([6]),  # anchor-aware
+                                neg_type=torch.tensor([PairType.ANCHOR_AWARE]),  # anchor-aware
                                 parent_idx=torch.tensor([parent_idx]),
                             )
 
@@ -870,7 +963,7 @@ class ZincPairsV2(Dataset):
                     bad_pairs2 = forbidden_pairs_k2(G, parent_pairs)
                     if bad_pairs2 and k2_neg_budget > 0:
                         take = min(len(bad_pairs2), k2_neg_budget)
-                        for (u, v) in rng.sample(bad_pairs2, take):
+                        for u, v in rng.sample(bad_pairs2, take):
                             S2 = [u, v]
                             H2 = nx.Graph()
                             H2.add_nodes_from(S2)
@@ -878,11 +971,13 @@ class ZincPairsV2(Dataset):
                             ei2 = nx_to_edge_index_on_ordered_nodes(H2, S2)
                             g1_neg = make_subgraph_data(full, S2, edge_index_override=ei2)
                             yield PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
                                 y=torch.tensor([0]),
                                 k=torch.tensor([2]),
-                                neg_type=torch.tensor([1]),  # forbidden-pair wrong-add
+                                neg_type=torch.tensor([PairType.FORBIDDEN_ADD]),  # forbidden-pair wrong-add
                                 parent_idx=torch.tensor([parent_idx]),
                             )
 
@@ -897,16 +992,18 @@ class ZincPairsV2(Dataset):
                         for j in other_idxs:
                             other = self.base[j]
                             yield PairData(
-                                x1=g1_pos.x, edge_index1=g1_pos.edge_index,
-                                x2=other.x, edge_index2=other.edge_index,
+                                x1=g1_pos.x,
+                                edge_index1=g1_pos.edge_index,
+                                x2=other.x,
+                                edge_index2=other.edge_index,
                                 y=torch.tensor([0]),
                                 k=torch.tensor([k]),
-                                neg_type=torch.tensor([3]),  # cross-parent
+                                neg_type=torch.tensor([PairType.CROSS_PARENT]),  # cross-parent
                                 parent_idx=torch.tensor([j]),
                             )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Tiny base split (1 molecule) just for sanity
     base = ZincSmiles(split="test")[:10]
 

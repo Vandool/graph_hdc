@@ -45,7 +45,7 @@ SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 # W&B (optional)
 ENTITY="${ENTITY:-akaveh}"
 PROJECT="${PROJECT:-graph_hdc}"
-EXP_NAME="${EXP_NAME:-mlp_batchnorm}"
+EXP_NAME="${EXP_NAME:-mlp_batchnorm_new_data}"
 
 # Dry run to preview sbatch commands without submitting: 0 or 1
 DRY_RUN="${DRY_RUN:-0}"
@@ -64,7 +64,7 @@ LR="${LR:-1e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 MICRO_BS="${MICRO_BS:-64}"
-SAVE_EVERY_SECONDS="${SAVE_EVERY_SECONDS:-3600}"
+SAVE_EVERY_SECONDS="${SAVE_EVERY_SECONDS:-70000}"
 KEEP_LAST_K="${KEEP_LAST_K:-2}"
 STRATIFY="${STRATIFY:-True}"
 P_PER_PARENT="${P_PER_PARENT:-20}"

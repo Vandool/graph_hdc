@@ -11,17 +11,17 @@ Positive Sampling:
 
 
 """
+
 import collections
 import random
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Optional
-from typing import Sequence
 
 import networkx as nx
 import torch
 from torch import Tensor
-from torch_geometric.data import Data
-from torch_geometric.data import Dataset
+from torch_geometric.data import Data, Dataset
 from torch_geometric.data import InMemoryDataset as _IMD
 from tqdm.auto import tqdm
 
@@ -42,7 +42,7 @@ def pyg_to_nx(data: Data) -> nx.Graph:
     for i in range(x.shape[0]):
         G.add_node(i, label=_as_int_tuple_row(x[i]))
     ei = data.edge_index.cpu().numpy()
-    for u, v in zip(ei[0], ei[1]):
+    for u, v in zip(ei[0], ei[1], strict=False):
         if u < v:
             G.add_edge(int(u), int(v))
     return G
@@ -54,7 +54,7 @@ def induced_edge_index_from_node_set(edge_index: Tensor, nodes: Sequence[int]) -
     pos = {n: i for i, n in enumerate(nodes)}
     src, dst = edge_index.tolist()
     undirected = set()
-    for u, v in zip(src, dst):
+    for u, v in zip(src, dst, strict=False):
         if u in pos and v in pos and u < v:
             undirected.add((pos[u], pos[v]))
     if not undirected:
@@ -66,13 +66,15 @@ def induced_edge_index_from_node_set(edge_index: Tensor, nodes: Sequence[int]) -
     return torch.tensor([s, d], dtype=torch.long)
 
 
-def make_subgraph_data(full: Data, node_indices: Sequence[int], *,
-                       edge_index_override: Optional[Tensor] = None) -> Data:
+def make_subgraph_data(full: Data, node_indices: Sequence[int], *, edge_index_override: Tensor | None = None) -> Data:
     """Create subgraph Data with features copied from the parent (no recompute)."""
     node_indices = list(node_indices)
     x_sub = full.x[node_indices].clone()
-    ei_sub = edge_index_override if edge_index_override is not None \
+    ei_sub = (
+        edge_index_override
+        if edge_index_override is not None
         else induced_edge_index_from_node_set(full.edge_index, node_indices)
+    )
     out = Data(x=x_sub, edge_index=ei_sub)
     out.parent_size = torch.tensor([full.num_nodes], dtype=torch.long)
     return out
@@ -101,6 +103,7 @@ def low_degree_anchor_order(G: nx.Graph) -> list[int]:
 
 # ───────── helpers to guarantee negatives by construction ─────────
 
+
 def node_label(G: nx.Graph, v: int) -> tuple[int, ...]:
     return G.nodes[v]["label"]
 
@@ -118,9 +121,9 @@ def unordered_label_pair(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[
 
 
 def wrong_add_candidates_anywhere(
-        G_parent: nx.Graph,
-        S: Sequence[int],
-        parent_label_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+    G_parent: nx.Graph,
+    S: Sequence[int],
+    parent_label_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
 ) -> list[tuple[int, int]]:
     """All non-edges (u,v) in G_parent[S] such that residual[u]>0, residual[v]>0,
     and unordered label pair (label(u),label(v)) DOES NOT occur as an edge anywhere in parent."""
@@ -128,8 +131,12 @@ def wrong_add_candidates_anywhere(
     res = residual_capacity_vector(G_parent, S)
     # all unordered pairs in S that are non-edges
     S_list = list(S)
-    non_edges = [(S_list[i], S_list[j]) for i in range(len(S_list)) for j in range(i + 1, len(S_list))
-                 if not H.has_edge(S_list[i], S_list[j])]
+    non_edges = [
+        (S_list[i], S_list[j])
+        for i in range(len(S_list))
+        for j in range(i + 1, len(S_list))
+        if not H.has_edge(S_list[i], S_list[j])
+    ]
     bad = []
     for u, v in non_edges:
         if res[u] <= 0 or res[v] <= 0:
@@ -162,8 +169,8 @@ def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
 
 
 def forbidden_pairs_k2(
-        G: nx.Graph,
-        parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+    G: nx.Graph,
+    parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
 ) -> list[tuple[int, int]]:
     """
     All unordered node pairs (u,v), u<v, such that:
@@ -177,7 +184,7 @@ def forbidden_pairs_k2(
         lu = node_label(G, u)
         if target_degree_from_label(lu) < 1:
             continue
-        for v in nodes[i + 1:]:
+        for v in nodes[i + 1 :]:
             if G.has_edge(u, v):
                 continue
             lv = node_label(G, v)
@@ -190,14 +197,15 @@ def forbidden_pairs_k2(
 
 # ────────────────────────────── positive samplers ─────────────────────────────
 
+
 def sample_connected_kset_with_anchor(
-        G: nx.Graph,
-        k: int,
-        anchor: int,
-        *,
-        rng: random.Random,
-        max_expands: int = 4,
-) -> Optional[list[int]]:
+    G: nx.Graph,
+    k: int,
+    anchor: int,
+    *,
+    rng: random.Random,
+    max_expands: int = 4,
+) -> list[int] | None:
     """
     Sample a connected k-node subset that **contains** a given anchor.
 
@@ -310,20 +318,31 @@ class PairData(Data):
 
 # ───────── minimal PairConfig (no bloated switches) ─────────
 
+
 class PairConfig:
     seed: int = 42
     k_min: int = 2
-    k_max: Optional[int] = None  # None ⇒ go up to N
+    k_max: int | None = None  # None ⇒ go up to N
     pos_per_k: int = 8
     neg_per_pos: int = 8
     tail_anchor_fraction: float = 0.5
 
 
 class ZincPairs(Dataset):
-    def __init__(self, base_dataset, split="train",
-                 root=GLOBAL_DATASET_PATH / "ZincPairs",
-                 cfg=None, transform=None, pre_transform=None, pre_filter=None,
-                 shard_size=100_000, cache_shards=1, force_reprocess=False):
+    def __init__(
+        self,
+        base_dataset,
+        split="train",
+        root=GLOBAL_DATASET_PATH / "ZincPairs",
+        cfg=None,
+        transform=None,
+        pre_transform=None,
+        pre_filter=None,
+        shard_size=100_000,
+        cache_shards=1,
+        force_reprocess=False,
+        dev: bool = False,
+    ):
         # --- set everything process() will need BEFORE super().__init__ ---
         self.base = base_dataset
         self.split = split
@@ -331,6 +350,9 @@ class ZincPairs(Dataset):
         self.shard_size = shard_size
         self.cache_shards = cache_shards
         self._rng = random.Random(self.cfg.seed)
+
+        if dev:
+            root = GLOBAL_DATASET_PATH / "ZincPairsDEV"
 
         # idx_path must exist for process() to use
         self.idx_path = Path(root) / "processed" / f"index_{split}.pt"
@@ -359,9 +381,7 @@ class ZincPairs(Dataset):
 
     def download(self):
         Path(self.raw_dir).mkdir(parents=True, exist_ok=True)
-        (Path(self.raw_dir) / self.raw_file_names[0]).write_text(
-            f"split={self.split}; base_len={len(self.base)}\n"
-        )
+        (Path(self.raw_dir) / self.raw_file_names[0]).write_text(f"split={self.split}; base_len={len(self.base)}\n")
 
     def len(self):
         return len(self._index)
@@ -494,7 +514,7 @@ class ZincPairs(Dataset):
             G = nx_views[parent_idx]  # NetworkX view with node label tuples
             parent_pairs = parent_label_edge_set(G)
             N = G.number_of_nodes()
-            if N < cfg.k_min:  # Nothing to generate for tiny graphs
+            if cfg.k_min > N:  # Nothing to generate for tiny graphs
                 continue
 
             # Upper bound for k: either all the way to N or the configured min(N, k_max)
@@ -565,9 +585,12 @@ class ZincPairs(Dataset):
                     # Positive
                     g1_pos = make_subgraph_data(full, S)
                     pair_pos = PairData(
-                        x1=g1_pos.x, edge_index1=g1_pos.edge_index,
-                        x2=full.x, edge_index2=full.edge_index,
-                        y=torch.tensor([1]), k=torch.tensor([k]),
+                        x1=g1_pos.x,
+                        edge_index1=g1_pos.edge_index,
+                        x2=full.x,
+                        edge_index2=full.edge_index,
+                        y=torch.tensor([1]),
+                        k=torch.tensor([k]),
                         neg_type=torch.tensor([0]),
                         parent_idx=torch.tensor([parent_idx]),
                     )
@@ -578,15 +601,18 @@ class ZincPairs(Dataset):
 
                     if bad_pairs:
                         m = min(len(bad_pairs), cfg.neg_per_pos)
-                        for (u, v) in rng.sample(bad_pairs, m):
+                        for u, v in rng.sample(bad_pairs, m):
                             H = G.subgraph(S).copy()
                             H.add_edge(u, v)
                             ei_neg = nx_to_edge_index_on_ordered_nodes(H, S)
                             g1_neg = make_subgraph_data(full, S, edge_index_override=ei_neg)
                             pair_neg = PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
-                                y=torch.tensor([0]), k=torch.tensor([k]),
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
                                 neg_type=torch.tensor([1]),  # local wrong-add by construction
                                 parent_idx=torch.tensor([parent_idx]),
                             )
@@ -601,7 +627,7 @@ class ZincPairs(Dataset):
                     if bad_pairs2 and k2_neg_budget > 0:
                         # Sample without replacement to avoid duplicates
                         take = min(len(bad_pairs2), k2_neg_budget)
-                        for (u, v) in rng.sample(bad_pairs2, take):
+                        for u, v in rng.sample(bad_pairs2, take):
                             S2 = [u, v]
                             H2 = nx.Graph()
                             H2.add_nodes_from(S2)
@@ -610,8 +636,10 @@ class ZincPairs(Dataset):
 
                             g1_neg = make_subgraph_data(full, S2, edge_index_override=ei2)
                             pair_neg = PairData(
-                                x1=g1_neg.x, edge_index1=g1_neg.edge_index,
-                                x2=full.x, edge_index2=full.edge_index,
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
                                 y=torch.tensor([0]),
                                 k=torch.tensor([2]),
                                 neg_type=torch.tensor([1]),  # same code: local wrong-add (k=2 construction)
@@ -620,7 +648,7 @@ class ZincPairs(Dataset):
                             yield pair_neg
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Tiny base split (1 molecule) just for sanity
     base = ZincSmiles(split="test")[:10]
 
