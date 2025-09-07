@@ -27,7 +27,7 @@ set -euo pipefail
 CLUSTER="${CLUSTER:-uc3}"
 
 # Slurm common settings
-JOB_NAME="${JOB_NAME:-MLP_stratified_base}"
+JOB_NAME="${JOB_NAME:-MLP_batchnorm}"
 GPUS="${GPUS:-1}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-8}"
 NODES="${NODES:-1}"
@@ -45,7 +45,7 @@ SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 # W&B (optional)
 ENTITY="${ENTITY:-akaveh}"
 PROJECT="${PROJECT:-graph_hdc}"
-EXP_NAME="${EXP_NAME:-mlp_stratified_base_batchnorm}"
+EXP_NAME="${EXP_NAME:-mlp_batchnorm}"
 
 # Dry run to preview sbatch commands without submitting: 0 or 1
 DRY_RUN="${DRY_RUN:-0}"
@@ -57,7 +57,7 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 # Python args (edit as needed)
 # -----------------------------
 # Aligned with classification_v2/1_mlp.py parameters in your example.
-EPOCHS="${EPOCHS:-10}"
+EPOCHS="${EPOCHS:-15}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 HV_DIM="${HV_DIM:-7744}"
 LR="${LR:-1e-4}"

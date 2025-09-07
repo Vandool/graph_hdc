@@ -151,14 +151,14 @@ def get_args(argv: list[str] | None = None) -> Config:
     p.add_argument("--save_every_seconds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--keep_last_k", type=int, default=argparse.SUPPRESS)
     p.add_argument("--continue_from", type=Path, default=argparse.SUPPRESS)
-    p.add_argument("--resume_retrain_last_epoch", type=bool, default=argparse.SUPPRESS)
+    p.add_argument("--resume_retrain_last_epoch", type=str2bool, default=argparse.SUPPRESS)
 
     # Stratification
-    p.add_argument("--stratify", type=bool, default=argparse.SUPPRESS)
+    p.add_argument("--stratify", type=str2bool, default=argparse.SUPPRESS)
     p.add_argument("--p_per_parent", type=int, default=argparse.SUPPRESS)
     p.add_argument("--n_per_parent", type=int, default=argparse.SUPPRESS)
-    p.add_argument("--exclude_negs", type=set[int], default=argparse.SUPPRESS)
-    p.add_argument("--resample_training_data_on_batch", type=bool, default=argparse.SUPPRESS)
+    p.add_argument("--exclude_negs", type=set[int], default=argparse.fSUPPRESS)
+    p.add_argument("--resample_training_data_on_batch", type=str2bool, default=argparse.SUPPRESS)
 
     ns = p.parse_args(argv)
     provided = vars(ns)  # only the keys the user actually passed
