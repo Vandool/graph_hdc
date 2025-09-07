@@ -157,7 +157,7 @@ def get_args(argv: list[str] | None = None) -> Config:
     p.add_argument("--stratify", type=str2bool, default=argparse.SUPPRESS)
     p.add_argument("--p_per_parent", type=int, default=argparse.SUPPRESS)
     p.add_argument("--n_per_parent", type=int, default=argparse.SUPPRESS)
-    p.add_argument("--exclude_negs", type=set[int], default=argparse.fSUPPRESS)
+    p.add_argument("--exclude_negs", type=set[int], default=argparse.SUPPRESS)
     p.add_argument("--resample_training_data_on_batch", type=str2bool, default=argparse.SUPPRESS)
 
     ns = p.parse_args(argv)
