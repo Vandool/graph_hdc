@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import torch
 import wandb
-from pytorch_lightning import Trainer, seed_everything, LightningModule
+from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from torch_geometric.loader import DataLoader
@@ -364,14 +364,14 @@ def pick_precision():
         return "16-mixed"  # widely supported fallback
     return 32  # CPU or MPS
 
-def sample_and_decode_preview(
-        model,
-        hypernet,
-        *,
-        max_print: int = 16,
-        logger=print,
-) -> None:
 
+def sample_and_decode_preview(
+    model,
+    hypernet,
+    *,
+    max_print: int = 16,
+    logger=print,
+) -> None:
     model.eval()
     with torch.no_grad():
         node_s, graph_s, _ = model.sample_split(max_print)  # [K, D] each
@@ -393,7 +393,6 @@ def sample_and_decode_preview(
         logger(f"[preview] Sample {n}: nodes={ctr.total()}, edges={sum(e + 1 for _, e, _, _ in ctr)}\n{ctr}")
 
 
-
 class PeriodicSampleDecodeCallback(Callback):
     r"""
     Periodically samples from the model and decodes with the hypernet, printing
@@ -403,12 +402,12 @@ class PeriodicSampleDecodeCallback(Callback):
     """
 
     def __init__(
-            self,
-            hypernet,
-            *,
-            interval_epochs: int = 10,
-            max_print: int = 16,
-            use_wandb_text: bool = True,
+        self,
+        hypernet,
+        *,
+        interval_epochs: int = 10,
+        max_print: int = 16,
+        use_wandb_text: bool = True,
     ):
         super().__init__()
         self.hypernet = hypernet
@@ -437,8 +436,9 @@ class PeriodicSampleDecodeCallback(Callback):
         text_blob = "\n".join(logs_buffer)
         try:
             if self.use_wandb_text and wandb.run is not None:
-                wandb.log({"preview/decoded_samples": wandb.Html(f"<pre>{text_blob}</pre>"),
-                           "preview/epoch": epoch + 1})
+                wandb.log(
+                    {"preview/decoded_samples": wandb.Html(f"<pre>{text_blob}</pre>"), "preview/epoch": epoch + 1}
+                )
             else:
                 trainer.logger.log_text("preview/decoded_samples", text_blob)  # some loggers support this
                 print(text_blob, flush=True)
@@ -511,6 +511,10 @@ class PeriodicNLLEval(Callback):
             wandb.log(hist_payload, step=trainer.global_step)
 
 
+def _norm_cdf(x):
+    return 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+
 @torch.no_grad()
 def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | None = None):
     """
@@ -523,7 +527,7 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
     const_term = 0.5 * dim * math.log(2 * math.pi)
 
     nll_model_list, bpd_std_list, bpd_gauss_list = [], [], []
-
+    pit_ks_list, cov90_err_list = [], []
     for bi, batch in enumerate(loader):
         if max_batches is not None and bi >= max_batches:
             break
@@ -550,6 +554,26 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
         bpd_std_list.append(bpd_stdspace.detach().cpu())
         bpd_gauss_list.append(bpd_gauss.detach().cpu())
 
+        # z: standardized x (after your μ/σ)
+        z_base, _ = model.flow.inverse(z)  # push to base N(0, I)
+        u = _norm_cdf(z_base).clamp_(0, 1)  # PIT uniforms in [0,1]
+
+        # KS per-dimension on a random subset (e.g., 512 dims)
+        B, D = u.shape
+        take = min(512, D)
+        idx = torch.randperm(D, device=u.device)[:take]
+        U = u[:, idx]  # [B, take]
+        U_sorted, _ = torch.sort(U, dim=0)
+        grid = (torch.arange(1, B + 1, device=u.device) / B).unsqueeze(1)  # [B,1]
+        ks = torch.max(torch.abs(U_sorted - grid), dim=0).values  # [take]
+        pit_ks_list.append(ks.detach().cpu())
+
+        # 90% central coverage in base: ±1.64485
+        inside = (z_base.abs() <= 1.6448536269514722).float()  # [B,D]
+        cov = inside.mean(dim=0)  # per-dim
+        cov_err = (cov - 0.90).abs()
+        cov90_err_list.append(cov_err.detach().cpu())
+
     if not nll_model_list:
         return {}
 
@@ -558,6 +582,10 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
     bpd_gauss = torch.cat(bpd_gauss_list).numpy()
     bpd_model = nll_model / (dim * ln2)
     delta_bpd = bpd_model - bpd_gauss
+    sum_log_sigma_bits = float(model.log_sigma.sum().item() / math.log(2.0))
+
+    pit_ks = torch.cat(pit_ks_list).numpy() if pit_ks_list else np.array([])
+    cov90_err = torch.cat(cov90_err_list).numpy() if cov90_err_list else np.array([])
 
     return {
         "bpd_model": bpd_model,
@@ -565,6 +593,9 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
         "delta_bpd": delta_bpd,
         "bpd_stdspace": bpd_stdspace,
         "nll_model": nll_model,
+        "sum_log_sigma_bits": np.full_like(bpd_model, sum_log_sigma_bits),
+        "pit_ks": pit_ks,
+        "cov90_abs_err": cov90_err,
     }
 
 
@@ -686,8 +717,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
 
     # ----- model / trainer -----
     model = RealNVPV2Lightning(cfg)
-    if cfg.continue_from is None and not cfg.use_act_norm:
-        fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=cfg.device)
+    fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=cfg.device)
 
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
@@ -946,6 +976,7 @@ def sweep_entrypoint():
         num_hidden_channels=int(cfg_dict.get("num_hidden_channels", 128)),
     )
     run_experiment(cfg)
+
 
 if __name__ == "__main__":
 
