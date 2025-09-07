@@ -5,7 +5,7 @@
 #> 1.	Small + ActNorm
 # •	NUM_FLOWS=4, NUM_HIDDEN=256, LR=1e-3, USE_ACT_NORM=1
 
-#> 2.	Baseline
+#  2.	Baseline
 # •	NUM_FLOWS=8, NUM_HIDDEN=512, LR=1e-3, USE_ACT_NORM=1
 
 # 3.	Baseline, lower LR
@@ -26,27 +26,27 @@
 
 # ---------- tweak these ----------
 ENTITY="arvand-kaveh-karlsruhe-institute-of-technology"
-PROJECT="real_nvp_v2"
+PROJECT="real_nvp_v3_dev"
 EXPERIMENTS_PATH="${GHDC_HOME}/src/exp/real_nvp_v2"
 
 # run mode
 DEV=0                     # 1 = dev queue (00:10:00), 0 = normal (24:00:00)
 
 # Leave empty to build a deterministic name from params below. Or set it to be used
-EXP_NAME=""
+EXP_NAME="real_nvp_v3_dev"
 
 # resume from last checkpoint in this EXP_NAME (if it exists)
 RESUME=0
 
 # training/model config
-EPOCHS=200
-BATCH_SIZE=64
+EPOCHS=500
+BATCH_SIZE=256
 DEVICE="cuda"
 HV_DIM=$((88*88))
 NUM_FLOWS=8
 NUM_HIDDEN=512
 USE_ACT_NORM=1            # 1 = pass flag, 0 = don’t
-LR=1e-3
+LR=1e-4
 WEIGHT_DECAY=0.0
 SEED=42
 # ---------------------------------

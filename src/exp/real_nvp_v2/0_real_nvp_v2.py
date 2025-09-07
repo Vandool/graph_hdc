@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import datetime
 import math
 import os
@@ -8,7 +9,6 @@ import string
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from pprint import pprint
 
@@ -42,7 +42,7 @@ PROJECT_NAME = "real_nvp_v2"
 # ---------------------------------------------------------------------
 # ---------- tiny logger ----------
 def log(msg: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
 
 
@@ -61,7 +61,9 @@ def setup_exp(dir_name: str | None = None) -> dict:
     if dir_name:
         exp_dir = base_dir / dir_name
     else:
-        slug = f"{datetime.now(UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+        slug = (
+            f"{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+        )
         exp_dir = base_dir / slug
     exp_dir.mkdir(parents=True, exist_ok=True)
     print(f"Experiment directory created: {exp_dir}")
@@ -95,20 +97,20 @@ class FlowConfig:
     seed: int = 42
     epochs: int = 50
     batch_size: int = 64
-    lr: float = 1e-3
+    lr: float = 1e-4
     weight_decay: float = 0.0
     device: str = "cuda"
 
     hv_dim: int = 7744
     vsa: VSAModel = VSAModel.HRR
-    num_flows: int = 8
-    num_hidden_channels: int = 512
+    num_flows: int = 4
+    num_hidden_channels: int = 256
 
     smax_initial: float = 1.0
-    smax_final: float = 12
-    smax_warmup_epochs: float = 15
+    smax_final: float = 4
+    smax_warmup_epochs: float = 10
 
-    use_act_norm: bool = False
+    use_act_norm: bool = True
 
     # Checkpointing
     continue_from: Path | None = None
@@ -190,7 +192,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         z, _logs = self.sample(num_samples)  # standardized space
         x = self._posttransform(z)  # back to data space
         node_terms = x[:, : self.D].contiguous()
-        graph_terms = x[:, self.D:].contiguous()
+        graph_terms = x[:, self.D :].contiguous()
         return node_terms, graph_terms, _logs
 
     def nf_forward_kld(self, flat):
@@ -203,25 +205,23 @@ class RealNVPV2Lightning(AbstractNFModel):
     def configure_optimizers(self):
         opt = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
         # 5% warmup then cosine
-        steps_per_epoch = max(1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1,
-                                                                                                  self.trainer.max_epochs))
+        steps_per_epoch = max(
+            1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1, self.trainer.max_epochs)
+        )
         warmup = int(0.05 * self.trainer.max_epochs) * steps_per_epoch
         total = self.trainer.max_epochs * steps_per_epoch
         sched = torch.optim.lr_scheduler.LambdaLR(
             opt,
-            lambda step: min(1.0, step / max(1, warmup)) * 0.5 * (
-                    1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup)))
+            lambda step: min(1.0, step / max(1, warmup))
+            * 0.5
+            * (1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup))),
         )
         return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
 
     def on_fit_start(self):
         # H100 tip: get tensor cores w/o AMP
-        try:
-            import torch
-
+        with contextlib.suppress(Exception):
             torch.set_float32_matmul_precision("high")
-        except Exception:
-            pass
 
     def on_train_epoch_start(self):
         # log-det warmup for stability: ramp smax from small → final
@@ -290,38 +290,25 @@ class RealNVPV2Lightning(AbstractNFModel):
 
 
 @torch.no_grad()
-def fit_blockwise_standardization(model, loader, hv_dim: int, max_batches: int | None = None, device="cpu"):
-    cnt_node = 0
-    sum_node = 0.0
-    sumsq_node = 0.0
-    cnt_graph = 0
-    sum_graph = 0.0
-    sumsq_graph = 0.0
+def fit_featurewise_standardization(model, loader, hv_dim: int, max_batches: int | None = None, device="cpu"):
+    # Accumulate sums per-dimension (feature-wise)
+    cnt = 0
+    sum_vec = torch.zeros(2 * hv_dim, dtype=torch.float64, device=device)
+    sumsq_vec = torch.zeros(2 * hv_dim, dtype=torch.float64, device=device)
+
     for bi, batch in enumerate(loader):
-        if max_batches is not None and bi >= max_batches: break
+        if max_batches is not None and bi >= max_batches:
+            break
         batch = batch.to(device)
-        x = model._flat_from_batch(batch).to(torch.float32)  # [B, 2D]
-        node = x[:, :hv_dim].reshape(-1)
-        graph = x[:, hv_dim:].reshape(-1)
-        cnt_node += node.numel()
-        sum_node += float(node.sum().item())
-        sumsq_node += float((node * node).sum().item())
-        cnt_graph += graph.numel()
-        sum_graph += float(graph.sum().item())
-        sumsq_graph += float((graph * graph).sum().item())
-    mu_node = sum_node / max(1, cnt_node)
-    var_node = max(0.0, sumsq_node / max(1, cnt_node) - mu_node * mu_node)
-    mu_graph = sum_graph / max(1, cnt_graph)
-    var_graph = max(0.0, sumsq_graph / max(1, cnt_graph) - mu_graph * mu_graph)
-    sigma_node = max(1e-6, var_node ** 0.5)
-    sigma_graph = max(1e-6, var_graph ** 0.5)
+        x = model._flat_from_batch(batch).to(torch.float64)  # [B, 2D]
+        cnt += x.shape[0]
+        sum_vec += x.sum(dim=0)
+        sumsq_vec += (x * x).sum(dim=0)
 
-    # broadcast to 2D vector
-    mu = torch.cat([torch.full((hv_dim,), mu_node), torch.full((hv_dim,), mu_graph)])
-    sigma = torch.cat([torch.full((hv_dim,), sigma_node), torch.full((hv_dim,), sigma_graph)])
+    mu = (sum_vec / max(1, cnt)).to(torch.float32)
+    var = (sumsq_vec / max(1, cnt) - (sum_vec / max(1, cnt)) ** 2).clamp_min_(0).to(torch.float32)
+    sigma = var.sqrt().clamp_min_(1e-6)
     model.set_standardization(mu, sigma)
-
-
 # ---------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------
@@ -333,13 +320,14 @@ def _first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
             return c
     return None
 
+
 def plot_train_val_loss(df: pd.DataFrame, artefacts_dir: Path):
     # possible names across PL versions / logging configs
     train_epoch_keys = ["train_loss_epoch", "train_loss", "epoch_train_loss"]
-    val_epoch_keys   = ["val_loss", "val/loss", "validation_loss"]
+    val_epoch_keys = ["val_loss", "val/loss", "validation_loss"]
 
     train_col = _first_existing(df, train_epoch_keys)
-    val_col   = _first_existing(df, val_epoch_keys)
+    val_col = _first_existing(df, val_epoch_keys)
     epoch_col = _first_existing(df, ["epoch", "step"])
 
     if epoch_col is None or (train_col is None and val_col is None):
@@ -373,8 +361,7 @@ def pick_precision():
     if torch.cuda.is_available():
         if torch.cuda.is_bf16_supported():
             return "bf16-mixed"  # safest + fast on H100/A100
-        else:
-            return "16-mixed"  # widely supported fallback
+        return "16-mixed"  # widely supported fallback
     return 32  # CPU or MPS
 
 
@@ -388,8 +375,14 @@ class TimeLoggingCallback(Callback):
 
 
 class PeriodicNLLEval(Callback):
-    def __init__(self, val_loader, artefacts_dir: Path, every_n_epochs: int = 50,
-                 max_batches: int | None = 200, log_hist: bool = False):
+    def __init__(
+        self,
+        val_loader,
+        artefacts_dir: Path,
+        every_n_epochs: int = 50,
+        max_batches: int | None = 200,
+        log_hist: bool = False,
+    ):
         super().__init__()
         self.val_loader = val_loader
         self.artefacts_dir = Path(artefacts_dir)
@@ -403,8 +396,9 @@ class PeriodicNLLEval(Callback):
         if self.every <= 0 or (epoch % self.every) != 0:
             return
 
-        stats = _eval_flow_metrics(pl_module, self.val_loader, pl_module.device,
-                                   hv_dim=pl_module.D, max_batches=self.max_batches)
+        stats = _eval_flow_metrics(
+            pl_module, self.val_loader, pl_module.device, hv_dim=pl_module.D, max_batches=self.max_batches
+        )
         if not stats:
             return
 
@@ -456,7 +450,7 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
 
         z, log_det_corr = model._pretransform(flat)  # z: [B, dim]; log_det_corr: float
         nll_stdspace = -model.flow.log_prob(z)  # [B] nats
-        quad = 0.5 * (z ** 2).sum(dim=1)  # [B]
+        quad = 0.5 * (z**2).sum(dim=1)  # [B]
         nll_gauss_stdspace = quad + const_term  # [B]
 
         nll_model = nll_stdspace + log_det_corr  # [B]
@@ -505,11 +499,6 @@ def _summarize_arrays(arrs: dict[str, np.ndarray]) -> dict[str, float]:
         out[f"{k}_max"] = float(np.max(v))
         out[f"{k}_count"] = int(v.size)
     return out
-
-
-def _evaluate_loader_nll(model, loader, device):
-    stats = _eval_flow_metrics(model, loader, device, hv_dim=model.D)
-    return stats.get("nll_model", np.empty((0,), dtype=np.float32))
 
 
 def _hist(figpath: Path, data: np.ndarray, title: str, xlabel: str, bins: int = 80):
@@ -569,9 +558,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     )
 
     log(f"Loading/creating hypernet … on device {cfg.device}")
-    hypernet: HyperNet = (
-        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(cfg.device).eval()
-    )
+    hypernet: HyperNet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(cfg.device).eval()
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
 
@@ -582,8 +569,8 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     # pick worker counts per GPU; tune for your cluster
     num_workers = 8 if torch.cuda.is_available() else 0
     if local_dev:
-        train_dataset = train_dataset[:cfg.batch_size]
-        validation_dataset = validation_dataset[:cfg.batch_size]
+        train_dataset = train_dataset[: cfg.batch_size]
+        validation_dataset = validation_dataset[: cfg.batch_size]
         num_workers = 0
 
     train_dataloader = DataLoader(
@@ -609,7 +596,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     # ----- model / trainer -----
     model = RealNVPV2Lightning(cfg)
     if cfg.continue_from is None and not cfg.use_act_norm:
-        fit_blockwise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=cfg.device)
+        fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=cfg.device)
 
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
@@ -670,7 +657,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         log_every_n_steps=25 if not local_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
-        precision=pick_precision()
+        precision=pick_precision(),
     )
 
     # ----- train -----
@@ -688,8 +675,10 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         train_last = df.loc[df["train_loss_epoch"].notna(), "train_loss_epoch"].tail(1)
         val_last = df.loc[df["val_loss"].notna(), "val_loss"].tail(1)
         if not train_last.empty or not val_last.empty:
-            print(f"Final losses → train: {float(train_last.values[-1]) if not train_last.empty else 'n/a'} "
-                  f"| val: {float(val_last.values[-1]) if not val_last.empty else 'n/a'}")
+            print(
+                f"Final losses → train: {float(train_last.values[-1]) if not train_last.empty else 'n/a'} "
+                f"| val: {float(val_last.values[-1]) if not val_last.empty else 'n/a'}"
+            )
 
     # =================================================================
     # Post-training analysis: load best, evaluate NLL, sample & log
@@ -711,19 +700,25 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))
     if nll_arr.size:
         # save full arrays for later deep-dive
-        pd.DataFrame({
-            "nll_model": val_stats["nll_model"],
-            "bpd_model": val_stats["bpd_model"],
-            "bpd_gauss": val_stats["bpd_gauss"],
-            "bpd_stdspace": val_stats["bpd_stdspace"],
-            "delta_bpd": val_stats["delta_bpd"],
-        }).to_parquet(evals_dir / "val_metrics_final.parquet", index=False)
+        pd.DataFrame(
+            {
+                "nll_model": val_stats["nll_model"],
+                "bpd_model": val_stats["bpd_model"],
+                "bpd_gauss": val_stats["bpd_gauss"],
+                "bpd_stdspace": val_stats["bpd_stdspace"],
+                "delta_bpd": val_stats["delta_bpd"],
+            }
+        ).to_parquet(evals_dir / "val_metrics_final.parquet", index=False)
 
         # simple hist PNGs (optional)
         _hist(artefacts_dir / "val_bpd_model_hist.png", val_stats["bpd_model"], "Validation bpd (model)", "bpd")
         _hist(artefacts_dir / "val_bpd_gauss_hist.png", val_stats["bpd_gauss"], "Validation bpd (Gaussian)", "bpd")
-        _hist(artefacts_dir / "val_delta_bpd_hist.png", val_stats["delta_bpd"], "Validation Δbpd (model - Gaussian)",
-              "Δbpd")
+        _hist(
+            artefacts_dir / "val_delta_bpd_hist.png",
+            val_stats["delta_bpd"],
+            "Validation Δbpd (model - Gaussian)",
+            "Δbpd",
+        )
 
         # scalar summary (prefixed under eval/val/*)
         summary = _summarize_arrays(val_stats)
@@ -733,11 +728,13 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         if wandb.run:
             wandb.log(summary_payload)
             # optional: histograms in W&B
-            wandb.log({
-                "eval/val/bpd_model_hist": wandb.Histogram(val_stats["bpd_model"]),
-                "eval/val/bpd_gauss_hist": wandb.Histogram(val_stats["bpd_gauss"]),
-                "eval/val/delta_bpd_hist": wandb.Histogram(val_stats["delta_bpd"]),
-            })
+            wandb.log(
+                {
+                    "eval/val/bpd_model_hist": wandb.Histogram(val_stats["bpd_model"]),
+                    "eval/val/bpd_gauss_hist": wandb.Histogram(val_stats["bpd_gauss"]),
+                    "eval/val/delta_bpd_hist": wandb.Histogram(val_stats["delta_bpd"]),
+                }
+            )
     else:
         log("No finite NLL values collected; skipping NLL stats.")
 
@@ -842,6 +839,7 @@ def sweep_entrypoint():
 
 
 if __name__ == "__main__":
+
     def get_flow_cli_args() -> FlowConfig:
         p = argparse.ArgumentParser(description="Real NVP V2")
         p.add_argument("--exp_dir_name", type=str, default=None)
@@ -852,8 +850,9 @@ if __name__ == "__main__":
         p.add_argument("--hv_dim", "-hd", type=int, default=88 * 88)
         p.add_argument("--lr", type=float, default=1e-3)
         p.add_argument("--weight_decay", "-wd", type=float, default=0.0)
-        p.add_argument("--device", "-dev", choices=["cpu", "cuda", "mps"],
-                       default="cuda" if torch.cuda.is_available() else "cpu")
+        p.add_argument(
+            "--device", "-dev", choices=["cpu", "cuda", "mps"], default="cuda" if torch.cuda.is_available() else "cpu"
+        )
 
         # model capacity knobs
         p.add_argument("--num_flows", type=int, default=8)
@@ -872,23 +871,25 @@ if __name__ == "__main__":
         args = p.parse_args()
         return FlowConfig(**vars(args))
 
-
     if os.environ.get(LOCAL_DEV, None):
         log("Local HDC ...")
-        run_experiment(cfg=FlowConfig(
-            exp_dir_name="DEBUG",
-            seed=42,
-            epochs=500,
-            batch_size=128,
-            lr=1e-3,
-            device="mps",
-            hv_dim=88 * 88,
-            vsa=VSAModel.HRR,
-            num_flows=4,
-            num_hidden_channels=128,
-            use_act_norm=True,
-            continue_from="/Users/arvandkaveh/Projects/kit/graph_hdc/src/exp/real_nvp_v2/results/0_real_nvp_v2/DEBUG/models/last.ckpt"
-        ), local_dev=True)
+        run_experiment(
+            cfg=FlowConfig(
+                exp_dir_name="DEBUG",
+                seed=42,
+                epochs=500,
+                batch_size=128,
+                lr=1e-3,
+                device="cuda",
+                hv_dim=88 * 88,
+                vsa=VSAModel.HRR,
+                num_flows=4,
+                num_hidden_channels=128,
+                use_act_norm=True,
+                # continue_from="/Users/arvandkaveh/Projects/kit/graph_hdc/src/exp/real_nvp_v2/results/0_real_nvp_v2/DEBUG/models/last.ckpt"
+            ),
+            local_dev=True,
+        )
     else:
         log("Cluster run ...")
         run_experiment(get_flow_cli_args())
