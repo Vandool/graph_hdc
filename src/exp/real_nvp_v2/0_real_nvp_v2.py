@@ -61,9 +61,7 @@ def setup_exp(dir_name: str | None = None) -> dict:
     if dir_name:
         exp_dir = base_dir / dir_name
     else:
-        slug = (
-            f"{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
-        )
+        slug = f"{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
         exp_dir = base_dir / slug
     exp_dir.mkdir(parents=True, exist_ok=True)
     print(f"Experiment directory created: {exp_dir}")
@@ -309,6 +307,8 @@ def fit_featurewise_standardization(model, loader, hv_dim: int, max_batches: int
     var = (sumsq_vec / max(1, cnt) - (sum_vec / max(1, cnt)) ** 2).clamp_min_(0).to(torch.float32)
     sigma = var.sqrt().clamp_min_(1e-6)
     model.set_standardization(mu, sigma)
+
+
 # ---------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------
@@ -521,6 +521,15 @@ def _hist(figpath: Path, data: np.ndarray, title: str, xlabel: str, bins: int = 
     plt.close()
 
 
+def _finite_clean(x: np.ndarray, *, max_abs: float | None = None) -> np.ndarray:
+    a = np.asarray(x).ravel()
+    m = np.isfinite(a)
+    if max_abs is not None:
+        m &= np.abs(a) <= max_abs
+    a = a[m]
+    return a
+
+
 def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     pprint(cfg)
     # ----- setup dirs -----
@@ -654,7 +663,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         accelerator="auto",
         devices="auto",
         gradient_clip_val=1.0,
-        log_every_n_steps=25 if not local_dev else 1,
+        log_every_n_steps=100 if not local_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
@@ -795,18 +804,36 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
 
     # W&B logs
     if wandb.run:
-        wandb.log(
-            {
-                "sample_node_norm_mean": float(np.mean(node_norm)),
-                "sample_node_norm_std": float(np.std(node_norm)),
-                "sample_graph_norm_mean": float(np.mean(graph_norm)),
-                "sample_graph_norm_std": float(np.std(graph_norm)),
-                "sample_node_norm_hist": wandb.Histogram(node_norm),
-                "sample_graph_norm_hist": wandb.Histogram(graph_norm),
-                "sample_node_cos_hist": wandb.Histogram(node_cos) if node_cos.size else None,
-                "sample_graph_cos_hist": wandb.Histogram(graph_cos) if graph_cos.size else None,
-            }
-        )
+        node_norm_f = _finite_clean(node_norm, max_abs=1e12)
+        graph_norm_f = _finite_clean(graph_norm, max_abs=1e12)
+        node_cos_f = _finite_clean(node_cos)
+        graph_cos_f = _finite_clean(graph_cos)
+
+        payload = {}
+
+        if node_norm_f.size:
+            payload.update(
+                {
+                    "sample_node_norm_mean": float(np.mean(node_norm_f)),
+                    "sample_node_norm_std": float(np.std(node_norm_f)),
+                    "sample_node_norm_hist": wandb.Histogram(node_norm_f),
+                }
+            )
+        if graph_norm_f.size:
+            payload.update(
+                {
+                    "sample_graph_norm_mean": float(np.mean(graph_norm_f)),
+                    "sample_graph_norm_std": float(np.std(graph_norm_f)),
+                    "sample_graph_norm_hist": wandb.Histogram(graph_norm_f),
+                }
+            )
+        if node_cos_f.size:
+            payload["sample_node_cos_hist"] = wandb.Histogram(node_cos_f)
+        if graph_cos_f.size:
+            payload["sample_graph_cos_hist"] = wandb.Histogram(graph_cos_f)
+
+        if payload:
+            wandb.log(payload)
 
     # quick table
     pd.DataFrame(
