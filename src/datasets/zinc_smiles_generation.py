@@ -149,7 +149,7 @@ class ZincSmiles(InMemoryDataset):
     ):
         self.split = split.lower()
         self.enc_suffix = enc_suffix
-        assert self.split in {"train", "valid", "test"}
+        assert self.split in {"train", "valid", "test", "simple"}
         super().__init__(root, transform, pre_transform, pre_filter)
 
         # PyTorch ≥ 2.6 defaults to weights-only un-pickler → disable explicitly
@@ -240,6 +240,7 @@ def precompute_encodings(
 
 
 if __name__ == '__main__':
-    train_ds = ZincSmiles(split="train")
-    valid_ds = ZincSmiles(split="valid")
-    test_ds = ZincSmiles(split="test")
+    # train_ds = ZincSmiles(split="train")
+    # valid_ds = ZincSmiles(split="valid")
+    # test_ds = ZincSmiles(split="test")
+    simple_ds = ZincSmiles(split="simple")

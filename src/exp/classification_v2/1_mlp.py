@@ -306,11 +306,16 @@ def evaluate_as_oracle(
 
     # Helpers
     # Real Oracle
-    def is_induced_subgraph_feature_aware(G_small: nx.Graph, G_big: nx.Graph) -> bool:
+    def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
         """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
-        nm = lambda a, b: a["feat"] == b["feat"]
-        GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
-        return GM.subgraph_is_isomorphic()
+        if (
+            G_small.number_of_nodes() == G_big.number_of_nodes()
+            and G_small.number_of_edges() == G_big.number_of_edges()
+        ):
+            nm = lambda a, b: a["feat"] == b["feat"]
+            GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
+            return GM.subgraph_is_isomorphic()
+        return False
 
     model.eval()
     encoder.eval()
@@ -340,12 +345,18 @@ def evaluate_as_oracle(
             full_g_h=graph_terms_hd[i],
             beam_size=oracle_beam_size,
             oracle_threshold=oracle_threshold,
+            strict=True
         )
         nx_GS = list(filter(None, nx_GS))
+        if len(nx_GS) == 0:
+            ys.append(0)
+            continue
+        ps = []
         for j, g in enumerate(nx_GS):
-            is_induced = is_induced_subgraph_feature_aware(g, full_graph_nx)
-            # print("Is Induced subgraph: ", is_induced)
-            ys.append(int(is_induced))
+            is_final = is_final_graph(g, full_graph_nx)
+            # print("Is Induced subgraph: ", is_final)
+            ps.append(int(is_final))
+        ys.append(sum(ps) >= 1)
     acc = 0.0 if len(ys) == 0 else float(sum(ys) / len(ys))
     log(f"Oracle Accuracy within the graph decoder : {acc:.4f}")
     return acc
@@ -931,7 +942,7 @@ if __name__ == "__main__":
             train_parents_end=None,
             valid_parents_start=None,
             valid_parents_end=None,
-            hidden_dims=[256, 128, 64, 32],
+            hidden_dims=[2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 1024, 512, 128],
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
             lr=1e-4,
@@ -946,8 +957,8 @@ if __name__ == "__main__":
             continue_from=None,
             resume_retrain_last_epoch=False,
             stratify=True,
-            p_per_parent=20,
-            n_per_parent=20,
+            p_per_parent=2,
+            n_per_parent=2,
             use_layer_norm=False,
             use_batch_norm=True,
             oracle_beam_size=8,

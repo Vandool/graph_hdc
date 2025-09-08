@@ -214,10 +214,55 @@ def greedy_oracle_decoder(
         # print(probs)
         return (probs > oracle_threshold).tolist()
 
+    def _is_valid_final_graph(G: nx.Graph) -> bool:
+        node_condition = G.number_of_nodes() == total_nodes
+        edge_condition = G.number_of_edges() == total_edges
+        leftover_condition = leftover_features(full_ctr, G).total() == 0
+        residual_condition = sum(residuals(G).values()) == 0
+        return node_condition and edge_condition and leftover_condition and residual_condition
+
     def _apply_strict_filter(population: list[nx.Graph]) -> list[nx.Graph]:
-        return list(
-            filter(lambda x: (x.number_of_nodes() == total_nodes and x.number_of_edges() == total_edges), population)
-        )
+        return [g for g in population if _is_valid_final_graph(g)]
+
+    def _greedy_finish_edges(G: nx.Graph) -> nx.Graph:
+        """Greedily add edges between anchors (positive residual) until total_edges or no progress.
+        Keeps oracle in the loop to avoid invalid induced subgraphs.
+        """
+        H = G.copy()
+        while H.number_of_edges() < total_edges:
+            progress = False
+            ancrs = anchors(H)
+            if not ancrs:
+                break
+            # Try pairs deterministically: by node id order
+            for i in range(len(ancrs)):
+                a = ancrs[i]
+                for j in range(i + 1, len(ancrs)):
+                    b = ancrs[j]
+                    if H.has_edge(a, b):
+                        continue
+                    # quick prune via 2-node feasibility if known
+                    ta = H.nodes[a]["feat"].to_tuple()
+                    tb = H.nodes[b]["feat"].to_tuple()
+                    kk = tuple(sorted((ta, tb)))
+                    if kk in pair_ok and pair_ok[kk] is False:
+                        continue
+                    H2 = H.copy()
+                    if not add_edge_if_possible(H2, a, b, strict=True):
+                        continue
+                    if H2.number_of_edges() > total_edges:
+                        continue
+                    # validate with oracle
+                    if _call_oracle([H2])[0]:
+                        H = H2
+                        progress = True
+                        break
+                if progress:
+                    break
+            if not progress:
+                break
+        return H
+
 
     # Cache: from a 2-node test we can learn if an edge between two feature types is plausible.
     # Key is an ordered pair of feature tuples (t_small, t_big) with t_small <= t_big.
@@ -239,7 +284,7 @@ def greedy_oracle_decoder(
             u = feat_types[i]
             v = feat_types[j]
             # skip impossible 0-0 pair (both final degree == 0)
-            if u[1] == 0 and v[1] == 0:
+            if u[1] == 0 and v[1] == 0 and total_nodes > 2:
                 continue
             # require multiplicity when u == v
             if u == v and full_ctr[u] < 2:
@@ -316,16 +361,24 @@ def greedy_oracle_decoder(
 
         # If we have any 'done' graphs, try to finish edges if needed (optional) and return them
         if done:
-            # If desired, you can attempt to add remaining edges among anchors here.
-            # For now, return those that don't exceed the total edge budget.
-            finals = [g for g in done if g.number_of_edges() <= total_edges]
+            # finals = []
+            # for g in done:
+            #     gg = g
+            #     if gg.number_of_edges() < total_edges:
+            #         gg = _greedy_finish_edges(gg)
+            #     if gg.number_of_edges() == total_edges:
+            #         finals.append(gg)
 
+            finals = [g for g in done if g.number_of_edges() <= total_edges]
             # Prefer fully saturated (all residuals zero)
             def _all_saturated(g: nx.Graph) -> bool:
                 return all((g.nodes[n]["target_degree"] - g.degree[n]) == 0 for n in g.nodes)
 
             finals.sort(key=lambda g: (_all_saturated(g), g.number_of_edges()), reverse=True)
+            if strict:
+                return _apply_strict_filter(finals[:beam_size])
             return finals[:beam_size]
+
 
         # Expand each growing candidate by adding ONE new node connected to ONE anchor,
         # then optionally one extra edge from the new node to another anchor.

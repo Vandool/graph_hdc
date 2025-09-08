@@ -113,7 +113,7 @@ if __name__ == "__main__":
     print("Device:", device)
 
     # ----- Encode on the correct device -----
-    gp = collection[2]  # pick any group with both pos and negs
+    gp = collection[3]  # pick any group with both pos and negs
 
     parent_batch = Batch.from_data_list([gp.parent]).to(device)
     pos_batch = Batch.from_data_list(gp.pos).to(device) if gp.pos else None

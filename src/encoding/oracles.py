@@ -46,11 +46,11 @@ def log(msg: str) -> None:
 @register_model("MLPClassifier")
 class MLPClassifier(nn.Module):
     def __init__(
-            self,
-            hv_dim: int = 88 * 88,
-            hidden_dims: list[int] | None = None,
-            use_layer_norm: bool = False,
-            use_batch_norm: bool = False,
+        self,
+        hv_dim: int = 88 * 88,
+        hidden_dims: list[int] | None = None,
+        use_layer_norm: bool = False,
+        use_batch_norm: bool = False,
     ) -> None:
         """
         hv_dim: dimension of each HRR vector (e.g., 7744)

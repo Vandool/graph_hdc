@@ -72,10 +72,11 @@ N_PER_PARENT="${N_PER_PARENT:-20}"
 ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-32}"
 ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-32}"
 RESAMPLE_TRAINING_DATA_ON_BATCH="${RESAMPLE_TRAINING_DATA_ON_BATCH:-True}"
-USE_BATCH_NORM="${USE_BATCH_NORM:-True}"
-USE_LAYER_NORM="${USE_LAYER_NORM:-False}"
+USE_BATCH_NORM="${USE_BATCH_NORM:-False}"
+USE_LAYER_NORM="${USE_LAYER_NORM:-True}"
 
 # Build python args array
+# shellcheck disable=SC2054
 PY_ARGS=(
   "$SCRIPT"
   --project_dir "$PROJECT_DIR"
@@ -97,6 +98,7 @@ PY_ARGS=(
   --resample_training_data_on_batch "$RESAMPLE_TRAINING_DATA_ON_BATCH"
   --use_batch_norm "$USE_BATCH_NORM"
   --use_layer_norm "$USE_LAYER_NORM"
+  --hidden_dims 2048,2048,2048,2048,2048,2048,2048,1024,512,256,128
 )
 
 # ---------------------------------
