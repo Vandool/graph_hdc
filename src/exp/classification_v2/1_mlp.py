@@ -356,7 +356,10 @@ def evaluate_as_oracle(
             is_final = is_final_graph(g, full_graph_nx)
             # print("Is Induced subgraph: ", is_final)
             ps.append(int(is_final))
-        ys.append(sum(ps) >= 1)
+        correct_p = int(sum(ps) >= 1)
+        if correct_p:
+            log(f"Correct prediction for sample #{i} from ZincSmiles validation dataset.")
+        ys.append(correct_p)
     acc = 0.0 if len(ys) == 0 else float(sum(ys) / len(ys))
     log(f"Oracle Accuracy within the graph decoder : {acc:.4f}")
     return acc
