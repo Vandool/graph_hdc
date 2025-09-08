@@ -98,7 +98,7 @@ PY_ARGS=(
   --resample_training_data_on_batch "$RESAMPLE_TRAINING_DATA_ON_BATCH"
   --use_batch_norm "$USE_BATCH_NORM"
   --use_layer_norm "$USE_LAYER_NORM"
-  --hidden_dims 2048,2048,2048,2048,2048,2048,2048,1024,512,256,128
+  --hidden_dims 2048,2048,2048,2048,2048,2048,2048,2048,1024,512,128
 )
 
 # ---------------------------------
