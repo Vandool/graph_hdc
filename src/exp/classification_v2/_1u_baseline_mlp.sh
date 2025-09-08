@@ -27,7 +27,7 @@ set -euo pipefail
 CLUSTER="${CLUSTER:-uc3}"
 
 # Slurm common settings
-JOB_NAME="${JOB_NAME:-MLP_batchnorm}"
+JOB_NAME="${JOB_NAME:-MLP_laynorm_new_data}"
 GPUS="${GPUS:-1}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-8}"
 NODES="${NODES:-1}"
@@ -45,7 +45,7 @@ SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 # W&B (optional)
 ENTITY="${ENTITY:-akaveh}"
 PROJECT="${PROJECT:-graph_hdc}"
-EXP_NAME="${EXP_NAME:-mlp_batchnorm_new_data}"
+EXP_NAME="${EXP_NAME:-mlp_laynorm_new_data}"
 
 # Dry run to preview sbatch commands without submitting: 0 or 1
 DRY_RUN="${DRY_RUN:-0}"

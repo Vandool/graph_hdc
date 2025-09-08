@@ -2566,7 +2566,7 @@ packages:
 - pypi: ./
   name: graph-hdc
   version: 0.1.0
-  sha256: 868b800bec0cfff92967502343872a74a931c766befee7d960aa325d7b9ec7f9
+  sha256: 03695a510a0fbea74b2ee0c3bbe1ae7e481d4099ac57d980f9288ee9657f85a3
   requires_dist:
   - auto-slurm @ git+https://github.com/the16thpythonist/AutoSlurm.git@aslurmx
   - click>=7.1.2

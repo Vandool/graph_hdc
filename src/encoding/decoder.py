@@ -1,12 +1,13 @@
 from collections import Counter
-from typing import Sequence, Optional
+from collections.abc import Sequence
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import torch
 
-from src.encoding.the_types import Feat
 from src.encoding.oracles import Oracle
+from src.encoding.the_types import Feat
 from src.utils import visualisations
 
 
@@ -122,7 +123,7 @@ def total_edges_count(feat_ctr: Counter[tuple[int, int, int, int]]) -> int:
     return sum(((deg_idx + 1) * v) for (_, deg_idx, _, _), v in feat_ctr.items()) // 2
 
 
-def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: Optional[int] = None) -> int:
+def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: int | None = None) -> int:
     """
     Add a node with frozen features.
 
@@ -137,7 +138,7 @@ def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: Optional[int] = None) -
     return node_id
 
 
-def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int]) -> Optional[int]:
+def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int]) -> int | None:
     """
     Add a node and try to connect it to a set of anchors (greedy, respects residuals).
 
@@ -163,13 +164,14 @@ def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int]) -> 
 
 
 def greedy_oracle_decoder(
-        node_multiset: Counter,
-        full_g_h: torch.Tensor,  # [D] final graph hyper vector
-        oracle: Oracle,
-        *,
-        beam_size: int = 32,
-        draw: bool = False,
-        oracle_threshold: float = 0.5,
+    node_multiset: Counter,
+    full_g_h: torch.Tensor,  # [D] final graph hyper vector
+    oracle: Oracle,
+    *,
+    beam_size: int = 32,
+    draw: bool = False,
+    oracle_threshold: float = 0.5,
+    strict: bool = True,
 ) -> list[nx.Graph]:
     """Greedy/beam search decoder outline using an oracle.
 
@@ -187,6 +189,7 @@ def greedy_oracle_decoder(
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
+    print(f"Decoding a graph with {total_nodes} nodes and {total_edges} edges.")
 
     # -- local helpers --
     def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
@@ -211,6 +214,10 @@ def greedy_oracle_decoder(
         # print(probs)
         return (probs > oracle_threshold).tolist()
 
+    def _apply_strict_filter(population: list[nx.Graph]) -> list[nx.Graph]:
+        return list(
+            filter(lambda x: (x.number_of_nodes() == total_nodes and x.number_of_edges() == total_edges), population)
+        )
 
     # Cache: from a 2-node test we can learn if an edge between two feature types is plausible.
     # Key is an ordered pair of feature tuples (t_small, t_big) with t_small <= t_big.
@@ -378,6 +385,8 @@ def greedy_oracle_decoder(
 
         if not children:
             # No more expansions possible
+            if strict:
+                return _apply_strict_filter(population)
             return population
 
         # Oracle filter children
@@ -391,10 +400,14 @@ def greedy_oracle_decoder(
 
         if not accepted:
             # Oracle rejected all; stop with current population
+            if strict:
+                return _apply_strict_filter(population)
             return population
 
         # Next generation
         population = accepted
 
     # Safeguard exit
+    if strict:
+        return _apply_strict_filter(population)
     return population
