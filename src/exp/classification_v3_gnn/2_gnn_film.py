@@ -791,6 +791,7 @@ class EpochResamplingSampler(Sampler[int]):
             exclude_neg_types=self.exclude,
             seed=seed,
         )
+        log(f"Resampled {len(idxs)} graphs for the next epoch.")
         self._last_len = len(idxs)
         self._epoch += 1
         return iter(idxs)
@@ -905,21 +906,8 @@ class PairsDataModule(pl.LightningDataModule):
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
     def train_dataloader(self):
-        train_base = self.train_full
-
-        sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
-        train_indices = stratified_per_parent_indices_with_caps(
-            ds=self.train_full,
-            pos_per_parent=self.cfg.p_per_parent,
-            neg_per_parent=self.cfg.n_per_parent,
-            exclude_neg_types=set(self.cfg.exclude_negs),
-            seed=sampling_seed,
-        )
-        train_base = torch.utils.data.Subset(self.train_full, train_indices)
-        log(f"Loaded {len(train_base)} training pairs for training")
-
         train_ds = PairsGraphsEncodedDataset(
-            train_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+            self.train_full, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
         )
 
         sampler = EpochResamplingSampler(
@@ -1575,7 +1563,7 @@ if __name__ == "__main__":
             exp_dir_name="overfitting_batch_norm",
             seed=42,
             epochs=1,
-            batch_size=128,
+            batch_size=4,
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
             lr=1e-4,
