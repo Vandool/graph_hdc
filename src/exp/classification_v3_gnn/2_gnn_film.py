@@ -69,13 +69,27 @@ def log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def pick_precision():
-    # Works on A100/H100 if BF16 is supported by the PyTorch/CUDA build.
+def enable_ampere_tensor_cores():
     if torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
-            return "bf16-mixed"  # safest + fast on H100/A100
-        return "16-mixed"  # widely supported fallback
-    return 32  # CPU or MPS
+        # Faster float32 matmuls via TF32 on Ampere (A100/H100)
+        with contextlib.suppress(AttributeError):
+            torch.set_float32_matmul_precision("medium")  # or "high" for a bit more accuracy
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+
+def pick_precision():
+    if not torch.cuda.is_available():
+        return 32
+    # A100/H100 etc → bf16
+    if torch.cuda.is_bf16_supported():
+        return "bf16-mixed"
+    # Volta/Turing/Ampere+ (sm >= 70) → fp16 mixed
+    major, minor = torch.cuda.get_device_capability()
+    if major >= 7:
+        return "16-mixed"
+    # Maxwell/Pascal and older → plain fp32
+    return 32
 
 
 @dataclass
@@ -582,7 +596,7 @@ class ConditionalGIN(pl.LightningModule):
         self.cfg = cfg or Config()
         num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
         den = float(self.cfg.p_per_parent) if self.cfg.p_per_parent else 1.0
-        ratio = (num / max(1.0, den))
+        ratio = num / max(1.0, den)
         self.register_buffer("pos_weight", torch.tensor([ratio], dtype=torch.float32))
 
         self.input_dim = input_dim
@@ -736,7 +750,9 @@ class ConditionalGIN(pl.LightningModule):
         target = batch.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
         batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
-        self.log("val_loss", val_loss.detach().as_subclass(torch.Tensor), prog_bar=True, logger=True, batch_size=batch_size)
+        self.log(
+            "val_loss", val_loss.detach().as_subclass(torch.Tensor), prog_bar=True, logger=True, batch_size=batch_size
+        )
         return val_loss
 
     def configure_optimizers(self):
@@ -858,7 +874,6 @@ class PairsDataModule(pl.LightningDataModule):
         )
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
-
     def train_dataloader(self):
         train_base = self.train_full
 
@@ -872,7 +887,6 @@ class PairsDataModule(pl.LightningDataModule):
         )
         train_base = torch.utils.data.Subset(self.train_full, train_indices)
         log(f"Loaded {len(train_base)} training pairs for training")
-
 
         train_ds = PairsGraphsEncodedDataset(
             train_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
@@ -1376,7 +1390,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     val_metrics_cb = MetricsPlotsAndOracleCallback(
         encoder=encoder, cfg=cfg, evals_dir=evals_dir, artefacts_dir=artefacts_dir, oracle_on_val_end=True
     )
-
+    enable_ampere_tensor_cores()
     # Training
     trainer = Trainer(
         max_epochs=cfg.epochs,
