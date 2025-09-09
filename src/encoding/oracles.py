@@ -1,39 +1,90 @@
-from dataclasses import dataclass
+
 from datetime import datetime
-from pathlib import Path
+from typing import Literal
 
 import networkx as nx
+import pytorch_lightning as pl
 import torch
 from torch import nn
-from torch_geometric.data import Batch
+from torch_geometric.data import Batch, Data
 
-from src.encoding.the_types import VSAModel
+from src.encoding.graph_encoders import AbstractGraphEncoder
 from src.utils.registery import register_model
-from src.utils.utils import DataTransformer, pick_device_str
+from src.utils.utils import DataTransformer
 
+ModelKind = Literal["gin", "mlp"]
 
 class Oracle:
-    def __init__(self, model: nn.Module):
-        self.model = model
-        self.model.eval()
-        self.encoder = None
+    """
+    Thin wrapper that adapts inputs to the underlying model.
 
+    - For ConditionalGIN:
+        small_gs (list[nx.Graph]) -> PyG Batch with neutral edge attrs/weights
+        cond := repeat(final_h, B) attached as data.cond
+        logits := model(batch)["graph_prediction"].squeeze(-1)
+
+    - For MLP:
+        h1 := encoder(Batch(small_gs))["graph_embedding"]
+        h2 := expand(final_h, B, -1)
+        logits := model(h1, h2)
+    """
+
+    def __init__(
+        self,
+        model: nn.Module | pl.LightningModule,
+        model_type: ModelKind,
+        encoder: AbstractGraphEncoder | None = None,
+    ):
+        self.model = model.eval()
+        self.encoder = encoder
+        self.model_type = model_type
+
+    @staticmethod
+    def _ensure_graph_fields(g: Data) -> Data:
+        E = g.edge_index.size(1)
+        if getattr(g, "edge_attr", None) is None:
+            g.edge_attr = torch.ones(E, 1, dtype=torch.float32)
+        if getattr(g, "edge_weights", None) is None:
+            g.edge_weights = torch.ones(E, dtype=torch.float32)
+        return g
+
+    @torch.inference_mode()
     def is_induced_graph(self, small_gs: list[nx.Graph], final_h: torch.Tensor) -> torch.Tensor:
-        with torch.inference_mode():
-            # h1, h2: tensors of shape [batch, hv_dim]
-            batch_size = len(small_gs)
-            small_hs = [DataTransformer.nx_to_pyg(g) for g in small_gs]
-            small_hs_batch = Batch.from_data_list(small_hs)
-            h1 = self.encoder.forward(small_hs_batch)["graph_embedding"]
+        """
+        Returns probabilities (sigmoid of logits) with shape [B].
+        `final_h` is the hypervector (condition) of the *big* graph.
+        """
+        device = next(self.model.parameters()).device
+        dtype = next(self.model.parameters()).dtype
 
-            # No copy (broadcasted view) -> fastest
-            h2 = final_h.unsqueeze(0).expand(batch_size, -1)
+        # Build PyG batch of candidate graphs (g1)
+        pyg_list = [self._ensure_graph_fields(DataTransformer.nx_to_pyg(g)) for g in small_gs]
+        g1_b = Batch.from_data_list(pyg_list).to(device)
 
-            cosines = torch.nn.functional.cosine_similarity(h1, h2, dim=-1)
-            # print("cosine similarities:", (cosines > 0).tolist())
+        if self.model_type == "gin":
+            # Prepare condition: [B, D]
+            cond = final_h.detach().to(device=device, dtype=dtype)
+            if cond.dim() == 1:
+                cond = cond.unsqueeze(0)  # [1, D]
+            cond = cond.expand(g1_b.num_graphs, -1)  # [B, D]
+            g1_b.cond = cond
 
-            logits = self.model(h1, h2)
+            out = self.model(g1_b)  # dict
+            logits = out["graph_prediction"].squeeze(-1)  # [B]
             return torch.sigmoid(logits)
+
+        if self.model_type == "mlp":
+            assert self.encoder is not None, "encoder is required for MLP oracle"
+            h1 = self.encoder.forward(g1_b)["graph_embedding"].to(device=device, dtype=dtype)  # [B, D]
+            h2 = final_h.detach().to(device=device, dtype=dtype)
+            if h2.dim() == 1:
+                h2 = h2.unsqueeze(0)
+            h2 = h2.expand(h1.size(0), -1)  # [B, D]
+            logits = self.model(h1, h2)  # [B] or [B,1]
+            logits = logits.squeeze(-1)
+            return torch.sigmoid(logits)
+
+        raise ValueError(f"Unknown model_type: {self.model_type!r}")
 
 
 # ---------- tiny logger ----------
@@ -77,4 +128,3 @@ class MLPClassifier(nn.Module):
         # h1,h2: [B, hv_dim]
         x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
         return self.net(x).squeeze(-1)  # [B]
-
