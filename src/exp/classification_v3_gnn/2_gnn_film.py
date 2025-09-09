@@ -895,8 +895,10 @@ class PairsDataModule(pl.LightningDataModule):
             train_ds,
             batch_size=self.cfg.batch_size,
             shuffle=True,
-            num_workers=0,
-            pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
+            num_workers=8,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
         )
 
     def val_dataloader(self):
@@ -912,8 +914,10 @@ class PairsDataModule(pl.LightningDataModule):
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=0,
-            pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
         )
 
 
@@ -1345,8 +1349,10 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     encoder = hypernet.to(device).eval()
 
+    import copy
+    cpu_encoder = copy.deepcopy(hypernet).to("cpu").eval()  # CPU-only copy for workers
     # datamodule with per-epoch resampling
-    dm = PairsDataModule(cfg, encoder=encoder.deepcopy(hypernet), device=torch.device("cpu"), is_dev=is_dev)
+    dm = PairsDataModule(cfg, encoder=cpu_encoder, device=torch.device("cpu"), is_dev=is_dev)
 
     # ----- model + optim -----
     model = ConditionalGIN(
