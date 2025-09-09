@@ -1346,7 +1346,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     encoder = hypernet.to(device).eval()
 
     # datamodule with per-epoch resampling
-    dm = PairsDataModule(cfg, encoder=encoder, device=device, is_dev=is_dev)
+    dm = PairsDataModule(cfg, encoder=encoder.deepcopy(hypernet), device=torch.device("cpu"), is_dev=is_dev)
 
     # ----- model + optim -----
     model = ConditionalGIN(
@@ -1406,6 +1406,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         deterministic=False,
         precision=pick_precision(),
         reload_dataloaders_every_n_epochs=1,
+        num_sanity_val_steps=2,
+        limit_val_batches=100
     )
 
     # --- Train
