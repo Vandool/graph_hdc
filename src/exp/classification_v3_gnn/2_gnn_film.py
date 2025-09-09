@@ -9,11 +9,11 @@ import random
 import shutil
 import string
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from pprint import pprint
-from typing import Iterable
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -775,20 +775,31 @@ class ConditionalGIN(pl.LightningModule):
 # ---------------------------------------------------------------------
 
 
-def ensure_parent_cond_cache(
-        ds: "ZincPairsV2",
-        encoder: "AbstractGraphEncoder",
-        device: torch.device,
-        out_path: Path,
-        *,
-        torch_dtype: torch.dtype = torch.float32,  # choose fp16 to save space; use float32 for max fidelity
-        overwrite: bool = False,
-):
+def _encoder_tag(encoder) -> str:
+    # Keep it simple but stable across runs of the same model
+    # Expand if you need more disambiguation
+    D = getattr(encoder, "graph_embedding_dim", None)
+    D = D if D is not None else "unk"
+    return f"D{D}"
+
+
+def ensure_parent_cond_cache_dir(
+    ds,
+    encoder,
+    device: torch.device,
+    out_dir: Path,
+    *,
+    torch_dtype: torch.dtype = torch.float32,  # use fp32; switch to fp16 to save space
+    overwrite: bool = False,
+) -> np.memmap:
     """
-    Precompute one embedding per *parent* molecule (ds.base[i]) with the encoder and cache to .npy.
-    Returns a memmapped NumPy array of shape [P, D].
+    Precompute one embedding per *parent* (ds.base[i]) and cache to
+    out_dir/parent_cond_<tag>.npy. Returns a NumPy memmap [P, D].
     """
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = _encoder_tag(encoder)
+    out_path = out_dir / f"parent_cond_{tag}.npy"
+
     if out_path.exists() and not overwrite:
         return np.load(out_path, mmap_mode="r")
 
@@ -806,10 +817,11 @@ def ensure_parent_cond_cache(
 
     H = torch.cat(embs, dim=0)  # [P, D]
 
-    H = H.to(torch_dtype).cpu()
+    # NumPy can’t store bfloat16; map BF16 -> FP32 (or FP16 if you prefer smaller files).
+    save_dtype = torch_dtype if torch_dtype != torch.bfloat16 else torch.float32
+    H = H.to(save_dtype).cpu()
+    np_dtype = np.float16 if save_dtype == torch.float16 else np.float32
 
-    # numpy dtype to use
-    np_dtype = np.float16 if torch_dtype == torch.float16 else np.float32
     np.save(out_path, H.numpy().astype(np_dtype, copy=False))
     return np.load(out_path, mmap_mode="r")
 
@@ -818,32 +830,30 @@ class PairsGraphsEncodedDataset(Dataset):
     """
     Returns a single PyG Data per pair:
       data.x, data.edge_index, data.edge_attr(=1), data.edge_weights(=1),
-      data.cond (encoded g2 -> [D]),
+      data.cond (encoded g2 -> [1, D]),
       data.y (float), data.parent_idx (long)
-    Encoding is done on-the-fly with the provided encoder (no grads).
+    If `parent_cond_table` is provided (np.ndarray/np.memmap [P, D]), it is used
+    instead of encoding g2 on-the-fly.
     """
 
     def __init__(
-        self,
-        pairs_ds: ZincPairsV2,
-        *,
-        encoder: AbstractGraphEncoder,
-        device: torch.device,
-        add_edge_attr: bool = True,
-        add_edge_weights: bool = True,
-        parent_cond_path: Path | None = None,
+            self,
+            pairs_ds,  # ZincPairsV2 or Subset thereof
+            *,
+            encoder,
+            device: torch.device,
+            add_edge_attr: bool = True,
+            add_edge_weights: bool = True,
+            parent_cond_table: np.ndarray | None = None,
     ):
         self.ds = pairs_ds
         self.encoder = encoder.eval()
         self.device = device
         self.add_edge_attr = add_edge_attr
         self.add_edge_weights = add_edge_weights
+        self.parent_cond_table = parent_cond_table  # np.ndarray | np.memmap | None
         for p in self.encoder.parameters():
             p.requires_grad = False
-        self.parent_cond = None
-        if parent_cond_path and parent_cond_path.exists():
-            # mmap for zero RAM; cast back to torch dtype at access time
-            self.parent_cond = np.load(parent_cond_path, mmap_mode="r")
 
     def __len__(self):
         return len(self.ds)
@@ -860,74 +870,68 @@ class PairsGraphsEncodedDataset(Dataset):
     @torch.no_grad()
     def __getitem__(self, idx):
         item = self.ds[idx]
-        g1 = Data(x=item.x1, edge_index=item.edge_index1)
-        g1 = self._ensure_graph_fields(g1, add_edge_attr=self.add_edge_attr, add_edge_weights=self.add_edge_weights)
 
-        # ---- cond from cache OR fallback to live encoding ----
-        if self.parent_cond is not None:
-            pid = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
-            cond_np = self.parent_cond[pid]  # shape [D], np
-            # choose the dtype you wrote: float16 or uint16+bfloat16 view
-            cond = torch.from_numpy(cond_np).unsqueeze(0)  # [1, D] on CPU
-            # if you stored bfloat16 bits as uint16:
-            # cond = torch.from_numpy(cond_np.view(np.uint16)).view(torch.bfloat16).unsqueeze(0)
+        # g1 (candidate)
+        g1 = Data(x=item.x1, edge_index=item.edge_index1)
+        g1 = self._ensure_graph_fields(
+            g1, add_edge_attr=self.add_edge_attr, add_edge_weights=self.add_edge_weights
+        )
+
+        # meta
+        y = float(item.y.view(-1)[0].item())
+        parent_idx = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
+
+        # cond: cached if available; else encode from g2 on the fly
+        if self.parent_cond_table is not None and parent_idx >= 0:
+            cond_np = self.parent_cond_table[parent_idx]  # [D]
+            cond = torch.from_numpy(np.asarray(cond_np)).unsqueeze(0)  # [1, D]
         else:
             g2 = Data(x=item.x2, edge_index=item.edge_index2)
             batch_g2 = Batch.from_data_list([g2]).to(self.device)
             h2 = self.encoder.forward(batch_g2)["graph_embedding"]
-            # keep small on host
-            prefer_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-            cond = h2.detach().to(torch.bfloat16 if prefer_bf16 else torch.float16).cpu()
-
-        y = float(item.y.view(-1)[0].item())
-        parent_idx = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
+            cond = h2.detach().cpu()  # [1, D]
 
         g1.cond = cond
         g1.y = torch.tensor(y, dtype=torch.float32)
         g1.parent_idx = torch.tensor(parent_idx, dtype=torch.long)
         return g1
 
-
 # ---------------- DataModule with per-epoch resampling ----------------
 # fast_sampling.py
 
-
 @dataclass
 class MetaCache:
-    idx: np.ndarray  # int32 [N]
-    parent: np.ndarray  # int32 [N]
-    y: np.ndarray  # uint8 [N]
+    idx: np.ndarray       # int32 [N]
+    parent: np.ndarray    # int32 [N]
+    y: np.ndarray         # uint8 [N]
     neg_type: np.ndarray  # uint8 [N]
-    order: np.ndarray  # int32 [N]
-    row_ptr: np.ndarray  # int64 [P+1]
+    order: np.ndarray     # int32 [N]    (dataset indices grouped by parent)
+    row_ptr: np.ndarray   # int64 [P+1]  (CSR offsets per parent)
     P: int
     N: int
-
 
 def _rng(seed: int | None) -> np.random.Generator:
     return np.random.default_rng(seed if seed is not None else np.random.SeedSequence().entropy)
 
-
 def stratified_per_parent_indices_with_caps_cached(
-    mc: MetaCache,
-    *,
-    pos_per_parent: int,
-    neg_per_parent: int,
-    exclude_neg_types: Iterable[int] = (),
-    seed: int | None = 42,
-    cap_cross_parent_at: float = 0.05,
-    cap_rewire_at: float = 0.05,
-    # If you actually intended to cap types 4 & 5, change cp_code=4.
-    cp_code: int = 3,  # PairType.CROSS_PARENT
-    rw_code: int = 5,  # PairType.REWIRE
-    log_summary: bool = True,
+        mc: MetaCache,
+        *,
+        pos_per_parent: int,
+        neg_per_parent: int,
+        exclude_neg_types: Iterable[int] = (),
+        seed: int | None = 42,
+        cap_cross_parent_at: float = 0.05,
+        cap_rewire_at: float = 0.05,
+        cp_code: int = 3,  # PairType.CROSS_PARENT
+        rw_code: int = 5,  # PairType.REWIRE
+        log_summary: bool = True,
 ) -> list[int]:
     """
-    Cached, shard-free sampler with the SAME distribution as your reservoir version:
-      - per-parent quotas
-      - caps (5% each by default) for cp_code and rw_code
-      - exclusion list
-      - sorted output
+    Cached, shard-free sampler with the SAME per-parent policy as your reservoir version:
+      - per-parent quotas for pos/neg
+      - caps (default 5% each) for cp_code and rw_code within negatives
+      - exclude selected neg_types
+      - returns sorted global indices (deterministic given `seed`)
     """
     rng = _rng(seed)
     excl = np.array(sorted(set(exclude_neg_types)), dtype=np.uint8)
@@ -936,31 +940,29 @@ def stratified_per_parent_indices_with_caps_cached(
     cap_cp = int(neg_per_parent * cap_cross_parent_at)
     cap_rw = int(neg_per_parent * cap_rewire_at)
 
-    log(f"Capping cross parent at {cap_cross_parent_at} and rewire at {cap_rewire_at}")
+    log(f"[sample] caps: cross_parent={cap_cross_parent_at:.2%}, rewire={cap_rewire_at:.2%}", flush=True)
 
     chunks: list[np.ndarray] = []
 
-    # iterate parents via CSR slices
     for p in range(mc.P):
-        a = int(mc.row_ptr[p])
-        b = int(mc.row_ptr[p + 1])
+        a = int(mc.row_ptr[p]); b = int(mc.row_ptr[p + 1])
         if b <= a:
             continue
 
-        rows = mc.order[a:b]  # global dataset indices for this parent
-        yy = mc.y[rows]  # uint8
+        rows = mc.order[a:b]          # dataset indices for this parent
+        yy = mc.y[rows]               # uint8
         nts_parent = mc.neg_type[rows]
 
-        # === POSITIVES ===
+        # positives
         pos_rows = rows[yy == 1]
-        if pos_rows.size > 0:
+        if pos_rows.size:
             k = min(pos_rows.size, pos_per_parent)
             if k > 0:
                 chunks.append(rng.choice(pos_rows, size=k, replace=False))
 
-        # === NEGATIVES with caps ===
+        # negatives (with type caps and exclusions)
         if neg_per_parent > 0:
-            neg_mask = yy == 0
+            neg_mask = (yy == 0)
             if have_excl:
                 neg_mask &= ~np.isin(nts_parent, excl)
 
@@ -968,12 +970,10 @@ def stratified_per_parent_indices_with_caps_cached(
                 neg_rows = rows[neg_mask]
                 neg_types = mc.neg_type[neg_rows]
 
-                # split by type
-                is_cp = neg_types == cp_code
-                is_rw = neg_types == rw_code
+                is_cp = (neg_types == cp_code)
+                is_rw = (neg_types == rw_code)
                 is_other = ~(is_cp | is_rw)
 
-                # sample capped families first
                 take_cp = min(int(is_cp.sum()), cap_cp) if cap_cp > 0 else 0
                 if take_cp > 0:
                     chunks.append(rng.choice(neg_rows[is_cp], size=take_cp, replace=False))
@@ -982,7 +982,6 @@ def stratified_per_parent_indices_with_caps_cached(
                 if take_rw > 0:
                     chunks.append(rng.choice(neg_rows[is_rw], size=take_rw, replace=False))
 
-                # fill remainder from "other" negs
                 rem = neg_per_parent - (take_cp + take_rw)
                 if rem > 0:
                     other_rows = neg_rows[is_other]
@@ -992,19 +991,17 @@ def stratified_per_parent_indices_with_caps_cached(
 
     if not chunks:
         if log_summary:
-            log("=== Sanity summary: no samples selected ===")
+            log("=== Sanity summary: no samples selected ===", flush=True)
         return []
 
-    out = np.concatenate(chunks).astype(np.int32, copy=False)
-    out.sort()  # preserve your deterministic-ordered return
-    sel = out
+    sel = np.concatenate(chunks).astype(np.int32, copy=False)
+    sel.sort()  # deterministic order for Subset
 
-    # ---- Sanity summary (like your original) ----
     if log_summary:
         total = int(sel.size)
         y_sel = mc.y[sel]
         pos_cnt = int((y_sel == 1).sum())
-        neg_mask_sel = y_sel == 0
+        neg_mask_sel = (y_sel == 0)
         neg_cnt = int(neg_mask_sel.sum())
 
         hist_str = ""
@@ -1012,135 +1009,148 @@ def stratified_per_parent_indices_with_caps_cached(
             nt_sel = mc.neg_type[sel[neg_mask_sel]]
             types, counts = np.unique(nt_sel, return_counts=True)
             parts = []
-            for t, c in zip(types.tolist(), counts.tolist(), strict=False):
+            for t, c in zip(types.tolist(), counts.tolist()):
                 pct = 100.0 * c / neg_cnt
                 parts.append(f"{t}:{c} ({pct:.1f}%)")
             hist_str = ", ".join(parts)
 
         pos_pct = 100.0 * (pos_cnt / total) if total else 0.0
         neg_pct = 100.0 * (neg_cnt / total) if total else 0.0
-        log("=== Sanity summary (selected subset) ===")
-        log(f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | negatives={neg_cnt} ({neg_pct:.1f}%)")
-        log(f"[SEL] neg_type histogram: {hist_str}")
+        log("=== Sanity summary (selected subset) ===", flush=True)
+        log(f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | "
+              f"negatives={neg_cnt} ({neg_pct:.1f}%)", flush=True)
+        log(f"[SEL] neg_type histogram: {hist_str}", flush=True)
 
     return sel.tolist()
 
-def build_or_load_meta_cache(ds: ZincPairsV2, meta_dir: Path) -> MetaCache:
+
+def build_or_load_meta_cache(ds, meta_dir: Path) -> MetaCache:
     """
-    Loads (mmap) idx/y/neg_type/parent + builds/loads parent CSR (order,row_ptr).
-    Returns a MetaCache ready for stratified_per_parent_indices_with_caps_cached.
+    Loads (mmap) idx/y/neg_type/parent and ensures parent CSR (order,row_ptr).
+    Returns a MetaCache ready for `stratified_per_parent_indices_with_caps_cached`.
     """
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure the 4 arrays exist (your setup() already does this, but keep it safe)
-    for f in ["idx.npy", "y.npy", "neg_type.npy", "parent.npy"]:
-        if not (meta_dir / f).exists():
-            ds.export_meta_arrays(meta_dir)
-            break  # all four get written together
+    # ensure the four meta arrays exist (written together)
+    if not all((meta_dir / f).exists() for f in ("idx.npy", "y.npy", "neg_type.npy", "parent.npy")):
+        ds.export_meta_arrays(meta_dir)
 
-    # Ensure the CSR index exists
-    csr_paths = ds.build_parent_index(meta_dir)  # writes order_by_parent.npy + row_ptr.npy if missing
+    # ensure CSR index exists (order_by_parent.npy / row_ptr.npy)
+    csr_paths = ds.build_parent_index(meta_dir)
 
-    # mmap everything (constant-time, near-zero RAM)
-    idx      = np.load(meta_dir / "idx.npy", mmap_mode="r")        .astype(np.int32, copy=False)
-    y        = np.load(meta_dir / "y.npy", mmap_mode="r")          .astype(np.uint8, copy=False)
-    neg_type = np.load(meta_dir / "neg_type.npy", mmap_mode="r")   .astype(np.uint8, copy=False)
-    parent   = np.load(meta_dir / "parent.npy", mmap_mode="r")     .astype(np.int32, copy=False)
+    # mmap everything
+    idx      = np.load(meta_dir / "idx.npy", mmap_mode="r").astype(np.int32,  copy=False)
+    y        = np.load(meta_dir / "y.npy", mmap_mode="r").astype(np.uint8,   copy=False)
+    neg_type = np.load(meta_dir / "neg_type.npy", mmap_mode="r").astype(np.uint8, copy=False)
+    parent   = np.load(meta_dir / "parent.npy", mmap_mode="r").astype(np.int32, copy=False)
 
     order    = np.load(csr_paths["order_by_parent"], mmap_mode="r").astype(np.int32, copy=False)
-    row_ptr  = np.load(csr_paths["row_ptr"], mmap_mode="r")        .astype(np.int64, copy=False)
+    row_ptr  = np.load(csr_paths["row_ptr"],        mmap_mode="r").astype(np.int64, copy=False)
 
     P = int(row_ptr.shape[0] - 1)
     N = int(idx.shape[0])
 
-    return MetaCache(
-        idx=idx, parent=parent, y=y, neg_type=neg_type,
-        order=order, row_ptr=row_ptr, P=P, N=N
-    )
+    return MetaCache(idx=idx, parent=parent, y=y, neg_type=neg_type, order=order, row_ptr=row_ptr, P=P, N=N)
 
 
 class PairsDataModule(pl.LightningDataModule):
     def __init__(
-        self,
-        cfg: Config,
-        *,
-        encoder: AbstractGraphEncoder,
-        device: torch.device,
-        is_dev: bool = False,
+            self,
+            cfg: Config,
+            *,
+            encoder,                # AbstractGraphEncoder
+            device: torch.device,
+            is_dev: bool = False,
     ):
         super().__init__()
-        self.valid_parent_cond = None
-        self.train_parent_cond = None
-        self._valid_indices = None
-        self.valid_meta = None
-        self.train_meta = None
         self.cfg = cfg
         self.encoder = encoder
         self.device = device
         self.is_dev = is_dev
 
-        # set in setup()
         self.train_full = None
         self.valid_full = None
-        self.valid_loader = None
+
+        self.train_meta: MetaCache | None = None
+        self.valid_meta: MetaCache | None = None
+
+        self.train_parent_cond = None
+        self.valid_parent_cond = None
+
+        self._valid_indices = None
 
     def setup(self, stage=None):
         self.train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
         self.valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
 
-        cache_root = Path(self.cfg.project_dir or ".") / "_pair_meta_cache"
-        train_dir = cache_root / "train"
-        valid_dir = cache_root / "valid"
+        # keep caches next to dataset files
+        train_cache = Path(self.train_full.processed_dir) / "aux_cache"
+        valid_cache = Path(self.valid_full.processed_dir) / "aux_cache"
+        train_cache.mkdir(parents=True, exist_ok=True)
+        valid_cache.mkdir(parents=True, exist_ok=True)
 
-        # Fast path: load; Slow path (first run): export once then load
-        if not (train_dir / "parent.npy").exists():
-            self.train_full.export_meta_arrays(train_dir)
-        if not (valid_dir / "parent.npy").exists():
-            self.valid_full.export_meta_arrays(valid_dir)
+        # 1) export meta once
+        if not (train_cache / "parent.npy").exists():
+            self.train_full.export_meta_arrays(train_cache)
+        if not (valid_cache / "parent.npy").exists():
+            self.valid_full.export_meta_arrays(valid_cache)
 
-        self.train_meta = build_or_load_meta_cache(self.train_full, train_dir)
-        self.valid_meta = build_or_load_meta_cache(self.valid_full, valid_dir)
+        # 2) ensure CSR index (order,row_ptr)
+        self.train_full.build_parent_index(train_cache)
+        self.valid_full.build_parent_index(valid_cache)
 
-        # ---- build parent cond cache once per split (OPTIONAL but recommended) ----
-        self.train_parent_cond = ensure_parent_cond_cache(
-            ds=self.train_full.base, encoder=self.encoder, device=self.device, out_path=train_dir
+        # 3) build MetaCache (mmap’d views)
+        self.train_meta = build_or_load_meta_cache(self.train_full, train_cache)
+        self.valid_meta = build_or_load_meta_cache(self.valid_full, valid_cache)
+
+        # 4) build parent-cond cache once per split (FP32 by default)
+        self.train_parent_cond = ensure_parent_cond_cache_dir(
+            self.train_full, self.encoder, self.device, out_dir=train_cache, torch_dtype=torch.float32
         )
-        self.valid_parent_cond = ensure_parent_cond_cache(
-            ds=self.valid_full.base, encoder=self.encoder, device=self.device, oup_path=valid_dir
+        self.valid_parent_cond = ensure_parent_cond_cache_dir(
+            self.valid_full, self.encoder, self.device, out_dir=valid_cache, torch_dtype=torch.float32
         )
 
-        # (Optional) reduce validation size to something sane
+        # (optional) subsample validation
         self._valid_indices = exact_representative_validation_indices(
             ds=self.valid_full,
-            target_total=getattr(self.cfg, "val_target_total", 50_000) if not self.is_dev else 500,
+            target_total=(self.cfg.val_target_total if not self.is_dev else 500),
             exclude_neg_types=self.cfg.exclude_negs,
             by_neg_type=True,
             seed=self.cfg.seed,
         )
 
     def train_dataloader(self):
-        # Re-sample each epoch (Lightning will call this each time because you set reload_dataloaders_every_n_epochs=1)
+        assert self.train_meta is not None
         sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
+
         train_indices = stratified_per_parent_indices_with_caps_cached(
             self.train_meta,
             pos_per_parent=self.cfg.p_per_parent,
             neg_per_parent=self.cfg.n_per_parent,
             exclude_neg_types=set(self.cfg.exclude_negs),
             seed=sampling_seed,
+            # If you actually intend to cap (4,5) instead of (3,5) change cp_code=4.
+            cp_code=3, rw_code=5,
         )
-        train_base = torch.utils.data.Subset(self.train_full, train_indices.tolist())
+        train_base = torch.utils.data.Subset(self.train_full, train_indices)
 
         train_ds = PairsGraphsEncodedDataset(
-            train_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+            train_base,
+            encoder=self.encoder,
+            device=self.device,
+            add_edge_attr=True,
+            add_edge_weights=True,
+            parent_cond_table=self.train_parent_cond,  # use cached parent embeddings
         )
         return DataLoader(
             train_ds,
             batch_size=self.cfg.batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=self.cfg.num_workers,
             pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
             persistent_workers=(self.cfg.num_workers > 0),
-            prefetch_factor=getattr(self.cfg, "prefetch_factor", 2) if self.cfg.num_workers > 0 else None,
+            prefetch_factor=(self.cfg.prefetch_factor if self.cfg.num_workers > 0 else None),
         )
 
     def val_dataloader(self):
@@ -1150,16 +1160,21 @@ class PairsDataModule(pl.LightningDataModule):
             else self.valid_full
         )
         valid_ds = PairsGraphsEncodedDataset(
-            valid_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+            valid_base,
+            encoder=self.encoder,
+            device=self.device,
+            add_edge_attr=True,
+            add_edge_weights=True,
+            parent_cond_table=self.valid_parent_cond,  # speed up validation too
         )
         return DataLoader(
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=max(0, self.cfg.num_workers // 2),
             pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
             persistent_workers=(self.cfg.num_workers > 0),
-            prefetch_factor=getattr(self.cfg, "prefetch_factor", 2) if self.cfg.num_workers > 0 else None,
+            prefetch_factor=(self.cfg.prefetch_factor if self.cfg.num_workers > 0 else None),
         )
 
 
@@ -1223,7 +1238,7 @@ def evaluate_as_oracle(
         ps = []
         for j, g in enumerate(nx_GS):
             is_final = is_final_graph(g, full_graph_nx)
-            # print("Is Induced subgraph: ", is_final)
+            # log("Is Induced subgraph: ", is_final)
             ps.append(int(is_final))
         correct_p = int(sum(ps) >= 1)
         if correct_p:
