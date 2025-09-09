@@ -65,7 +65,7 @@ def stratified_per_parent_indices_with_caps(
     neg_res = defaultdict(list)  # "other" negatives (not 4/5)
 
     # --- dedicated reservoirs & counters for Type4 and Type5 ---
-    neg4_seen = defaultdict(int)  # Type4 (rewire)
+    neg4_seen = defaultdict(int)  # Type3 (rewire)
     neg5_seen = defaultdict(int)  # Type5 (cross-parent)
     neg4_res = defaultdict(list)
     neg5_res = defaultdict(list)
@@ -112,7 +112,7 @@ def stratified_per_parent_indices_with_caps(
                 if nt in exclude_neg_types:
                     continue
 
-                # --- route negatives by type; cap type 4/5 at 5% each ---
+                # --- route negatives by type; cap type 3/5 at 5% each ---
                 if nt == PairType.CROSS_PARENT:
                     neg4_seen[pid] += 1
                     _reservoir_push(neg4_res[pid], neg4_seen[pid], cap_cross_parent, gidx)

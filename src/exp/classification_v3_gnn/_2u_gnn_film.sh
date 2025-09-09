@@ -30,7 +30,7 @@ CLUSTER="${CLUSTER:-home}"
 # Slurm common settings
 JOB_NAME="${JOB_NAME:-GNN_FILM_Baseline}"
 GPUS="${GPUS:-1}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-9}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
@@ -58,7 +58,7 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 # Python args (edit as needed)
 # -----------------------------
 # Aligned with classification_v2/1_mlp.py parameters in your example.
-EPOCHS="${EPOCHS:-10}"
+EPOCHS="${EPOCHS:-9}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 LR="${LR:-1e-4}"
 P_PER_PARENT="${P_PER_PARENT:-20}"

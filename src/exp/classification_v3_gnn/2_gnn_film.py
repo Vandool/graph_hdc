@@ -923,10 +923,10 @@ class PairsDataModule(pl.LightningDataModule):
             batch_size=self.cfg.batch_size,
             sampler=sampler,
             shuffle=False,
-            num_workers=8,
+            num_workers=12,
             pin_memory=True,
             persistent_workers=True,
-            prefetch_factor=4,
+            prefetch_factor=6,
         )
 
     def val_dataloader(self):
@@ -942,10 +942,10 @@ class PairsDataModule(pl.LightningDataModule):
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=4,
+            num_workers=12,
             pin_memory=True,
             persistent_workers=True,
-            prefetch_factor=4,
+            prefetch_factor=6,
         )
 
 
@@ -1015,7 +1015,7 @@ def evaluate_as_oracle(
             full_g_h=graph_terms_hd[i],
             beam_size=oracle_beam_size,
             oracle_threshold=oracle_threshold,
-            strict=True,
+            strict=False,
         )
         nx_GS = list(filter(None, nx_GS))
         if len(nx_GS) == 0:
