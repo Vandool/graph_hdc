@@ -35,7 +35,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 from torch import nn
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import MessagePassing
@@ -770,6 +770,36 @@ class ConditionalGIN(pl.LightningModule):
 # ---------------------------------------------------------------------
 # Dataset and loaders
 # ---------------------------------------------------------------------
+
+
+class EpochResamplingSampler(Sampler[int]):
+    def __init__(self, ds, *, p_per_parent, n_per_parent, exclude_neg_types, base_seed=42):
+        self.ds = ds
+        self.p = p_per_parent
+        self.n = n_per_parent
+        self.exclude = set(exclude_neg_types)
+        self.base_seed = base_seed
+        self._epoch = 0
+        self._last_len = 0
+
+    def __iter__(self):
+        seed = self.base_seed + self._epoch
+        idxs = stratified_per_parent_indices_with_caps(
+            ds=self.ds,
+            pos_per_parent=self.p,
+            neg_per_parent=self.n,
+            exclude_neg_types=self.exclude,
+            seed=seed,
+        )
+        self._last_len = len(idxs)
+        self._epoch += 1
+        return iter(idxs)
+
+    def __len__(self):
+        # just an estimate for progress bars; becomes exact after first epoch
+        return self._last_len if self._last_len else len(self.ds)
+
+
 class PairsGraphsEncodedDataset(Dataset):
     """
     Returns a single PyG Data per pair:
@@ -891,12 +921,22 @@ class PairsDataModule(pl.LightningDataModule):
         train_ds = PairsGraphsEncodedDataset(
             train_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
         )
+
+        sampler = EpochResamplingSampler(
+            self.train_full,
+            p_per_parent=self.cfg.p_per_parent,
+            n_per_parent=self.cfg.n_per_parent,
+            exclude_neg_types=self.cfg.exclude_negs,
+            base_seed=self.cfg.seed + 13,
+        )
+
         return DataLoader(  # this is torch_geometric.loader.DataLoader
             train_ds,
             batch_size=self.cfg.batch_size,
-            shuffle=True,
+            sampler=sampler,
+            shuffle=False,
             num_workers=8,
-            pin_memory=False,
+            pin_memory=True,
             persistent_workers=True,
             prefetch_factor=4,
         )
@@ -1410,9 +1450,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
-        reload_dataloaders_every_n_epochs=1,
         num_sanity_val_steps=2,
-        limit_val_batches=100
+        limit_val_batches=100,
     )
 
     # --- Train
