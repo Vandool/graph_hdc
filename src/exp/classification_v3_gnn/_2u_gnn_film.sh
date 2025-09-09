@@ -30,7 +30,7 @@ CLUSTER="${CLUSTER:-home}"
 # Slurm common settings
 JOB_NAME="${JOB_NAME:-GNN_FILM_Baseline}"
 GPUS="${GPUS:-1}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-8}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-9}"
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
@@ -183,6 +183,9 @@ export WANDB_API_KEY=\${WANDB_API_KEY:-}
 export WANDB_ENTITY='${ENTITY}'
 export WANDB_PROJECT='${PROJECT}'
 export WANDB_NAME='${EXP_NAME}'
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export PYTORCH_NUM_THREADS=1
 cd '${EXPERIMENTS_PATH}'
 pixi run python ${PY_ARGS[*]}
 WRAP

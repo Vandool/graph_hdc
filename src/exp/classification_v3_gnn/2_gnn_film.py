@@ -896,7 +896,7 @@ class PairsDataModule(pl.LightningDataModule):
             batch_size=self.cfg.batch_size,
             shuffle=True,
             num_workers=8,
-            pin_memory=True,
+            pin_memory=False,
             persistent_workers=True,
             prefetch_factor=4,
         )
@@ -1361,7 +1361,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         cond_units=cfg.cond_units,
         conv_units=cfg.conv_units,
         film_units=cfg.film_units,
-        pred_units=[128, 64, 1],
+        pred_units=cfg.pred_head_units,
         cfg=cfg,
     ).to(device)
 
