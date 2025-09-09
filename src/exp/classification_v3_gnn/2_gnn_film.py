@@ -791,7 +791,7 @@ class EpochResamplingSampler(Sampler[int]):
             exclude_neg_types=self.exclude,
             seed=seed,
         )
-        log(f"Resampled {len(idxs)} graphs for the next epoch.")
+        log(f"[epoch {self._epoch}] Resampled {len(idxs)} graphs.")
         self._last_len = len(idxs)
         self._epoch += 1
         return iter(idxs)
@@ -891,7 +891,7 @@ class PairsDataModule(pl.LightningDataModule):
         log("Loading pair datasets …")
         self.train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
         self.valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
-        log(f"Pairs loaded. train_pairs={len(self.train_full)} valid_pairs={len(self.valid_full)}")
+        log(f"Pairs loaded. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}")
 
         # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
         self._valid_indices = None
