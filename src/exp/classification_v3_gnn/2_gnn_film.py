@@ -776,43 +776,42 @@ class ConditionalGIN(pl.LightningModule):
 
 
 def ensure_parent_cond_cache(
-    base_ds,  # ZincSmiles(split=...)
-    encoder: AbstractGraphEncoder,
-    device: torch.device,
-    out_dir: Path,
-    dtype: torch.dtype | None = None,  # default: bfloat16 if supported else float16
-    batch_size: int = 256,
+        ds: "ZincPairsV2",
+        encoder: "AbstractGraphEncoder",
+        device: torch.device,
+        out_path: Path,
+        *,
+        torch_dtype: torch.dtype = torch.float32,  # choose fp16 to save space; use float32 for max fidelity
+        overwrite: bool = False,
 ):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "parent_cond.npy"
-    if path.exists():
-        return path
+    """
+    Precompute one embedding per *parent* molecule (ds.base[i]) with the encoder and cache to .npy.
+    Returns a memmapped NumPy array of shape [P, D].
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists() and not overwrite:
+        return np.load(out_path, mmap_mode="r")
 
-    if dtype is None:
-        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    encoder = encoder.eval()
+    for p in encoder.parameters():
+        p.requires_grad = False
 
-    D = 7744  # or infer from encoder output dynamically
-
-    mm = np.memmap(path, mode="w+", dtype=np.float16 if dtype == torch.float16 else np.uint16, shape=(len(base_ds), D))
-
-    encoder.eval().to(device)
-
+    embs = []
     with torch.no_grad():
-        i = 0
-        while i < len(base_ds):
-            j = min(i + batch_size, len(base_ds))
-            batch_data = []
-            for k in range(i, j):
-                g = base_ds[k]
-                batch_data.append(Data(x=g.x, edge_index=g.edge_index))
-            batch = Batch.from_data_list(batch_data).to(device)
-            h = encoder.forward(batch)["graph_embedding"]  # [B, D] float32 on device
-            h = h.to(dtype).cpu().numpy()  # cast down
-            mm[i:j, :] = h
-            i = j
+        for i in range(len(ds.base)):
+            g2 = ds.base[i]
+            batch = Batch.from_data_list([Data(x=g2.x, edge_index=g2.edge_index)]).to(device)
+            h = encoder.forward(batch)["graph_embedding"].detach()  # [1, D] on device
+            embs.append(h)
 
-    mm.flush()
-    return path
+    H = torch.cat(embs, dim=0)  # [P, D]
+
+    H = H.to(torch_dtype).cpu()
+
+    # numpy dtype to use
+    np_dtype = np.float16 if torch_dtype == torch.float16 else np.float32
+    np.save(out_path, H.numpy().astype(np_dtype, copy=False))
+    return np.load(out_path, mmap_mode="r")
 
 
 class PairsGraphsEncodedDataset(Dataset):
@@ -1104,10 +1103,10 @@ class PairsDataModule(pl.LightningDataModule):
 
         # ---- build parent cond cache once per split (OPTIONAL but recommended) ----
         self.train_parent_cond = ensure_parent_cond_cache(
-            base_ds=self.train_full.base, encoder=self.encoder, device=self.device, out_dir=train_dir
+            ds=self.train_full.base, encoder=self.encoder, device=self.device, out_path=train_dir
         )
         self.valid_parent_cond = ensure_parent_cond_cache(
-            base_ds=self.valid_full.base, encoder=self.encoder, device=self.device, out_dir=valid_dir
+            ds=self.valid_full.base, encoder=self.encoder, device=self.device, oup_path=valid_dir
         )
 
         # (Optional) reduce validation size to something sane
@@ -1138,7 +1137,7 @@ class PairsDataModule(pl.LightningDataModule):
             train_ds,
             batch_size=self.cfg.batch_size,
             shuffle=True,
-            num_workers=self.cfg.num_workers,          # now safe to increase
+            num_workers=0,
             pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
             persistent_workers=(self.cfg.num_workers > 0),
             prefetch_factor=getattr(self.cfg, "prefetch_factor", 2) if self.cfg.num_workers > 0 else None,
@@ -1157,7 +1156,7 @@ class PairsDataModule(pl.LightningDataModule):
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=max(0, self.cfg.num_workers // 2),
+            num_workers=0,
             pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
             persistent_workers=(self.cfg.num_workers > 0),
             prefetch_factor=getattr(self.cfg, "prefetch_factor", 2) if self.cfg.num_workers > 0 else None,
