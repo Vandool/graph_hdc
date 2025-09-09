@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import contextlib
 import itertools
@@ -11,6 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from pprint import pprint
+from typing import Iterable
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -53,7 +56,6 @@ from src.encoding.oracles import Oracle
 from src.encoding.the_types import VSAModel
 from src.exp.classification_v3_gnn.classification_utils_gnn import (
     exact_representative_validation_indices,
-    stratified_per_parent_indices_with_caps,
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, pick_device, str2bool
 
@@ -69,13 +71,27 @@ def log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def pick_precision():
-    # Works on A100/H100 if BF16 is supported by the PyTorch/CUDA build.
+def enable_ampere_tensor_cores():
     if torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
-            return "bf16-mixed"  # safest + fast on H100/A100
-        return "16-mixed"  # widely supported fallback
-    return 32  # CPU or MPS
+        # Faster float32 matmuls via TF32 on Ampere (A100/H100)
+        with contextlib.suppress(AttributeError):
+            torch.set_float32_matmul_precision("medium")  # or "high" for a bit more accuracy
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+
+def pick_precision():
+    if not torch.cuda.is_available():
+        return 32
+    # A100/H100 etc → bf16
+    if torch.cuda.is_bf16_supported():
+        return "bf16-mixed"
+    # Volta/Turing/Ampere+ (sm >= 70) → fp16 mixed
+    major, minor = torch.cuda.get_device_capability()
+    if major >= 7:
+        return "16-mixed"
+    # Maxwell/Pascal and older → plain fp32
+    return 32
 
 
 @dataclass
@@ -108,7 +124,7 @@ class Config:
     weight_decay: float = 0.0
 
     # Loader
-    num_workers: int = 0
+    num_workers: int = 4
     prefetch_factor: int = 1
     pin_memory: bool = False
 
@@ -737,7 +753,9 @@ class ConditionalGIN(pl.LightningModule):
         target = batch.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
         batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
-        self.log("val_loss", val_loss.detach().as_subclass(torch.Tensor), prog_bar=True, logger=True, batch_size=batch_size)
+        self.log(
+            "val_loss", val_loss.detach().as_subclass(torch.Tensor), prog_bar=True, logger=True, batch_size=batch_size
+        )
         return val_loss
 
     def configure_optimizers(self):
@@ -755,6 +773,48 @@ class ConditionalGIN(pl.LightningModule):
 # ---------------------------------------------------------------------
 # Dataset and loaders
 # ---------------------------------------------------------------------
+
+
+def ensure_parent_cond_cache(
+    base_ds,  # ZincSmiles(split=...)
+    encoder: AbstractGraphEncoder,
+    device: torch.device,
+    out_dir: Path,
+    dtype: torch.dtype | None = None,  # default: bfloat16 if supported else float16
+    batch_size: int = 256,
+):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "parent_cond.npy"
+    if path.exists():
+        return path
+
+    if dtype is None:
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+
+    D = 7744  # or infer from encoder output dynamically
+
+    mm = np.memmap(path, mode="w+", dtype=np.float16 if dtype == torch.float16 else np.uint16, shape=(len(base_ds), D))
+
+    encoder.eval().to(device)
+
+    with torch.no_grad():
+        i = 0
+        while i < len(base_ds):
+            j = min(i + batch_size, len(base_ds))
+            batch_data = []
+            for k in range(i, j):
+                g = base_ds[k]
+                batch_data.append(Data(x=g.x, edge_index=g.edge_index))
+            batch = Batch.from_data_list(batch_data).to(device)
+            h = encoder.forward(batch)["graph_embedding"]  # [B, D] float32 on device
+            h = h.to(dtype).cpu().numpy()  # cast down
+            mm[i:j, :] = h
+            i = j
+
+    mm.flush()
+    return path
+
+
 class PairsGraphsEncodedDataset(Dataset):
     """
     Returns a single PyG Data per pair:
@@ -772,6 +832,7 @@ class PairsGraphsEncodedDataset(Dataset):
         device: torch.device,
         add_edge_attr: bool = True,
         add_edge_weights: bool = True,
+        parent_cond_path: Path | None = None,
     ):
         self.ds = pairs_ds
         self.encoder = encoder.eval()
@@ -780,6 +841,10 @@ class PairsGraphsEncodedDataset(Dataset):
         self.add_edge_weights = add_edge_weights
         for p in self.encoder.parameters():
             p.requires_grad = False
+        self.parent_cond = None
+        if parent_cond_path and parent_cond_path.exists():
+            # mmap for zero RAM; cast back to torch dtype at access time
+            self.parent_cond = np.load(parent_cond_path, mmap_mode="r")
 
     def __len__(self):
         return len(self.ds)
@@ -796,24 +861,28 @@ class PairsGraphsEncodedDataset(Dataset):
     @torch.no_grad()
     def __getitem__(self, idx):
         item = self.ds[idx]
-
-        # g1 (candidate subgraph)
         g1 = Data(x=item.x1, edge_index=item.edge_index1)
         g1 = self._ensure_graph_fields(g1, add_edge_attr=self.add_edge_attr, add_edge_weights=self.add_edge_weights)
 
-        # g2 (condition) -> encode to cond
-        g2 = Data(x=item.x2, edge_index=item.edge_index2)
+        # ---- cond from cache OR fallback to live encoding ----
+        if self.parent_cond is not None:
+            pid = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
+            cond_np = self.parent_cond[pid]  # shape [D], np
+            # choose the dtype you wrote: float16 or uint16+bfloat16 view
+            cond = torch.from_numpy(cond_np).unsqueeze(0)  # [1, D] on CPU
+            # if you stored bfloat16 bits as uint16:
+            # cond = torch.from_numpy(cond_np.view(np.uint16)).view(torch.bfloat16).unsqueeze(0)
+        else:
+            g2 = Data(x=item.x2, edge_index=item.edge_index2)
+            batch_g2 = Batch.from_data_list([g2]).to(self.device)
+            h2 = self.encoder.forward(batch_g2)["graph_embedding"]
+            # keep small on host
+            prefer_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            cond = h2.detach().to(torch.bfloat16 if prefer_bf16 else torch.float16).cpu()
 
-        # Encode a single graph safely
-        batch_g2 = Batch.from_data_list([g2]).to(self.device)
-        h2 = self.encoder.forward(batch_g2)["graph_embedding"]  # [1, D] on device
-        cond = h2.detach().cpu()  # let PL move the whole Batch later
-
-        # target/meta
         y = float(item.y.view(-1)[0].item())
         parent_idx = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
 
-        # Attach fields to g1
         g1.cond = cond
         g1.y = torch.tensor(y, dtype=torch.float32)
         g1.parent_idx = torch.tensor(parent_idx, dtype=torch.long)
@@ -821,6 +890,176 @@ class PairsGraphsEncodedDataset(Dataset):
 
 
 # ---------------- DataModule with per-epoch resampling ----------------
+# fast_sampling.py
+
+
+@dataclass
+class MetaCache:
+    idx: np.ndarray  # int32 [N]
+    parent: np.ndarray  # int32 [N]
+    y: np.ndarray  # uint8 [N]
+    neg_type: np.ndarray  # uint8 [N]
+    order: np.ndarray  # int32 [N]
+    row_ptr: np.ndarray  # int64 [P+1]
+    P: int
+    N: int
+
+
+def _rng(seed: int | None) -> np.random.Generator:
+    return np.random.default_rng(seed if seed is not None else np.random.SeedSequence().entropy)
+
+
+def stratified_per_parent_indices_with_caps_cached(
+    mc: MetaCache,
+    *,
+    pos_per_parent: int,
+    neg_per_parent: int,
+    exclude_neg_types: Iterable[int] = (),
+    seed: int | None = 42,
+    cap_cross_parent_at: float = 0.05,
+    cap_rewire_at: float = 0.05,
+    # If you actually intended to cap types 4 & 5, change cp_code=4.
+    cp_code: int = 3,  # PairType.CROSS_PARENT
+    rw_code: int = 5,  # PairType.REWIRE
+    log_summary: bool = True,
+) -> list[int]:
+    """
+    Cached, shard-free sampler with the SAME distribution as your reservoir version:
+      - per-parent quotas
+      - caps (5% each by default) for cp_code and rw_code
+      - exclusion list
+      - sorted output
+    """
+    rng = _rng(seed)
+    excl = np.array(sorted(set(exclude_neg_types)), dtype=np.uint8)
+    have_excl = excl.size > 0
+
+    cap_cp = int(neg_per_parent * cap_cross_parent_at)
+    cap_rw = int(neg_per_parent * cap_rewire_at)
+
+    log(f"Capping cross parent at {cap_cross_parent_at} and rewire at {cap_rewire_at}")
+
+    chunks: list[np.ndarray] = []
+
+    # iterate parents via CSR slices
+    for p in range(mc.P):
+        a = int(mc.row_ptr[p])
+        b = int(mc.row_ptr[p + 1])
+        if b <= a:
+            continue
+
+        rows = mc.order[a:b]  # global dataset indices for this parent
+        yy = mc.y[rows]  # uint8
+        nts_parent = mc.neg_type[rows]
+
+        # === POSITIVES ===
+        pos_rows = rows[yy == 1]
+        if pos_rows.size > 0:
+            k = min(pos_rows.size, pos_per_parent)
+            if k > 0:
+                chunks.append(rng.choice(pos_rows, size=k, replace=False))
+
+        # === NEGATIVES with caps ===
+        if neg_per_parent > 0:
+            neg_mask = yy == 0
+            if have_excl:
+                neg_mask &= ~np.isin(nts_parent, excl)
+
+            if np.any(neg_mask):
+                neg_rows = rows[neg_mask]
+                neg_types = mc.neg_type[neg_rows]
+
+                # split by type
+                is_cp = neg_types == cp_code
+                is_rw = neg_types == rw_code
+                is_other = ~(is_cp | is_rw)
+
+                # sample capped families first
+                take_cp = min(int(is_cp.sum()), cap_cp) if cap_cp > 0 else 0
+                if take_cp > 0:
+                    chunks.append(rng.choice(neg_rows[is_cp], size=take_cp, replace=False))
+
+                take_rw = min(int(is_rw.sum()), cap_rw) if cap_rw > 0 else 0
+                if take_rw > 0:
+                    chunks.append(rng.choice(neg_rows[is_rw], size=take_rw, replace=False))
+
+                # fill remainder from "other" negs
+                rem = neg_per_parent - (take_cp + take_rw)
+                if rem > 0:
+                    other_rows = neg_rows[is_other]
+                    if other_rows.size > 0:
+                        take_other = min(other_rows.size, rem)
+                        chunks.append(rng.choice(other_rows, size=take_other, replace=False))
+
+    if not chunks:
+        if log_summary:
+            log("=== Sanity summary: no samples selected ===")
+        return []
+
+    out = np.concatenate(chunks).astype(np.int32, copy=False)
+    out.sort()  # preserve your deterministic-ordered return
+    sel = out
+
+    # ---- Sanity summary (like your original) ----
+    if log_summary:
+        total = int(sel.size)
+        y_sel = mc.y[sel]
+        pos_cnt = int((y_sel == 1).sum())
+        neg_mask_sel = y_sel == 0
+        neg_cnt = int(neg_mask_sel.sum())
+
+        hist_str = ""
+        if neg_cnt > 0:
+            nt_sel = mc.neg_type[sel[neg_mask_sel]]
+            types, counts = np.unique(nt_sel, return_counts=True)
+            parts = []
+            for t, c in zip(types.tolist(), counts.tolist(), strict=False):
+                pct = 100.0 * c / neg_cnt
+                parts.append(f"{t}:{c} ({pct:.1f}%)")
+            hist_str = ", ".join(parts)
+
+        pos_pct = 100.0 * (pos_cnt / total) if total else 0.0
+        neg_pct = 100.0 * (neg_cnt / total) if total else 0.0
+        log("=== Sanity summary (selected subset) ===")
+        log(f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | negatives={neg_cnt} ({neg_pct:.1f}%)")
+        log(f"[SEL] neg_type histogram: {hist_str}")
+
+    return sel.tolist()
+
+def build_or_load_meta_cache(ds: ZincPairsV2, meta_dir: Path) -> MetaCache:
+    """
+    Loads (mmap) idx/y/neg_type/parent + builds/loads parent CSR (order,row_ptr).
+    Returns a MetaCache ready for stratified_per_parent_indices_with_caps_cached.
+    """
+    meta_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure the 4 arrays exist (your setup() already does this, but keep it safe)
+    for f in ["idx.npy", "y.npy", "neg_type.npy", "parent.npy"]:
+        if not (meta_dir / f).exists():
+            ds.export_meta_arrays(meta_dir)
+            break  # all four get written together
+
+    # Ensure the CSR index exists
+    csr_paths = ds.build_parent_index(meta_dir)  # writes order_by_parent.npy + row_ptr.npy if missing
+
+    # mmap everything (constant-time, near-zero RAM)
+    idx      = np.load(meta_dir / "idx.npy", mmap_mode="r")        .astype(np.int32, copy=False)
+    y        = np.load(meta_dir / "y.npy", mmap_mode="r")          .astype(np.uint8, copy=False)
+    neg_type = np.load(meta_dir / "neg_type.npy", mmap_mode="r")   .astype(np.uint8, copy=False)
+    parent   = np.load(meta_dir / "parent.npy", mmap_mode="r")     .astype(np.int32, copy=False)
+
+    order    = np.load(csr_paths["order_by_parent"], mmap_mode="r").astype(np.int32, copy=False)
+    row_ptr  = np.load(csr_paths["row_ptr"], mmap_mode="r")        .astype(np.int64, copy=False)
+
+    P = int(row_ptr.shape[0] - 1)
+    N = int(idx.shape[0])
+
+    return MetaCache(
+        idx=idx, parent=parent, y=y, neg_type=neg_type,
+        order=order, row_ptr=row_ptr, P=P, N=N
+    )
+
+
 class PairsDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -831,6 +1070,11 @@ class PairsDataModule(pl.LightningDataModule):
         is_dev: bool = False,
     ):
         super().__init__()
+        self.valid_parent_cond = None
+        self.train_parent_cond = None
+        self._valid_indices = None
+        self.valid_meta = None
+        self.train_meta = None
         self.cfg = cfg
         self.encoder = encoder
         self.device = device
@@ -842,46 +1086,62 @@ class PairsDataModule(pl.LightningDataModule):
         self.valid_loader = None
 
     def setup(self, stage=None):
-        log("Loading pair datasets …")
         self.train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
         self.valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
-        log(f"Pairs loaded. train_pairs={len(self.train_full)} valid_pairs={len(self.valid_full)}")
 
-        # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
-        self._valid_indices = None
-        if self.cfg.stratify:
-            self._valid_indices = exact_representative_validation_indices(
-                ds=self.valid_full,
-                target_total=2_000_000 if not self.is_dev else 500,
-                exclude_neg_types=self.cfg.exclude_negs,
-                by_neg_type=True,
-                seed=self.cfg.seed,
-            )
+        cache_root = Path(self.cfg.project_dir or ".") / "_pair_meta_cache"
+        train_dir = cache_root / "train"
+        valid_dir = cache_root / "valid"
 
+        # Fast path: load; Slow path (first run): export once then load
+        if not (train_dir / "parent.npy").exists():
+            self.train_full.export_meta_arrays(train_dir)
+        if not (valid_dir / "parent.npy").exists():
+            self.valid_full.export_meta_arrays(valid_dir)
+
+        self.train_meta = build_or_load_meta_cache(self.train_full, train_dir)
+        self.valid_meta = build_or_load_meta_cache(self.valid_full, valid_dir)
+
+        # ---- build parent cond cache once per split (OPTIONAL but recommended) ----
+        self.train_parent_cond = ensure_parent_cond_cache(
+            base_ds=self.train_full.base, encoder=self.encoder, device=self.device, out_dir=train_dir
+        )
+        self.valid_parent_cond = ensure_parent_cond_cache(
+            base_ds=self.valid_full.base, encoder=self.encoder, device=self.device, out_dir=valid_dir
+        )
+
+        # (Optional) reduce validation size to something sane
+        self._valid_indices = exact_representative_validation_indices(
+            ds=self.valid_full,
+            target_total=getattr(self.cfg, "val_target_total", 50_000) if not self.is_dev else 500,
+            exclude_neg_types=self.cfg.exclude_negs,
+            by_neg_type=True,
+            seed=self.cfg.seed,
+        )
 
     def train_dataloader(self):
-        train_base = self.train_full
-        if self.cfg.stratify:
-            sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
-            train_indices = stratified_per_parent_indices_with_caps(
-                ds=self.train_full,
-                pos_per_parent=self.cfg.p_per_parent,
-                neg_per_parent=self.cfg.n_per_parent,
-                exclude_neg_types=set(self.cfg.exclude_negs),
-                seed=sampling_seed,
-            )
-            train_base = torch.utils.data.Subset(self.train_full, train_indices)
-
+        # Re-sample each epoch (Lightning will call this each time because you set reload_dataloaders_every_n_epochs=1)
+        sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
+        train_indices = stratified_per_parent_indices_with_caps_cached(
+            self.train_meta,
+            pos_per_parent=self.cfg.p_per_parent,
+            neg_per_parent=self.cfg.n_per_parent,
+            exclude_neg_types=set(self.cfg.exclude_negs),
+            seed=sampling_seed,
+        )
+        train_base = torch.utils.data.Subset(self.train_full, train_indices.tolist())
 
         train_ds = PairsGraphsEncodedDataset(
             train_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
         )
-        return DataLoader(  # this is torch_geometric.loader.DataLoader
+        return DataLoader(
             train_ds,
             batch_size=self.cfg.batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=self.cfg.num_workers,          # now safe to increase
             pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
+            persistent_workers=(self.cfg.num_workers > 0),
+            prefetch_factor=getattr(self.cfg, "prefetch_factor", 2) if self.cfg.num_workers > 0 else None,
         )
 
     def val_dataloader(self):
@@ -897,29 +1157,16 @@ class PairsDataModule(pl.LightningDataModule):
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=max(0, self.cfg.num_workers // 2),
             pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
+            persistent_workers=(self.cfg.num_workers > 0),
+            prefetch_factor=getattr(self.cfg, "prefetch_factor", 2) if self.cfg.num_workers > 0 else None,
         )
 
 
 # ---------------------------------------------------------------------
 # Eval
 # ---------------------------------------------------------------------
-
-
-def _sanitize_for_parquet(d: dict) -> dict:
-    """Make dict Arrow-friendly (Path/Enum/etc → str, tensors → int/float)."""
-    out = {}
-    for k, v in d.items():
-        if isinstance(v, Path):
-            out[k] = str(v)
-        elif isinstance(v, VSAModel):
-            out[k] = v.value
-        elif torch.is_tensor(v):
-            out[k] = v.item() if v.numel() == 1 else v.detach().cpu().tolist()
-        else:
-            out[k] = v
-    return out
 
 
 @torch.no_grad()
@@ -1376,6 +1623,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         encoder=encoder, cfg=cfg, evals_dir=evals_dir, artefacts_dir=artefacts_dir, oracle_on_val_end=True
     )
 
+    enable_ampere_tensor_cores()
     # Training
     trainer = Trainer(
         max_epochs=cfg.epochs,
@@ -1507,7 +1755,7 @@ if __name__ == "__main__":
         return cfg
 
     log(f"Running {Path(__file__).resolve()}")
-    is_dev = os.getenv("LOCAL_HDC_", False)
+    is_dev = os.getenv("LOCAL_HDC", False)
 
     if is_dev:
         log("Running in local HDC (DEV) ...")

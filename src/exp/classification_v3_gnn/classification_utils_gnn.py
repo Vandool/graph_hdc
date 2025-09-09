@@ -27,192 +27,192 @@ with contextlib.suppress(RuntimeError):
 
 
 
-def stratified_per_parent_indices_with_caps(
-    ds,
-    *,
-    pos_per_parent: int,
-    neg_per_parent: int,
-    exclude_neg_types: set[int] = frozenset(),
-    seed: int = 42,
-    log_every_shards: int = 50,
-) -> list[int]:
-    """
-    Uniform random sampling per parent using per-parent reservoirs.
-
-    Returns global dataset indices suitable for torch.utils.data.Subset(ds, indices).
-
-    Notes
-    -----
-    - Works with ZincPairsV2 storage: iterates shards, reads only
-      y / neg_type / parent_idx columns from collated tensors.
-    - Deterministic w.r.t. `seed`, shard order, and ds content.
-    - If a parent has fewer than the requested quota, it returns whatever exists.
-    """
-    rng = random.Random(seed)
-
-    # --- per-type caps (5% each for type 4 and type 5) ---
-    cap_cross_parent_at = 0.05
-    cap_rewire_at = 0.05
-    cap_cross_parent = int(neg_per_parent * cap_cross_parent_at)
-    cap_rewire = int(neg_per_parent * cap_rewire_at)
-
-    print(f"Capping cross parent at {cap_cross_parent_at} and rewire at {cap_rewire_at}", flush=True)
-
-    # per-parent reservoirs and seen counters
-    pos_seen = defaultdict(int)
-    neg_seen = defaultdict(int)  # used for "other" negative types (not 4/5)
-    pos_res = defaultdict(list)  # parent_idx -> list[global_idx]
-    neg_res = defaultdict(list)  # "other" negatives (not 4/5)
-
-    # --- dedicated reservoirs & counters for Type4 and Type5 ---
-    neg4_seen = defaultdict(int)  # Type4 (rewire)
-    neg5_seen = defaultdict(int)  # Type5 (cross-parent)
-    neg4_res = defaultdict(list)
-    neg5_res = defaultdict(list)
-
-    def _reservoir_push(lst, seen_count, k, idx):
-        if k <= 0:
-            return  # respect zero-cap
-        if len(lst) < k:
-            lst.append(idx)
-        else:
-            j = rng.randrange(seen_count)  # 0..seen_count-1
-            if j < k:
-                lst[j] = idx
-
-    global_offset = 0
-    num_shards = len(ds._shards)
-
-    for shard_id in range(num_shards):
-        data, slices = ds._get_shard(shard_id)
-
-        # Number of samples in this shard = len(slices['y']) - 1
-        m = int(slices["y"].shape[0] - 1)
-
-        y_all = data.y
-        pid_all = data.parent_idx
-        nt_all = data.neg_type
-
-        sy = slices["y"]
-        spid = slices["parent_idx"]
-        snt = slices["neg_type"]
-
-        for li in range(m):
-            gidx = global_offset + li
-
-            # scalar reads (each is a 1-length slice)
-            y = int(y_all[sy[li] : sy[li + 1]].item())
-            pid = int(pid_all[spid[li] : spid[li + 1]].item())
-
-            if y == 1:
-                pos_seen[pid] += 1
-                _reservoir_push(pos_res[pid], pos_seen[pid], pos_per_parent, gidx)
-            else:
-                nt = int(nt_all[snt[li] : snt[li + 1]].item())
-                if nt in exclude_neg_types:
-                    continue
-
-                # --- route negatives by type; cap type 4/5 at 5% each ---
-                if nt == PairType.CROSS_PARENT:
-                    neg4_seen[pid] += 1
-                    _reservoir_push(neg4_res[pid], neg4_seen[pid], cap_cross_parent, gidx)
-                elif nt == PairType.REWIRE:
-                    neg5_seen[pid] += 1
-                    _reservoir_push(neg5_res[pid], neg5_seen[pid], cap_rewire, gidx)
-                else:
-                    # Keep a larger reservoir for "other" types; final trimming happens per-parent below.
-                    neg_seen[pid] += 1
-                    _reservoir_push(neg_res[pid], neg_seen[pid], neg_per_parent, gidx)
-
-        global_offset += m
-        if log_every_shards and (shard_id + 1) % log_every_shards == 0:
-            print(f"[sample] scanned shard {shard_id + 1}/{num_shards}", flush=True)
-
-    # --- build negatives per parent respecting caps first, then fill remainder from others ---
-    selected = []
-
-    # Positives
-    for lst in pos_res.values():
-        selected.extend(lst)
-
-    # Negatives: combine per parent
-    parent_ids = set(pos_res.keys()) | set(neg_res.keys()) | set(neg4_res.keys()) | set(neg5_res.keys())
-    for pid in parent_ids:
-        take = []
-
-        # Guaranteed: capped via their reservoirs
-        take.extend(neg4_res.get(pid, []))
-        take.extend(neg5_res.get(pid, []))
-
-        # Fill the remainder from "other" negatives up to neg_per_parent
-        rem = neg_per_parent - len(take)
-        if rem > 0:
-            others = neg_res.get(pid, [])
-            if others:
-                if len(others) > rem:
-                    # random but deterministic subset from the reservoir
-                    others = rng.sample(others, rem)
-                take.extend(others)
-
-        selected.extend(take)
-
-    # Keep deterministic order (no DataLoader shuffle)
-    selected.sort()
-
-    # --- Sanity check — print final distribution over the SELECTED indices ---
-    total = len(selected)
-    pos_cnt = 0
-    neg_cnt = 0
-    neg_hist = defaultdict(int)
-
-    global_offset = 0  # re-walk shards and only touch rows we actually selected
-    sel = selected  # alias
-    si = 0  # moving pointer into `sel` (since both are sorted)
-
-    for shard_id in range(num_shards):
-        data, slices = ds._get_shard(shard_id)
-        m = int(slices["y"].shape[0] - 1)
-
-        y_all = data.y
-        nt_all = data.neg_type
-        sy = slices["y"]
-        snt = slices["neg_type"]
-
-        # Range of global indices covered by this shard
-        lo = global_offset
-        hi = global_offset + m
-
-        # Slice [start:end) of `sel` that lies in this shard
-        start = bisect_left(sel, lo, lo=si)  # we can start from last si to be linear
-        end = bisect_left(sel, hi, lo=start)
-        for gidx in sel[start:end]:
-            li = gidx - global_offset
-            y = int(y_all[sy[li] : sy[li + 1]].item())
-            if y == 1:
-                pos_cnt += 1
-            else:
-                neg_cnt += 1
-                nt = int(nt_all[snt[li] : snt[li + 1]].item())
-                neg_hist[nt] += 1
-        si = end
-        global_offset = hi
-
-    if total > 0:
-        pos_pct = 100.0 * pos_cnt / total
-        neg_pct = 100.0 * neg_cnt / total
-        # stable order by neg_type
-        hist_items = sorted(neg_hist.items())
-        hist_str = ", ".join(f"{t}:{c} ({(0 if neg_cnt == 0 else 100.0 * c / neg_cnt):.1f}%)" for t, c in hist_items)
-        print("=== Sanity summary (selected subset) ===", flush=True)
-        print(
-            f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | negatives={neg_cnt} ({neg_pct:.1f}%)",
-            flush=True,
-        )
-        print(f"[SEL] neg_type histogram: {hist_str}", flush=True)
-    else:
-        print("=== Sanity summary: no samples selected ===", flush=True)
-
-    return selected
+# def stratified_per_parent_indices_with_caps(
+#     ds,
+#     *,
+#     pos_per_parent: int,
+#     neg_per_parent: int,
+#     exclude_neg_types: set[int] = frozenset(),
+#     seed: int = 42,
+#     log_every_shards: int = 50,
+# ) -> list[int]:
+#     """
+#     Uniform random sampling per parent using per-parent reservoirs.
+#
+#     Returns global dataset indices suitable for torch.utils.data.Subset(ds, indices).
+#
+#     Notes
+#     -----
+#     - Works with ZincPairsV2 storage: iterates shards, reads only
+#       y / neg_type / parent_idx columns from collated tensors.
+#     - Deterministic w.r.t. `seed`, shard order, and ds content.
+#     - If a parent has fewer than the requested quota, it returns whatever exists.
+#     """
+#     rng = random.Random(seed)
+#
+#     # --- per-type caps (5% each for type 4 and type 5) ---
+#     cap_cross_parent_at = 0.05
+#     cap_rewire_at = 0.05
+#     cap_cross_parent = int(neg_per_parent * cap_cross_parent_at)
+#     cap_rewire = int(neg_per_parent * cap_rewire_at)
+#
+#     print(f"Capping cross parent at {cap_cross_parent_at} and rewire at {cap_rewire_at}", flush=True)
+#
+#     # per-parent reservoirs and seen counters
+#     pos_seen = defaultdict(int)
+#     neg_seen = defaultdict(int)  # used for "other" negative types (not 4/5)
+#     pos_res = defaultdict(list)  # parent_idx -> list[global_idx]
+#     neg_res = defaultdict(list)  # "other" negatives (not 4/5)
+#
+#     # --- dedicated reservoirs & counters for Type4 and Type5 ---
+#     neg4_seen = defaultdict(int)  # Type4 (rewire)
+#     neg5_seen = defaultdict(int)  # Type5 (cross-parent)
+#     neg4_res = defaultdict(list)
+#     neg5_res = defaultdict(list)
+#
+#     def _reservoir_push(lst, seen_count, k, idx):
+#         if k <= 0:
+#             return  # respect zero-cap
+#         if len(lst) < k:
+#             lst.append(idx)
+#         else:
+#             j = rng.randrange(seen_count)  # 0..seen_count-1
+#             if j < k:
+#                 lst[j] = idx
+#
+#     global_offset = 0
+#     num_shards = len(ds._shards)
+#
+#     for shard_id in range(num_shards):
+#         data, slices = ds._get_shard(shard_id)
+#
+#         # Number of samples in this shard = len(slices['y']) - 1
+#         m = int(slices["y"].shape[0] - 1)
+#
+#         y_all = data.y
+#         pid_all = data.parent_idx
+#         nt_all = data.neg_type
+#
+#         sy = slices["y"]
+#         spid = slices["parent_idx"]
+#         snt = slices["neg_type"]
+#
+#         for li in range(m):
+#             gidx = global_offset + li
+#
+#             # scalar reads (each is a 1-length slice)
+#             y = int(y_all[sy[li] : sy[li + 1]].item())
+#             pid = int(pid_all[spid[li] : spid[li + 1]].item())
+#
+#             if y == 1:
+#                 pos_seen[pid] += 1
+#                 _reservoir_push(pos_res[pid], pos_seen[pid], pos_per_parent, gidx)
+#             else:
+#                 nt = int(nt_all[snt[li] : snt[li + 1]].item())
+#                 if nt in exclude_neg_types:
+#                     continue
+#
+#                 # --- route negatives by type; cap type 4/5 at 5% each ---
+#                 if nt == PairType.CROSS_PARENT:
+#                     neg4_seen[pid] += 1
+#                     _reservoir_push(neg4_res[pid], neg4_seen[pid], cap_cross_parent, gidx)
+#                 elif nt == PairType.REWIRE:
+#                     neg5_seen[pid] += 1
+#                     _reservoir_push(neg5_res[pid], neg5_seen[pid], cap_rewire, gidx)
+#                 else:
+#                     # Keep a larger reservoir for "other" types; final trimming happens per-parent below.
+#                     neg_seen[pid] += 1
+#                     _reservoir_push(neg_res[pid], neg_seen[pid], neg_per_parent, gidx)
+#
+#         global_offset += m
+#         if log_every_shards and (shard_id + 1) % log_every_shards == 0:
+#             print(f"[sample] scanned shard {shard_id + 1}/{num_shards}", flush=True)
+#
+#     # --- build negatives per parent respecting caps first, then fill remainder from others ---
+#     selected = []
+#
+#     # Positives
+#     for lst in pos_res.values():
+#         selected.extend(lst)
+#
+#     # Negatives: combine per parent
+#     parent_ids = set(pos_res.keys()) | set(neg_res.keys()) | set(neg4_res.keys()) | set(neg5_res.keys())
+#     for pid in parent_ids:
+#         take = []
+#
+#         # Guaranteed: capped via their reservoirs
+#         take.extend(neg4_res.get(pid, []))
+#         take.extend(neg5_res.get(pid, []))
+#
+#         # Fill the remainder from "other" negatives up to neg_per_parent
+#         rem = neg_per_parent - len(take)
+#         if rem > 0:
+#             others = neg_res.get(pid, [])
+#             if others:
+#                 if len(others) > rem:
+#                     # random but deterministic subset from the reservoir
+#                     others = rng.sample(others, rem)
+#                 take.extend(others)
+#
+#         selected.extend(take)
+#
+#     # Keep deterministic order (no DataLoader shuffle)
+#     selected.sort()
+#
+#     # --- Sanity check — print final distribution over the SELECTED indices ---
+#     total = len(selected)
+#     pos_cnt = 0
+#     neg_cnt = 0
+#     neg_hist = defaultdict(int)
+#
+#     global_offset = 0  # re-walk shards and only touch rows we actually selected
+#     sel = selected  # alias
+#     si = 0  # moving pointer into `sel` (since both are sorted)
+#
+#     for shard_id in range(num_shards):
+#         data, slices = ds._get_shard(shard_id)
+#         m = int(slices["y"].shape[0] - 1)
+#
+#         y_all = data.y
+#         nt_all = data.neg_type
+#         sy = slices["y"]
+#         snt = slices["neg_type"]
+#
+#         # Range of global indices covered by this shard
+#         lo = global_offset
+#         hi = global_offset + m
+#
+#         # Slice [start:end) of `sel` that lies in this shard
+#         start = bisect_left(sel, lo, lo=si)  # we can start from last si to be linear
+#         end = bisect_left(sel, hi, lo=start)
+#         for gidx in sel[start:end]:
+#             li = gidx - global_offset
+#             y = int(y_all[sy[li] : sy[li + 1]].item())
+#             if y == 1:
+#                 pos_cnt += 1
+#             else:
+#                 neg_cnt += 1
+#                 nt = int(nt_all[snt[li] : snt[li + 1]].item())
+#                 neg_hist[nt] += 1
+#         si = end
+#         global_offset = hi
+#
+#     if total > 0:
+#         pos_pct = 100.0 * pos_cnt / total
+#         neg_pct = 100.0 * neg_cnt / total
+#         # stable order by neg_type
+#         hist_items = sorted(neg_hist.items())
+#         hist_str = ", ".join(f"{t}:{c} ({(0 if neg_cnt == 0 else 100.0 * c / neg_cnt):.1f}%)" for t, c in hist_items)
+#         print("=== Sanity summary (selected subset) ===", flush=True)
+#         print(
+#             f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | negatives={neg_cnt} ({neg_pct:.1f}%)",
+#             flush=True,
+#         )
+#         print(f"[SEL] neg_type histogram: {hist_str}", flush=True)
+#     else:
+#         print("=== Sanity summary: no samples selected ===", flush=True)
+#
+#     return selected
 
 
 def exact_representative_validation_indices(

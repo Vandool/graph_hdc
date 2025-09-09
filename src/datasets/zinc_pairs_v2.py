@@ -15,9 +15,10 @@ Positive Sampling:
 import collections
 import random
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
+import numpy as np
 import networkx as nx
 import torch
 from torch import Tensor
@@ -386,9 +387,13 @@ class PairType(IntEnum):
     REWIRE = 5
     ANCHOR_AWARE = 6
 
-
-# Optional: convenient reverse lookup for logging/summaries.
 NEG_TYPE_NAME = {t.value: t.name for t in PairType}
+
+@dataclass
+class PairMeta:
+    parent_idx: int
+    y: int           # 0/1
+    neg_type: int    # 1..6 (0 for positive)
 
 class ZincPairsV2(Dataset):
     """
@@ -396,8 +401,6 @@ class ZincPairsV2(Dataset):
     === Aggregated summary (train+valid+test) ===
     [ALL] size=45749267 | positives=8266188 (18.1%) | negatives=37483079 (81.9%)
     [ALL] neg_type histogram: 1:3398852 (9.1%), 2:7131081 (19.0%), 3:8266188 (22.1%), 4:4009247 (10.7%), 5:7019712 (18.7%), 6:7657999 (20.4%)
-
-    In training the type 4 and Type 5 should be kept each around 3-5 %
 
     ZincPairsV2Dev dataset:
     === Aggregated summary (train+valid+test) ===
@@ -445,6 +448,103 @@ class ZincPairsV2(Dataset):
 
         # LRU cache for shard tensors
         self._cache = collections.OrderedDict()
+
+    def meta(self, i: int) -> PairMeta:
+        """Cheap per-item metadata (no graph building)."""
+        shard_id, local_idx = self._index[i]
+        data, slices = self._get_shard(shard_id)
+
+        # Each of these is saved by your process() with shape [1] per sample
+        y_start = int(slices["y"][local_idx].item())
+        y = int(data["y"][y_start].item())
+
+        if "neg_type" in data:
+            nt_start = int(slices["neg_type"][local_idx].item())
+            neg_type = int(data["neg_type"][nt_start].item())
+        else:
+            neg_type = 0
+
+        if "parent_idx" in data:
+            p_start = int(slices["parent_idx"][local_idx].item())
+            parent_idx = int(data["parent_idx"][p_start].item())
+        else:
+            parent_idx = -1
+
+        return PairMeta(parent_idx=parent_idx, y=y, neg_type=neg_type)
+
+    def export_meta_arrays(self, out_dir: Path) -> dict[str, Path]:
+        """Extract y, neg_type, parent_idx for all items in *dataset order*."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        y_all, nt_all, p_all = [], [], []
+        for shard_id, fname in enumerate(self._shards):
+            data, slices = torch.load(Path(self.processed_dir) / fname, map_location="cpu", weights_only=False)
+            # Fast path for scalar-per-item fields: take slice starts
+            y_sh = data["y"][slices["y"][:-1]].view(-1).to(torch.int32).cpu().numpy()
+            nt_sh = data["neg_type"][slices["neg_type"][:-1]].view(-1).to(torch.int32).cpu().numpy() \
+                if "neg_type" in data else np.zeros(len(y_sh), dtype=np.int32)
+            p_sh = data["parent_idx"][slices["parent_idx"][:-1]].view(-1).to(torch.int32).cpu().numpy() \
+                if "parent_idx" in data else -np.ones(len(y_sh), dtype=np.int32)
+
+            y_all.append(y_sh.astype(np.uint8))
+            nt_all.append(nt_sh.astype(np.uint8))
+            p_all.append(p_sh.astype(np.int32))
+
+        y = np.concatenate(y_all, axis=0)
+        neg_type = np.concatenate(nt_all, axis=0)
+        parent = np.concatenate(p_all, axis=0)
+        idx = np.arange(y.shape[0], dtype=np.int32)
+
+        np.save(out_dir / "idx.npy", idx)
+        np.save(out_dir / "y.npy", y)
+        np.save(out_dir / "neg_type.npy", neg_type)
+        np.save(out_dir / "parent.npy", parent)
+
+        return {"idx": out_dir / "idx.npy", "y": out_dir / "y.npy",
+                "neg_type": out_dir / "neg_type.npy", "parent": out_dir / "parent.npy"}
+
+    def build_parent_index(self, meta_dir: Path) -> dict[str, Path]:
+        """
+        Build a CSR-like parent index:
+          - order_by_parent.npy : int32[N], dataset indices grouped by parent
+          - row_ptr.npy         : int64[P+1], offsets so that rows for parent p are
+                                  order_by_parent[row_ptr[p]:row_ptr[p+1]]
+        Saved next to exported meta arrays. Returns the paths.
+        """
+        import numpy as np
+
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        parent_path = meta_dir / "parent.npy"
+        idx_path = meta_dir / "idx.npy"
+        order_path = meta_dir / "order_by_parent.npy"
+        rowptr_path = meta_dir / "row_ptr.npy"
+
+        if order_path.exists() and rowptr_path.exists():
+            return {"order_by_parent": order_path, "row_ptr": rowptr_path}
+
+        parent = np.load(parent_path)           # int32, length N
+        N = int(parent.shape[0])
+        # Assumption: parent ids are 0..(P-1). If not, map them:
+        pmin, pmax = int(parent.min()), int(parent.max())
+        if pmin != 0:
+            # remap to 0..K-1 to make row_ptr dense
+            uniq, inv = np.unique(parent, return_inverse=True)
+            parent = inv.astype(np.int32)
+            P = int(uniq.shape[0])
+        else:
+            P = pmax + 1
+
+        # argsort is simple and fast in C; yields groups by parent
+        order = np.argsort(parent, kind="stable").astype(np.int32)  # int32[N]
+
+        # counts -> row_ptr
+        counts = np.bincount(parent, minlength=P).astype(np.int64)  # int64[P]
+        row_ptr = np.zeros(P + 1, dtype=np.int64)
+        row_ptr[1:] = np.cumsum(counts, dtype=np.int64)
+
+        # Persist
+        np.save(order_path, order)
+        np.save(rowptr_path, row_ptr)
+        return {"order_by_parent": order_path, "row_ptr": rowptr_path}
 
     @property
     def raw_file_names(self):
