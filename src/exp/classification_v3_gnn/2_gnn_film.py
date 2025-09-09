@@ -108,7 +108,7 @@ class Config:
     weight_decay: float = 0.0
 
     # Loader
-    num_workers: int = 0
+    num_workers: int = 4
     prefetch_factor: int = 1
     pin_memory: bool = False
 
@@ -117,7 +117,6 @@ class Config:
     resume_retrain_last_epoch: bool = False
 
     # Stratification
-    stratify: bool = True
     p_per_parent: int = 20
     n_per_parent: int = 20
     exclude_negs: list[int] = field(default_factory=list)
@@ -583,7 +582,7 @@ class ConditionalGIN(pl.LightningModule):
         self.cfg = cfg or Config()
         num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
         den = float(self.cfg.p_per_parent) if self.cfg.p_per_parent else 1.0
-        ratio = (num / max(1.0, den)) if self.cfg.stratify else (37483079 / 8266188)
+        ratio = (num / max(1.0, den))
         self.register_buffer("pos_weight", torch.tensor([ratio], dtype=torch.float32))
 
         self.input_dim = input_dim
@@ -849,28 +848,30 @@ class PairsDataModule(pl.LightningDataModule):
 
         # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
         self._valid_indices = None
-        if self.cfg.stratify:
-            self._valid_indices = exact_representative_validation_indices(
-                ds=self.valid_full,
-                target_total=2_000_000 if not self.is_dev else 500,
-                exclude_neg_types=self.cfg.exclude_negs,
-                by_neg_type=True,
-                seed=self.cfg.seed,
-            )
+
+        self._valid_indices = exact_representative_validation_indices(
+            ds=self.valid_full,
+            target_total=2_000_000 if not self.is_dev else 500,
+            exclude_neg_types=self.cfg.exclude_negs,
+            by_neg_type=True,
+            seed=self.cfg.seed,
+        )
+        log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
 
     def train_dataloader(self):
         train_base = self.train_full
-        if self.cfg.stratify:
-            sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
-            train_indices = stratified_per_parent_indices_with_caps(
-                ds=self.train_full,
-                pos_per_parent=self.cfg.p_per_parent,
-                neg_per_parent=self.cfg.n_per_parent,
-                exclude_neg_types=set(self.cfg.exclude_negs),
-                seed=sampling_seed,
-            )
-            train_base = torch.utils.data.Subset(self.train_full, train_indices)
+
+        sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
+        train_indices = stratified_per_parent_indices_with_caps(
+            ds=self.train_full,
+            pos_per_parent=self.cfg.p_per_parent,
+            neg_per_parent=self.cfg.n_per_parent,
+            exclude_neg_types=set(self.cfg.exclude_negs),
+            seed=sampling_seed,
+        )
+        train_base = torch.utils.data.Subset(self.train_full, train_indices)
+        log(f"Loaded {len(train_base)} training pairs for training")
 
 
         train_ds = PairsGraphsEncodedDataset(
@@ -1486,7 +1487,6 @@ if __name__ == "__main__":
         p.add_argument("--resume_retrain_last_epoch", type=str2bool, default=argparse.SUPPRESS)
 
         # Stratification
-        p.add_argument("--stratify", type=str2bool, default=argparse.SUPPRESS)
         p.add_argument("--p_per_parent", type=int, default=argparse.SUPPRESS)
         p.add_argument("--n_per_parent", type=int, default=argparse.SUPPRESS)
         p.add_argument(
@@ -1507,7 +1507,7 @@ if __name__ == "__main__":
         return cfg
 
     log(f"Running {Path(__file__).resolve()}")
-    is_dev = os.getenv("LOCAL_HDC_", False)
+    is_dev = os.getenv("LOCAL_HDC", False)
 
     if is_dev:
         log("Running in local HDC (DEV) ...")
@@ -1525,7 +1525,6 @@ if __name__ == "__main__":
             pin_memory=False,
             continue_from=None,
             resume_retrain_last_epoch=False,
-            stratify=True,
             p_per_parent=2,
             n_per_parent=2,
             oracle_beam_size=8,
