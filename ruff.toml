@@ -32,13 +32,15 @@ lint.ignore = [
     "TRY003", # Message in the raise statements
     "UP007", # prefer X|Y types
     "W291", # trailing whitespace
+    "T201", # Remove Prints
+    "BLE001" # Do not catch blind exception: `Exception`
 ]
 
 lint.extend-ignore = [
     # Research‐friendly
-    "F401", # unused imports
     "F841", # unused variables
     "C901", # complexity
+    "N803", # Name however you want!
 
     # Other plugin ignores
     "TCH", # flake8‐type‐checkin
@@ -58,7 +60,7 @@ lint.exclude = [
     ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox",
     ".venv", ".vscode", "__pypackages__", "_build", "build", "dist",
     "node_modules", "site-packages", "venv", "docs", "sandbox",
-    "notebooks", "scripts", "data", "src/tests", "datasets", "*.toml"
+    "scripts", "data", "src/tests", "datasets", "*.toml"
 ]
 
 # ------------------------
@@ -69,10 +71,9 @@ quote-style = "double"
 indent-style = "space"
 docstring-code-format = true
 
-# ------------------------
-# Per-file overrides
-# ------------------------≤
-[lint.per-file-ignores]
-"__init__.py" = ["F401"]
-"tests/*.py" = ["F401", "F841"]
-"**/*.ipynb" = ["F401", "F841"]
+## ------------------------
+## Per-file overrides
+## ------------------------≤
+#[lint.per-file-ignores]
+#"__init__.py" = ["F401"]
+#"**/*.ipynb" = ["F401", "F841"]

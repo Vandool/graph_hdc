@@ -1,14 +1,110 @@
+import itertools
 from collections import Counter
 from collections.abc import Sequence
-from typing import Optional
+from itertools import chain, combinations
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 import torch
+from networkx.algorithms.isomorphism import (
+    GraphMatcher,
+    categorical_edge_match,
+    categorical_node_match,
+)
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+)
 
 from src.encoding.oracles import Oracle
 from src.encoding.the_types import Feat
-from src.utils import visualisations
+from src.utils.visualisations import draw_nx_with_atom_colorings
+
+
+def is_induced_subgraph_by_features(
+    g1: nx.Graph,
+    g2: nx.Graph,
+    *,
+    node_keys: list[str] | None = None,
+    edge_keys: Sequence[str] = (),
+    require_connected: bool = True,
+) -> bool:
+    """
+    Return True iff G1 is isomorphic to a node-induced subgraph of G2 while
+    preserving specified node (and optional edge) attributes.
+
+    Parameters
+    ----------
+    g1, g2 : nx.Graph
+        Pattern graph (g1) and target graph (g2).
+    node_keys : str | Sequence[str], optional
+        Node attribute key(s) that define a node's identity (labels).
+        Nodes are matched by equality of these attributes; node IDs are ignored.
+        Default: "feature".
+    edge_keys : Sequence[str], optional
+        Edge attribute key(s) that must also match categorically. Default: ().
+    require_connected : bool, optional
+        If True, fail fast when g1 is non-empty and not connected.
+
+    Returns
+    -------
+    bool
+        True if an induced subgraph isomorphism exists; False otherwise.
+
+    Notes
+    -----
+    - Uses NetworkX VF2 with semantic checks via `categorical_node_match`
+      and `categorical_edge_match`. Subgraph here means *node-induced*.
+    - Performs a quick multiset pre-check on node features to prune impossible cases.
+
+    """
+    if require_connected and g1.number_of_nodes() and not nx.is_connected(g1):
+        return False
+
+    if node_keys is None:
+        node_keys = ["feat"]
+
+    # Fast prune: g1's feature multiset must be a subset of g2's
+
+    def feat_tuple(G: nx.Graph, n) -> tuple:
+        data = G.nodes[n]
+        return tuple(data.get(k) for k in node_keys)
+
+    # Quick check: g1's feature multiset must be a subset of g2's
+    c1 = Counter(feat_tuple(g1, n) for n in g1.nodes)
+    c2 = Counter(feat_tuple(g2, n) for n in g2.nodes)
+    for k, need in c1.items():
+        if c2.get(k, 0) < need:
+            return False
+
+    # Perform the full graph isomorphism check
+    nm = categorical_node_match(
+        node_keys if len(node_keys) > 1 else node_keys[0], [None] * len(node_keys) if len(node_keys) > 1 else None
+    )
+
+    em = categorical_edge_match(list(edge_keys), [None] * len(edge_keys)) if edge_keys else None
+
+    GM = GraphMatcher(g2, g1, node_match=nm, edge_match=em)
+    return GM.subgraph_is_isomorphic()
+
+
+def perfect_oracle(gs: list[nx.Graph], full_g_nx: nx.Graph) -> list[bool]:
+    return [is_induced_subgraph_by_features(g1=g, g2=full_g_nx, node_keys=["feat"]) for g in gs]
+
+
+def show_confusion_matrix(ys: list[bool], ps: list[bool]) -> None:
+    disp = ConfusionMatrixDisplay.from_predictions(
+        ys,
+        ps,
+        labels=[False, True],
+        normalize="true",  # row-normalize => 0..1
+        cmap="Blues",
+        values_format=".0%",  # show percents
+    )
+    disp.im_.set_clim(0, 1)  # fix color scale (no auto-rescale)
+    plt.tight_layout()
+    plt.show()
 
 
 def feature_counter_from_graph(G: nx.Graph) -> Counter[tuple[int, int, int, int]]:
@@ -138,7 +234,7 @@ def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: int | None = None) -> i
     return node_id
 
 
-def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int]) -> int | None:
+def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int], total_nodes: int) -> int | None:
     """
     Add a node and try to connect it to a set of anchors (greedy, respects residuals).
 
@@ -148,6 +244,18 @@ def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int]) -> 
     :returns: New node id, or ``None`` if no valid placement (edge constraints violated).
     """
     nid = add_node_with_feat(G, feat)
+    return connect_all_if_possible(G, nid, connect_to, total_nodes)
+
+
+def connect_all_if_possible(G: nx.Graph, nid: int, connect_to: Sequence[int], total_nodes: int) -> int | None:
+    """
+    Add a node and try to connect it to a set of anchors (greedy, respects residuals).
+
+    :param G: Graph (modified in place).
+    :param feat: Features of the new node.
+    :param connect_to: Candidate anchor nodes to attempt connections.
+    :returns: New node id, or ``None`` if no valid placement (edge constraints violated).
+    """
     ok = True
     for a in connect_to:
         if residual_degree(G, nid) <= 0:
@@ -157,39 +265,47 @@ def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int]) -> 
         if not add_edge_if_possible(G, nid, a, strict=True):
             ok = False
             break
-    if not ok:
+    # Don't finish the graph if we still have leftover nodes
+    if not ok or (len(anchors(G)) <= 0 and G.number_of_nodes() != total_nodes):
         G.remove_node(nid)
         return None
     return nid
 
 
+def powerset(iterable):
+    """
+    Return the power set of the input iterable.
+
+    Example
+    -------
+    >>> list(powerset([1, 2, 3]))
+    [(), (1,), (2,), (3,), (1, 2), (1, 3), (2, 3), (1, 2, 3)]
+    """
+    s = list(iterable)
+    return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
+
+
 def greedy_oracle_decoder(
     node_multiset: Counter,
-    full_g_h: torch.Tensor,  # [D] final graph hyper vector
-    oracle: Oracle,
+    full_g_h: torch.Tensor | None = None,  # [D] final graph hyper vector
+    oracle: Oracle | None = None,
     *,
     beam_size: int = 32,
+    expand_on_n_anchors: int | None = None,
     draw: bool = False,
     oracle_threshold: float = 0.5,
     strict: bool = True,
+    full_g_nx: nx.Graph = None,
+    report_cnf_matrix: bool = False,
+    use_perfect_oracle: bool = False,
+    use_pair_feasibility: bool = False,
 ) -> list[nx.Graph]:
-    """Greedy/beam search decoder outline using an oracle.
-
-    :param full_g_h: final graph hypervector
-    :param oracle_threshold: threshold to mark a prob positive
-    :param draw: if draw the sub graphs
-    :param node_multiset: Multiset of target node features (final graph nodes).
-    :param oracle: Callable that scores/filters a candidate. Prefer passing a closure
-                   that captures the truth graph, so it can be called as `oracle(G)`.
-                   If your oracle has signature `(G, truth)`, this function will try
-                   `oracle(G, full_graph_nx)` where `full_graph_nx` must exist globally.
-    :param beam_size: Max population size to keep each iteration.
-    :return: list of candidate graphs (ideally size 1 at the end).
-    """
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
     print(f"Decoding a graph with {total_nodes} nodes and {total_edges} edges.")
+    ys = []
+    ps = []
 
     # -- local helpers --
     def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
@@ -200,7 +316,7 @@ def greedy_oracle_decoder(
             H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
         return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
 
-    def _dedup_key(G: nx.Graph) -> tuple[str, int, int]:
+    def _hash(G: nx.Graph) -> tuple[str, int, int]:
         return _wl_hash(G), G.number_of_nodes(), G.number_of_edges()
 
     def _order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
@@ -210,9 +326,11 @@ def greedy_oracle_decoder(
         return uniq
 
     def _call_oracle(Gs: list[nx.Graph]) -> list[bool]:
+        if use_perfect_oracle:
+            return perfect_oracle(gs=Gs, full_g_nx=full_g_nx)
         probs = oracle.is_induced_graph(small_gs=Gs, final_h=full_g_h)
-        # print(probs)
-        return (probs > oracle_threshold).tolist()
+        mask = probs.reshape(-1).gt(oracle_threshold)
+        return mask.detach().cpu().tolist()
 
     def _is_valid_final_graph(G: nx.Graph) -> bool:
         node_condition = G.number_of_nodes() == total_nodes
@@ -223,46 +341,6 @@ def greedy_oracle_decoder(
 
     def _apply_strict_filter(population: list[nx.Graph]) -> list[nx.Graph]:
         return [g for g in population if _is_valid_final_graph(g)]
-
-    def _greedy_finish_edges(G: nx.Graph) -> nx.Graph:
-        """Greedily add edges between anchors (positive residual) until total_edges or no progress.
-        Keeps oracle in the loop to avoid invalid induced subgraphs.
-        """
-        H = G.copy()
-        while H.number_of_edges() < total_edges:
-            progress = False
-            ancrs = anchors(H)
-            if not ancrs:
-                break
-            # Try pairs deterministically: by node id order
-            for i in range(len(ancrs)):
-                a = ancrs[i]
-                for j in range(i + 1, len(ancrs)):
-                    b = ancrs[j]
-                    if H.has_edge(a, b):
-                        continue
-                    # quick prune via 2-node feasibility if known
-                    ta = H.nodes[a]["feat"].to_tuple()
-                    tb = H.nodes[b]["feat"].to_tuple()
-                    kk = tuple(sorted((ta, tb)))
-                    if kk in pair_ok and pair_ok[kk] is False:
-                        continue
-                    H2 = H.copy()
-                    if not add_edge_if_possible(H2, a, b, strict=True):
-                        continue
-                    if H2.number_of_edges() > total_edges:
-                        continue
-                    # validate with oracle
-                    if _call_oracle([H2])[0]:
-                        H = H2
-                        progress = True
-                        break
-                if progress:
-                    break
-            if not progress:
-                break
-        return H
-
 
     # Cache: from a 2-node test we can learn if an edge between two feature types is plausible.
     # Key is an ordered pair of feature tuples (t_small, t_big) with t_small <= t_big.
@@ -277,17 +355,33 @@ def greedy_oracle_decoder(
 
     feat_types = _order_leftovers_by_degree_distinct(full_ctr)
 
+    # Trivial case 1
+    if total_nodes == 1 and len(feat_types) == 1:
+        G = nx.Graph()
+        add_node_with_feat(G, Feat.from_tuple(feat_types[0]))
+        return [G]
+
+    # Trivial case 2
+    if total_nodes == 2:
+        G = nx.Graph()
+        nodes = list(full_ctr.elements())
+        n1 = add_node_with_feat(G, Feat.from_tuple(nodes[0]))
+        n2 = add_node_with_feat(G, Feat.from_tuple(nodes[1]))
+        if add_edge_if_possible(G, n1, n2) and _is_valid_final_graph(G):
+            return [G]
+        return []
+
     # build all distinct ordered pairs (i <= j) where at least one has residual > 0 (deg_idx > 0)
     first_pairs: list[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]] = []
     for i in range(len(feat_types)):
         for j in range(i, len(feat_types)):
             u = feat_types[i]
             v = feat_types[j]
-            # skip impossible 0-0 pair (both final degree == 0)
+            # skip the impossible 0-0 pair (both final degrees == 0)
             if u[1] == 0 and v[1] == 0 and total_nodes > 2:
                 continue
             # require multiplicity when u == v
-            if u == v and full_ctr[u] < 2:
+            if u == v and full_ctr[u] < 2 < total_nodes:
                 continue
             first_pairs.append((u, v))
 
@@ -296,17 +390,11 @@ def greedy_oracle_decoder(
     for u_t, v_t in first_pairs:
         G = nx.Graph()
         uid = add_node_with_feat(G, Feat.from_tuple(u_t))
-        _ = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid])  # may attach or fail
-        # if attachment failed (shouldn't, unless deg==0 on v_t), ensure at least nodes exist
-        if G.number_of_nodes() < 2:
-            vid = add_node_with_feat(G, Feat.from_tuple(v_t))
-            # try to connect if feasible
-            add_edge_if_possible(G, uid, vid, strict=True)
-
-        key = _dedup_key(G)
-        if key in global_seen:
+        if add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=total_nodes) is None:
             continue
-        if len(first_pop) >= beam_size:
+
+        key = _hash(G)
+        if key in global_seen:
             continue
         global_seen.add(key)
         first_pop.append(G)
@@ -315,6 +403,21 @@ def greedy_oracle_decoder(
     # oracle filter for 2-node graphs; also learn pair feasibility
     healthy_pop: list[nx.Graph] = []
     oracle_results: list[bool] = _call_oracle(first_pop)
+    if full_g_nx is not None:
+        perfect_oracle_results: list[bool] = perfect_oracle(gs=first_pop, full_g_nx=full_g_nx)
+        assert len(oracle_results) == len(perfect_oracle_results) == len(first_pop)
+        if draw:
+            for g, (actual, pred) in zip(
+                first_pop, zip(perfect_oracle_results, oracle_results, strict=False), strict=False
+            ):
+                draw_nx_with_atom_colorings(g, label=f"actual: {actual}, pred: {pred}")
+                plt.show()
+        y_true = np.asarray(perfect_oracle_results, dtype=bool)
+        ys.extend(y_true.tolist())
+        y_pred = np.asarray(oracle_results, dtype=bool)
+        ps.extend(y_pred.tolist())
+        print(f"[population@iter0] Acc {(accuracy_score(y_true, y_pred)) * 100:.2f} at size {len(first_pop)}")
+
     for i, G in enumerate(first_pop):
         # learn pair feasibility from G (it has 1 or 0 edges)
         if G.number_of_nodes() == 2:
@@ -338,50 +441,11 @@ def greedy_oracle_decoder(
     population = healthy_pop
     # loop until we place all nodes; guard with max_iters to avoid infinite loops
     max_iters = total_nodes + 5
-    iters = 0
+    curr_nodes = 2
 
-    while iters < max_iters:
-        iters += 1
-        # print(f"Iteration: {iters} | max pop: {len(population)}")
-        if draw:
-            print("Drawings...")
-            for G in population:
-                _ = visualisations.draw_nx_with_atom_colorings(G)
-                plt.show()
-
-        # Check if any candidate already has all nodes placed
-        done = []
-        still_growing = []
-        for G in population:
-            left = leftover_features(full_ctr, G)
-            if not left:
-                done.append(G)
-            else:
-                still_growing.append(G)
-
-        # If we have any 'done' graphs, try to finish edges if needed (optional) and return them
-        if done:
-            # finals = []
-            # for g in done:
-            #     gg = g
-            #     if gg.number_of_edges() < total_edges:
-            #         gg = _greedy_finish_edges(gg)
-            #     if gg.number_of_edges() == total_edges:
-            #         finals.append(gg)
-
-            finals = [g for g in done if g.number_of_edges() <= total_edges]
-            # Prefer fully saturated (all residuals zero)
-            def _all_saturated(g: nx.Graph) -> bool:
-                return all((g.nodes[n]["target_degree"] - g.degree[n]) == 0 for n in g.nodes)
-
-            finals.sort(key=lambda g: (_all_saturated(g), g.number_of_edges()), reverse=True)
-            if strict:
-                return _apply_strict_filter(finals[:beam_size])
-            return finals[:beam_size]
-
-
+    while curr_nodes <= max_iters:
         # Expand each growing candidate by adding ONE new node connected to ONE anchor,
-        # then optionally one extra edge from the new node to another anchor.
+        # and attempting to connect the new node to all the anchors.
         children: list[nx.Graph] = []
         local_seen: set = set()  # per-iteration dedup to keep branching under control
 
@@ -397,46 +461,45 @@ def greedy_oracle_decoder(
                 # cannot expand this candidate
                 continue
 
-            # Enumerate attachments
-            for a in ancrs:
+            for a, lo_t in list(itertools.product(ancrs[:expand_on_n_anchors], leftover_types)):
                 a_t = G.nodes[a]["feat"].to_tuple()
-                for lo_t in leftover_types:
-                    # Early prune using 2-node oracle knowledge (if seen and false)
-                    k = tuple(sorted((a_t, lo_t)))
-                    if k in pair_ok and pair_ok[k] is False:
+                # Early prune using 2-node oracle knowledge (if seen and false)
+                k = tuple(sorted((a_t, lo_t)))
+                if use_pair_feasibility and k in pair_ok and pair_ok[k] is False:
+                    continue
+
+                # First child is adding the leftover to the graph and connecting it to the anchor
+                C = G.copy()
+                nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=total_nodes)
+                if nid is None or C.number_of_edges() > total_edges:
+                    continue
+
+                key = _hash(C)
+                if key not in global_seen and key not in local_seen:
+                    global_seen.add(key)
+                    local_seen.add(key)
+                    children.append(C)
+
+                # Try and find all the edges that the node has with the rest of the anchors (i.e. closing rings)
+                ancrs_rest = [a_ for a_ in ancrs if a_ != a]
+                for subset in powerset(ancrs_rest):
+                    if len(subset) == 0:
                         continue
 
-                    H = G.copy()
-                    nid = add_node_and_connect(H, Feat.from_tuple(lo_t), connect_to=[a])
-                    if nid is None:
+                    H = C.copy()
+                    nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=total_nodes)
+                    if nid is None or H.number_of_edges() > total_edges:
                         continue
 
-                    # Do not exceed target total edges
-                    if H.number_of_edges() > total_edges:
-                        continue
-
-                    key = _dedup_key(H)
+                    key = _hash(H)
                     if key not in global_seen and key not in local_seen:
                         global_seen.add(key)
                         local_seen.add(key)
                         children.append(H)
 
-                    # Optionally try adding ONE more edge from new node to another anchor
-                    # (keeps branching modest; you can widen this later if needed)
-                    H_anchors = anchors(H)
-                    for b in H_anchors:
-                        if b == nid:
-                            continue
-                        H2 = H.copy()
-                        if add_edge_if_possible(H2, b, nid, strict=True):
-                            if H2.number_of_edges() <= total_edges:
-                                key2 = _dedup_key(H2)
-                                if key2 not in global_seen and key2 not in local_seen:
-                                    global_seen.add(key2)
-                                    local_seen.add(key2)
-                                    children.append(H2)
-
         if not children:
+            if full_g_nx is not None and report_cnf_matrix:
+                show_confusion_matrix(ys=ys, ps=ps)
             # No more expansions possible
             if strict:
                 return _apply_strict_filter(population)
@@ -445,6 +508,22 @@ def greedy_oracle_decoder(
         # Oracle filter children
         accepted: list[nx.Graph] = []
         oracle_results: list[bool] = _call_oracle(children)
+        if full_g_nx is not None:
+            perfect_oracle_results: list[bool] = perfect_oracle(gs=children, full_g_nx=full_g_nx)
+            assert len(oracle_results) == len(perfect_oracle_results) == len(children)
+            if draw:
+                for g, (actual, pred) in zip(
+                    children, zip(perfect_oracle_results, oracle_results, strict=False), strict=False
+                ):
+                    draw_nx_with_atom_colorings(g, label=f"actual: {actual}, pred: {pred}")
+                    plt.show()
+            y_true = np.asarray(perfect_oracle_results, dtype=bool)
+            ys.extend(y_true.tolist())
+            y_pred = np.asarray(oracle_results, dtype=bool)
+            ps.extend(y_pred.tolist())
+            print(
+                f"[population@iter{curr_nodes}] Acc: {(accuracy_score(y_true, y_pred)) * 100:.2f}% at size {len(children)}"
+            )
         for i, H in enumerate(children):
             if oracle_results[i]:
                 accepted.append(H)
@@ -452,15 +531,20 @@ def greedy_oracle_decoder(
                     break
 
         if not accepted:
-            # Oracle rejected all; stop with current population
+            if full_g_nx is not None and report_cnf_matrix:
+                show_confusion_matrix(ys=ys, ps=ps)
+            # Oracle rejected all -> stop with the current population
             if strict:
                 return _apply_strict_filter(population)
             return population
 
         # Next generation
         population = accepted
+        curr_nodes += 1
 
     # Safeguard exit
+    if full_g_nx is not None and report_cnf_matrix:
+        show_confusion_matrix(ys=ys, ps=ps)
     if strict:
         return _apply_strict_filter(population)
     return population

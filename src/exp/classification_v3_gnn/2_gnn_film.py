@@ -47,7 +47,7 @@ from torchhd import HRRTensor
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG, Features
-from src.encoding.decoder import greedy_oracle_decoder
+from src.encoding.decoder import greedy_oracle_decoder, is_induced_subgraph_by_features
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.encoding.the_types import VSAModel
@@ -923,10 +923,10 @@ class PairsDataModule(pl.LightningDataModule):
             batch_size=self.cfg.batch_size,
             sampler=sampler,
             shuffle=False,
-            num_workers=12,
-            pin_memory=True,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
             persistent_workers=True,
-            prefetch_factor=6,
+            prefetch_factor=cfg.prefetch_factor,
         )
 
     def val_dataloader(self):
@@ -942,10 +942,10 @@ class PairsDataModule(pl.LightningDataModule):
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=12,
-            pin_memory=True,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
             persistent_workers=True,
-            prefetch_factor=6,
+            prefetch_factor=cfg.prefetch_factor,
         )
 
 
@@ -977,16 +977,6 @@ def evaluate_as_oracle(
 
     # Helpers
     # Real Oracle
-    def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
-        """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
-        if (
-            G_small.number_of_nodes() == G_big.number_of_nodes()
-            and G_small.number_of_edges() == G_big.number_of_edges()
-        ):
-            nm = lambda a, b: a["feat"] == b["feat"]
-            GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
-            return GM.subgraph_is_isomorphic()
-        return False
 
     model.eval()
     encoder.eval()
@@ -1023,8 +1013,7 @@ def evaluate_as_oracle(
             continue
         ps = []
         for j, g in enumerate(nx_GS):
-            is_final = is_final_graph(g, full_graph_nx)
-            # print("Is Induced subgraph: ", is_final)
+            is_final = is_induced_subgraph_by_features(g1=g, g2=full_graph_nx, node_keys=["feat"])
             ps.append(int(is_final))
         correct_p = int(sum(ps) >= 1)
         if correct_p:

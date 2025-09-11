@@ -345,7 +345,7 @@ def evaluate_as_oracle(
             full_g_h=graph_terms_hd[i],
             beam_size=oracle_beam_size,
             oracle_threshold=oracle_threshold,
-            strict=True
+            strict=True,
         )
         nx_GS = list(filter(None, nx_GS))
         if len(nx_GS) == 0:
@@ -955,7 +955,7 @@ if __name__ == "__main__":
             pin_memory=False,
             micro_bs=4,
             hv_scale=None,
-            save_every_seconds=48*60*60,
+            save_every_seconds=48 * 60 * 60,
             keep_last_k=1,
             continue_from=None,
             resume_retrain_last_epoch=False,

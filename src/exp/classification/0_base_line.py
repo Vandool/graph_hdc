@@ -22,10 +22,10 @@ from pprint import pprint
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
-import torch.nn as nn
 from pytorch_lightning import seed_everything
 from sklearn.metrics import average_precision_score, roc_auc_score
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch import nn
+from torch.utils.data import DataLoader, Dataset
 from torch_geometric.data import Batch, Data
 from tqdm.auto import tqdm
 
@@ -131,13 +131,10 @@ class PairsGraphsDataset(Dataset):
 
 
 def collate_pairs(batch):  # <<< CHANGED: collate returns PyG Batch (not lists)
-    g1_list, g2_list, k1k2, y, parent_idx = zip(*batch)
+    g1_list, g2_list, k1k2, y, parent_idx = zip(*batch, strict=False)
     g1_b = Batch.from_data_list(list(g1_list))
     g2_b = Batch.from_data_list(list(g2_list))
     return g1_b, g2_b, torch.stack(k1k2, 0), torch.stack(y, 0), torch.tensor(parent_idx, dtype=torch.long)
-
-
-from collections import OrderedDict
 
 
 class ParentH2Cache:
@@ -217,7 +214,7 @@ def encode_g2_with_cache(
         encoded = torch.cat(encoded, dim=0)  # [U, D]
 
         # fill cache
-        for pid, vec in zip(uniq_pids, encoded):
+        for pid, vec in zip(uniq_pids, encoded, strict=False):
             cache.set(pid, vec)
 
     # 3) assemble batch h2 by gathering from cache (then move to device)
@@ -338,11 +335,10 @@ def evaluate(model, encoder, loader, device, criterion, cfg, h2_cache):
         k1k2 = k1k2.to(device)
         y = y.to(device)
 
-
-        h1 = _encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs,
-                        hv_dim=cfg.hv_dim, hv_scale=cfg.hv_scale)
-        h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device,
-                                h2_cache, cfg.hv_dim, cfg.micro_bs, cfg.hv_scale)
+        h1 = _encode_batch(
+            encoder, g1_b, device=device, micro_bs=cfg.micro_bs, hv_dim=cfg.hv_dim, hv_scale=cfg.hv_scale
+        )
+        h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, h2_cache, cfg.hv_dim, cfg.micro_bs, cfg.hv_scale)
 
         logits = model(h1, h2, k1k2)
         loss = criterion(logits, y)

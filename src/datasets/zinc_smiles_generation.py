@@ -85,7 +85,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
     x = [
         [
             float(ZINC_SMILE_ATOM_TO_IDX[atom.GetSymbol()]),
-            float(atom.GetDegree() - 1),  # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
+            float(max(0, atom.GetDegree() - 1)),  # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
             float(atom.GetFormalCharge() if atom.GetFormalCharge() >= 0 else 2),  # [0, 1, -1] -> [0, 1, 2]
             float(atom.GetTotalNumHs()),
         ]
