@@ -439,7 +439,7 @@ class ZincPairsV2(Dataset):
         if force_reprocess or not self.idx_path.exists():
             self.process()
 
-        meta = torch.load(self.idx_path, map_location="cpu")
+        meta = torch.load(self.idx_path, map_location="cpu", weights_only=False)
         self._index = meta["index"]  # list[(shard_id, local_idx)]
         self._shards = meta["shards"]  # list[str] relative to processed_dir
 

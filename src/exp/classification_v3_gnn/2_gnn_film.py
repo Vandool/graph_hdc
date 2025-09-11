@@ -35,7 +35,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 from torch import nn
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import MessagePassing
@@ -47,7 +47,7 @@ from torchhd import HRRTensor
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG, Features
-from src.encoding.decoder import greedy_oracle_decoder
+from src.encoding.decoder import greedy_oracle_decoder, is_induced_subgraph_by_features
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.encoding.the_types import VSAModel
@@ -770,6 +770,37 @@ class ConditionalGIN(pl.LightningModule):
 # ---------------------------------------------------------------------
 # Dataset and loaders
 # ---------------------------------------------------------------------
+
+
+class EpochResamplingSampler(Sampler[int]):
+    def __init__(self, ds, *, p_per_parent, n_per_parent, exclude_neg_types, base_seed=42):
+        self.ds = ds
+        self.p = p_per_parent
+        self.n = n_per_parent
+        self.exclude = set(exclude_neg_types)
+        self.base_seed = base_seed
+        self._epoch = 0
+        self._last_len = 0
+
+    def __iter__(self):
+        seed = self.base_seed + self._epoch
+        idxs = stratified_per_parent_indices_with_caps(
+            ds=self.ds,
+            pos_per_parent=self.p,
+            neg_per_parent=self.n,
+            exclude_neg_types=self.exclude,
+            seed=seed,
+        )
+        log(f"[epoch {self._epoch}] Resampled {len(idxs)} graphs.")
+        self._last_len = len(idxs)
+        self._epoch += 1
+        return iter(idxs)
+
+    def __len__(self):
+        # just an estimate for progress bars; becomes exact after first epoch
+        return self._last_len if self._last_len else len(self.ds)
+
+
 class PairsGraphsEncodedDataset(Dataset):
     """
     Returns a single PyG Data per pair:
@@ -860,7 +891,7 @@ class PairsDataModule(pl.LightningDataModule):
         log("Loading pair datasets …")
         self.train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
         self.valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
-        log(f"Pairs loaded. train_pairs={len(self.train_full)} valid_pairs={len(self.valid_full)}")
+        log(f"Pairs loaded. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}")
 
         # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
         self._valid_indices = None
@@ -875,28 +906,27 @@ class PairsDataModule(pl.LightningDataModule):
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
     def train_dataloader(self):
-        train_base = self.train_full
-
-        sampling_seed = random.randint(self.cfg.seed + 1, 10_000_000)
-        train_indices = stratified_per_parent_indices_with_caps(
-            ds=self.train_full,
-            pos_per_parent=self.cfg.p_per_parent,
-            neg_per_parent=self.cfg.n_per_parent,
-            exclude_neg_types=set(self.cfg.exclude_negs),
-            seed=sampling_seed,
-        )
-        train_base = torch.utils.data.Subset(self.train_full, train_indices)
-        log(f"Loaded {len(train_base)} training pairs for training")
-
         train_ds = PairsGraphsEncodedDataset(
-            train_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+            self.train_full, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
         )
+
+        sampler = EpochResamplingSampler(
+            self.train_full,
+            p_per_parent=self.cfg.p_per_parent,
+            n_per_parent=self.cfg.n_per_parent,
+            exclude_neg_types=self.cfg.exclude_negs,
+            base_seed=self.cfg.seed + 13,
+        )
+
         return DataLoader(  # this is torch_geometric.loader.DataLoader
             train_ds,
             batch_size=self.cfg.batch_size,
-            shuffle=True,
-            num_workers=0,
-            pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
+            sampler=sampler,
+            shuffle=False,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
+            persistent_workers=True,
+            prefetch_factor=cfg.prefetch_factor,
         )
 
     def val_dataloader(self):
@@ -912,8 +942,10 @@ class PairsDataModule(pl.LightningDataModule):
             valid_ds,
             batch_size=self.cfg.batch_size,
             shuffle=False,
-            num_workers=0,
-            pin_memory=(torch.cuda.is_available() and self.cfg.pin_memory),
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
+            persistent_workers=True,
+            prefetch_factor=cfg.prefetch_factor,
         )
 
 
@@ -945,16 +977,6 @@ def evaluate_as_oracle(
 
     # Helpers
     # Real Oracle
-    def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
-        """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
-        if (
-            G_small.number_of_nodes() == G_big.number_of_nodes()
-            and G_small.number_of_edges() == G_big.number_of_edges()
-        ):
-            nm = lambda a, b: a["feat"] == b["feat"]
-            GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
-            return GM.subgraph_is_isomorphic()
-        return False
 
     model.eval()
     encoder.eval()
@@ -983,7 +1005,7 @@ def evaluate_as_oracle(
             full_g_h=graph_terms_hd[i],
             beam_size=oracle_beam_size,
             oracle_threshold=oracle_threshold,
-            strict=True,
+            strict=False,
         )
         nx_GS = list(filter(None, nx_GS))
         if len(nx_GS) == 0:
@@ -991,8 +1013,7 @@ def evaluate_as_oracle(
             continue
         ps = []
         for j, g in enumerate(nx_GS):
-            is_final = is_final_graph(g, full_graph_nx)
-            # print("Is Induced subgraph: ", is_final)
+            is_final = is_induced_subgraph_by_features(g1=g, g2=full_graph_nx, node_keys=["feat"])
             ps.append(int(is_final))
         correct_p = int(sum(ps) >= 1)
         if correct_p:
@@ -1345,8 +1366,9 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     encoder = hypernet.to(device).eval()
 
+    cpu_encoder = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=torch.device("cpu")).eval()
     # datamodule with per-epoch resampling
-    dm = PairsDataModule(cfg, encoder=encoder, device=device, is_dev=is_dev)
+    dm = PairsDataModule(cfg, encoder=cpu_encoder, device=torch.device("cpu"), is_dev=is_dev)
 
     # ----- model + optim -----
     model = ConditionalGIN(
@@ -1356,7 +1378,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         cond_units=cfg.cond_units,
         conv_units=cfg.conv_units,
         film_units=cfg.film_units,
-        pred_units=[128, 64, 1],
+        pred_units=cfg.pred_head_units,
         cfg=cfg,
     ).to(device)
 
@@ -1405,7 +1427,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
-        reload_dataloaders_every_n_epochs=1,
+        num_sanity_val_steps=2,
+        limit_val_batches=100,
     )
 
     # --- Train
@@ -1529,7 +1552,7 @@ if __name__ == "__main__":
             exp_dir_name="overfitting_batch_norm",
             seed=42,
             epochs=1,
-            batch_size=128,
+            batch_size=4,
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
             lr=1e-4,
