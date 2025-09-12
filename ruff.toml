@@ -60,7 +60,7 @@ lint.exclude = [
     ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox",
     ".venv", ".vscode", "__pypackages__", "_build", "build", "dist",
     "node_modules", "site-packages", "venv", "docs", "sandbox",
-    "scripts", "data", "src/tests", "datasets", "*.toml"
+    "scripts", "data", "datasets", "*.toml"
 ]
 
 # ------------------------
