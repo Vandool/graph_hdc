@@ -25,6 +25,7 @@ Notes
   [atom_type_idx, degree_minus_1, formal_charge_mapped, total_num_Hs]
 - QM9 atoms are a strict subset: {H, C, N, O, F}. Hydrogens are often implicit
   in RDKit graphs but are still counted via `GetTotalNumHs()`.
+  For the sake of comparability, we consider the Hs implicit analogue to Zinc dataset.
 
 """
 
@@ -65,13 +66,12 @@ def _count_smiles_lines(fp: Path) -> int:
     return total
 
 
-# QM9 atoms: H, C, N, O, F
+# QM9 atoms: C, N, O, F
 QM9_SMILE_ATOM_TO_IDX: dict[str, int] = {
-    "H": 0,
-    "C": 1,
-    "N": 2,
-    "O": 3,
-    "F": 4,
+    "C": 0,
+    "N": 1,
+    "O": 2,
+    "F": 3,
 }
 QM9_SMILE_IDX_TO_ATOM: dict[int, str] = {v: k for k, v in QM9_SMILE_ATOM_TO_IDX.items()}
 
@@ -118,6 +118,15 @@ class QM9Smiles(InMemoryDataset):
     """
     Minimal `InMemoryDataset` that reads ``<split>_smile.txt`` from *root/raw/*
     and caches a collated ``data_<split>.pt`` under *root/processed/*.
+
+    Atom types size: 4
+    Atom types: ['C', 'F', 'N', 'O']
+    Degrees size: 5
+    Degrees: {0, 1, 2, 3, 4}
+    Formal Charges size: 3
+    Formal Charges: {0, 1, -1}
+    Explicit Hs size: 5
+    Explicit Hs: {0, 1, 2, 3, 4}
 
     Parameters
     ----------

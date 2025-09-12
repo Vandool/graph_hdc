@@ -100,40 +100,42 @@ class Config:
     seed: int = 42
     epochs: int = 5
     batch_size: int = 256
-    is_dev: bool = False
 
     # Model (shared knobs)
-    cond_units: list[int] = field(default_factory=lambda: [256, 128])
-    cond_emb_dim: int = 128
-    film_units: list[int] = field(default_factory=lambda: [128])
-    conv_units: list[int] = field(default_factory=lambda: [64, 64, 64])
-    pred_head_units: list[int] = field(default_factory=lambda: [256, 64, 1])
+    hidden_dims: list[int] = field(default_factory=lambda: [2048, 1024, 512, 256, 128, 64, 32])
+    use_layer_norm: bool = True
+    use_batch_norm: bool = False
 
-    # Evals
+    # Oracle Evals
     oracle_num_evals: int = 1
     oracle_beam_size: int = 8
 
     # HDC / encoder
-    hv_dim: int = 88 * 88  # 7744
+    hv_dim: int = 40*40  # 7744
     vsa: VSAModel = VSAModel.HRR
 
     # Optim
-    lr: float = 1e-4
+    lr: float = 1e-3
     weight_decay: float = 0.0
 
     # Loader
-    num_workers: int = 4
+    num_workers: int = 0
     prefetch_factor: int = 1
     pin_memory: bool = False
+    micro_bs: int = 64
+    hv_scale: float | None = None
 
     # Checkpointing
+    save_every_seconds: int = 3600  # every 60 minutes
+    keep_last_k: int = 2  # rolling snapshots to keep
     continue_from: Path | None = None
     resume_retrain_last_epoch: bool = False
 
     # Stratification
+    stratify: bool = True
     p_per_parent: int = 20
     n_per_parent: int = 20
-    exclude_negs: list[int] = field(default_factory=list)
+    exclude_negs: set[int] = field(default_factory=list)
     resample_training_data_on_batch: bool = False
 
 
@@ -1574,258 +1576,3 @@ if __name__ == "__main__":
 
     pprint(asdict(cfg), indent=2)
     run_experiment(cfg, is_dev=is_dev or cfg.is_dev)
-
-"""
-This is the generation stats, which is alos valid in terms of percentage for the final results.
-=== TRAIN ===
-positives: 5701, negatives: 20420, total: 26121
-By k (counts): {2: 2666, 3: 3317, 4: 4039, 5: 4328, 6: 4322, 7: 3736, 8: 2715, 9: 998}
-
-Positives breakdown (within positives / of total):
-  POSITIVE_EDGE    count=    1407   %pos= 24.7%   %total=  5.4%
-  POSITIVE         count=    4294   %pos= 75.3%   %total= 16.4%
-
-Negatives breakdown (within negatives / of total):
-  FORBIDDEN_ADD    count=    3191   %neg= 15.6%   %total= 12.2%
-  WRONG_EDGE_ALLOWED count=    5314   %neg= 26.0%   %total= 20.3%
-  CROSS_PARENT     count=    1545   %neg=  7.6%   %total=  5.9%
-  MISSING_EDGE     count=    1875   %neg=  9.2%   %total=  7.2%
-  REWIRE           count=    2896   %neg= 14.2%   %total= 11.1%
-  ANCHOR_AWARE     count=    4340   %neg= 21.3%   %total= 16.6%
-  NEGATIVE_EDGE    count=    1259   %neg=  6.2%   %total=  4.8%
-
-This is how I sample in training:
-```py
-
-class EpochResamplingSampler(Sampler[int]):
-    def __init__(self, ds, *, p_per_parent, n_per_parent, exclude_neg_types, base_seed=42):
-        self.ds = ds
-        self.p = p_per_parent
-        self.n = n_per_parent
-        self.exclude = set(exclude_neg_types)
-        self.base_seed = base_seed
-        self._epoch = 0
-        self._last_len = 0
-
-    def __iter__(self):
-        seed = self.base_seed + self._epoch
-        idxs = stratified_per_parent_indices_with_caps(
-            ds=self.ds,
-            pos_per_parent=self.p,
-            neg_per_parent=self.n,
-            exclude_neg_types=self.exclude,
-            seed=seed,
-        )
-        log(f"[epoch {self._epoch}] Resampled {len(idxs)} graphs.")
-        self._last_len = len(idxs)
-        self._epoch += 1
-        return iter(idxs)
-
-    def __len__(self):
-        # just an estimate for progress bars; becomes exact after first epoch
-        return self._last_len if self._last_len else len(self.ds)
-
-
-def stratified_per_parent_indices_with_caps(
-    ds,
-    *,
-    pos_per_parent: int,
-    neg_per_parent: int,
-    exclude_neg_types: set[int] = frozenset(),
-    seed: int = 42,
-    log_every_shards: int = 50,
-) -> list[int]:
-
-Uniform random sampling per parent using per-parent reservoirs.
-
-Returns global dataset indices suitable for torch.utils.data.Subset(ds, indices).
-
-Notes
------
-- Works with ZincPairsV2 storage: iterates shards, reads only
-y / neg_type / parent_idx columns from collated tensors.
-- Deterministic w.r.t. `seed`, shard order, and ds content.
-- If a parent has fewer than the requested quota, it returns whatever exists.
-
-rng = random.Random(seed)
-
-# --- per-type caps (5% each for type 4 and type 5) ---
-cap_cross_parent_at = 0.05
-cap_rewire_at = 0.05
-cap_cross_parent = int(neg_per_parent * cap_cross_parent_at)
-cap_rewire = int(neg_per_parent * cap_rewire_at)
-
-print(f"Capping cross parent at {cap_cross_parent_at} and rewire at {cap_rewire_at}", flush=True)
-
-# per-parent reservoirs and seen counters
-pos_seen = defaultdict(int)
-neg_seen = defaultdict(int)  # used for "other" negative types (not 4/5)
-pos_res = defaultdict(list)  # parent_idx -> list[global_idx]
-neg_res = defaultdict(list)  # "other" negatives (not 4/5)
-
-# --- dedicated reservoirs & counters for Type4 and Type5 ---
-neg4_seen = defaultdict(int)  # Type3 (rewire)
-neg5_seen = defaultdict(int)  # Type5 (cross-parent)
-neg4_res = defaultdict(list)
-neg5_res = defaultdict(list)
-
-def _reservoir_push(lst, seen_count, k, idx):
-    if k <= 0:
-        return  # respect zero-cap
-    if len(lst) < k:
-        lst.append(idx)
-    else:
-        j = rng.randrange(seen_count)  # 0..seen_count-1
-        if j < k:
-            lst[j] = idx
-
-global_offset = 0
-num_shards = len(ds._shards)
-
-for shard_id in range(num_shards):
-    data, slices = ds._get_shard(shard_id)
-
-    # Number of samples in this shard = len(slices['y']) - 1
-    m = int(slices["y"].shape[0] - 1)
-
-    y_all = data.y
-    pid_all = data.parent_idx
-    nt_all = data.neg_type
-
-    sy = slices["y"]
-    spid = slices["parent_idx"]
-    snt = slices["neg_type"]
-
-    for li in range(m):
-        gidx = global_offset + li
-
-        # scalar reads (each is a 1-length slice)
-        y = int(y_all[sy[li] : sy[li + 1]].item())
-        pid = int(pid_all[spid[li] : spid[li + 1]].item())
-
-        if y == 1:
-            pos_seen[pid] += 1
-            _reservoir_push(pos_res[pid], pos_seen[pid], pos_per_parent, gidx)
-        else:
-            nt = int(nt_all[snt[li] : snt[li + 1]].item())
-            if nt in exclude_neg_types:
-                continue
-
-            # --- route negatives by type; cap type 3/5 at 5% each ---
-            if nt == PairType.CROSS_PARENT:
-                neg4_seen[pid] += 1
-                _reservoir_push(neg4_res[pid], neg4_seen[pid], cap_cross_parent, gidx)
-            elif nt == PairType.REWIRE:
-                neg5_seen[pid] += 1
-                _reservoir_push(neg5_res[pid], neg5_seen[pid], cap_rewire, gidx)
-            else:
-                # Keep a larger reservoir for "other" types; final trimming happens per-parent below.
-                neg_seen[pid] += 1
-                _reservoir_push(neg_res[pid], neg_seen[pid], neg_per_parent, gidx)
-
-    global_offset += m
-    if log_every_shards and (shard_id + 1) % log_every_shards == 0:
-        print(f"[sample] scanned shard {shard_id + 1}/{num_shards}", flush=True)
-
-# --- build negatives per parent respecting caps first, then fill remainder from others ---
-selected = []
-
-# Positives
-for lst in pos_res.values():
-    selected.extend(lst)
-
-# Negatives: combine per parent
-parent_ids = set(pos_res.keys()) | set(neg_res.keys()) | set(neg4_res.keys()) | set(neg5_res.keys())
-for pid in parent_ids:
-    take = []
-
-    # Guaranteed: capped via their reservoirs
-    take.extend(neg4_res.get(pid, []))
-    take.extend(neg5_res.get(pid, []))
-
-    # Fill the remainder from "other" negatives up to neg_per_parent
-    rem = neg_per_parent - len(take)
-    if rem > 0:
-        others = neg_res.get(pid, [])
-        if others:
-            if len(others) > rem:
-                # random but deterministic subset from the reservoir
-                others = rng.sample(others, rem)
-            take.extend(others)
-
-    selected.extend(take)
-
-# Keep deterministic order (no DataLoader shuffle)
-selected.sort()
-
-# --- Sanity check — print final distribution over the SELECTED indices ---
-total = len(selected)
-pos_cnt = 0
-neg_cnt = 0
-neg_hist = defaultdict(int)
-
-global_offset = 0  # re-walk shards and only touch rows we actually selected
-sel = selected  # alias
-si = 0  # moving pointer into `sel` (since both are sorted)
-
-for shard_id in range(num_shards):
-    data, slices = ds._get_shard(shard_id)
-    m = int(slices["y"].shape[0] - 1)
-
-    y_all = data.y
-    nt_all = data.neg_type
-    sy = slices["y"]
-    snt = slices["neg_type"]
-
-    # Range of global indices covered by this shard
-    lo = global_offset
-    hi = global_offset + m
-
-    # Slice [start:end) of `sel` that lies in this shard
-    start = bisect_left(sel, lo, lo=si)  # we can start from last si to be linear
-    end = bisect_left(sel, hi, lo=start)
-    for gidx in sel[start:end]:
-        li = gidx - global_offset
-        y = int(y_all[sy[li] : sy[li + 1]].item())
-        if y == 1:
-            pos_cnt += 1
-        else:
-            neg_cnt += 1
-            nt = int(nt_all[snt[li] : snt[li + 1]].item())
-            neg_hist[nt] += 1
-    si = end
-    global_offset = hi
-
-if total > 0:
-    pos_pct = 100.0 * pos_cnt / total
-    neg_pct = 100.0 * neg_cnt / total
-    # stable order by neg_type
-    hist_items = sorted(neg_hist.items())
-    hist_str = ", ".join(f"{t}:{c} ({(0 if neg_cnt == 0 else 100.0 * c / neg_cnt):.1f}%)" for t, c in hist_items)
-    print("=== Sanity summary (selected subset) ===", flush=True)
-    print(
-        f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | negatives={neg_cnt} ({neg_pct:.1f}%)",
-        flush=True,
-    )
-    print(f"[SEL] neg_type histogram: {hist_str}", flush=True)
-else:
-    print("=== Sanity summary: no samples selected ===", flush=True)
-
-return selected
-```
-The function stratify should be adjusted to reflect the new data set. The logging must be improved.
-
-I want to change the sampling. Keep the pos/neg per parent, but add a dictionary of type, percentage to control
-fine grained sampling per sample.
-
-Additionally I think in sampling we should keep the POSITIVE_EDGE and NEGATIVE_EDGE per parent_idx balanced,
-also for the nagatives, the cross parent and rewire should be capped a little maybe to 5% of the total per parent.
-The Missing edge and and the anchor aware are crucial so the should have a high portion.
-
-please adjust the sampling.
-Also I need a sampling function for the validation set to stratify it only, making it balanced, there I don't care
-what types are in just balanced, since the validation should reflect the actual job.
-
-
-
-"""

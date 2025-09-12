@@ -11,7 +11,7 @@ from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
 from src import evaluation_metrics
-from src.datasets.utils import Compose, AddNodeDegree, AddNeighbourhoodEncodings
+from src.datasets.utils import AddNeighbourhoodEncodings, AddNodeDegree, Compose
 from src.encoding.configs_and_constants import FeatureConfig, Features, IndexRange, SupportedDataset
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
@@ -137,8 +137,11 @@ def test_hypernet_forward_works_combinatorial_encoder(batch_data, vsa):
     [
         32 * 32,
         48 * 48,
-        # 96 * 96,
-        # 80 * 80,
+        64 * 64,
+        72 * 72,
+        80 * 80,
+        88 * 88,
+        96 * 96,
     ],
 )
 @pytest.mark.parametrize(

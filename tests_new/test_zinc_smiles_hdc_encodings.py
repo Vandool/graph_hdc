@@ -2,6 +2,7 @@ import time
 from collections import Counter, OrderedDict
 from datetime import datetime
 from math import prod
+from pprint import pprint
 
 import pandas as pd
 import pytest
@@ -13,13 +14,14 @@ from torch_geometric.loader import DataLoader
 from torchhd import structures
 
 from src import evaluation_metrics
+from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange, SupportedDataset
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.utils import utils
-from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTIFACTS_PATH, DataTransformer
+from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTIFACTS_PATH, DataTransformer, pick_device
 
 
 @pytest.mark.parametrize(
@@ -33,68 +35,51 @@ from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTIFACTS_PATH, DataTransfor
         40 * 40,
         48 * 48,
         56 * 56,
-        # 64 * 64,
-        # 72 * 72,
-        # 80 * 80,
-        # 88 * 88,
-        # 96 * 96,
-        # 104 * 104,
-        # 112 * 112,
-        # 120 * 120,
-        # 128 * 128,
+        64 * 64,
+        72 * 72,
+        80 * 80,
+        88 * 88,
+        96 * 96,
+        104 * 104,
+        112 * 112,
+        120 * 120,
+        128 * 128,
     ],
 )
 @pytest.mark.parametrize(
     "normalise_graph_embedding",
-    [True, False],
+    [False],
 )
 @pytest.mark.parametrize(
     "depth",
-    [2, 3],
+    [3],
 )
-def test_node_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
-    seed = 42
-    utils.set_seed(seed)
+@pytest.mark.parametrize(
+    "ds",
+    [SupportedDataset.QM9_SMILES]
+)
+@pytest.mark.parametrize(
+    "seed",
+    [7, 13, 42]
+)
+def test_node_terms_decoding_smiles(seed, ds, hv_dim, vsa, depth, normalise_graph_embedding):  # noqa: PLR0915
     seed_everything(seed)
 
-    zinc_feature_bins = [9, 6, 3, 4]
-    dataset_config = DatasetConfig(
-        seed=seed,
-        name="ZINC_SMILES",
-        vsa=vsa,
-        hv_dim=hv_dim,
-        node_feature_configs=OrderedDict(
-            [
-                (
-                    Features.ATOM_TYPE,
-                    FeatureConfig(
-                        # Atom types size: 9
-                        # Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
-                        # Degrees size: 5
-                        # Degrees: {1, 2, 3, 4, 5}
-                        # Formal Charges size: 3
-                        # Formal Charges: {0, 1, -1}
-                        # Explicit Hs size: 4
-                        # Explicit Hs: {0, 1, 2, 3}
-                        count=prod(
-                            zinc_feature_bins
-                        ),  # 9 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
-                        encoder_cls=CombinatoricIntegerEncoder,
-                        index_range=IndexRange((0, 4)),
-                        bins=zinc_feature_bins,
-                    ),
-                ),
-            ]
-        ),
-    )
+    # Set config
+    ds.default_cfg.seed = seed
+    ds.default_cfg.hv_dim = hv_dim
+    ds.default_cfg.vsa = vsa
+    ds.default_cfg.depth = depth
+    ds.default_cfg.device = "cpu"
 
-    hypernet = HyperNet(config=dataset_config, depth=depth, use_edge_codebook=False)
+    device = torch.device("cpu")
+    hypernet = HyperNet(config=ds.default_cfg, depth=depth, use_edge_codebook=False).to(device)
     assert not hypernet.use_edge_features()
     assert not hypernet.use_graph_features()
 
-    batch_size = 1028
-    zinc_smiles = ZincSmiles(split="train")
-    dataloader = DataLoader(dataset=zinc_smiles, batch_size=batch_size, shuffle=False)
+    batch_size = 1024
+    dataset = ZincSmiles(split="train") if "zinc" in ds.value.lower() else QM9Smiles(split="train")
+    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
     batch = next(iter(dataloader))
 
     # Encode the whole graph in one HV
@@ -248,7 +233,7 @@ def test_node_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
 
     ### Save metrics
     run_metrics = {
-        "dataset": "ZincSmiles (4 features - codebook size 540)",
+        "dataset": "QM9Smiles (4 features - codebook size 300)",
         "date": datetime.now().isoformat(),
         "depth": depth,
         "normalize_graph_term": normalise_graph_embedding,
@@ -274,10 +259,11 @@ def test_node_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
         "H3_avg_edge_term_cos_sim": H3_edge_term_sim,
         "H3_avg_graph_term_cos_sim": H3_graph_term_sim,
     }
+    pprint(run_metrics)
 
     # --- new code starts here ---
     # --- save metrics to disk ---
-    asset_dir = TEST_ARTIFACTS_PATH / "nodes_and_edges" / "node_terms"
+    asset_dir = TEST_ARTIFACTS_PATH / "nodes_and_edges" / "node_terms_qm9"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "res_normalizing.parquet"
@@ -300,18 +286,18 @@ def test_node_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
     "hv_dim",
     [
         # 32 * 32,
-        # 40 * 40,
-        # 48 * 48,
+        40 * 40,
+        48 * 48,
         # 56 * 56,
-        64 * 64,
-        72 * 72,
-        80 * 80,
-        88 * 88,
-        96 * 96,
-        104 * 104,
-        112 * 112,
-        120 * 120,
-        128 * 128,
+        # 64 * 64,
+        # 72 * 72,
+        # 80 * 80,
+        # 88 * 88,
+        # 96 * 96,
+        # 104 * 104,
+        # 112 * 112,
+        # 120 * 120,
+        # 128 * 128,
     ],
 )
 @pytest.mark.parametrize(
@@ -319,53 +305,32 @@ def test_node_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
     [True, False],
 )
 @pytest.mark.parametrize(
-    "depth",
-    [2, 3],
+    "ds",
+    [SupportedDataset.QM9_SMILES]
 )
-def test_edge_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
-    seed = 42
-    utils.set_seed(seed)
+@pytest.mark.parametrize(
+    "seed",
+    [42]
+)
+def test_edge_terms_decoding_smiles(seed, ds, hv_dim, vsa, normalise_graph_embedding):  # noqa: PLR0915
     seed_everything(seed)
 
-    zinc_feature_bins = [9, 6, 3, 4]
-    ds: SupportedDataset = SupportedDataset.ZINC_SMILES
-    ds.default_cfg = DatasetConfig(
-        seed=seed,
-        name="ZINC_SMILES",
-        vsa=vsa,
-        hv_dim=hv_dim,
-        node_feature_configs=OrderedDict(
-            [
-                (
-                    Features.ATOM_TYPE,
-                    FeatureConfig(
-                        # Atom types size: 9
-                        # Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
-                        # Degrees size: 5
-                        # Degrees: {1, 2, 3, 4, 5}
-                        # Formal Charges size: 3
-                        # Formal Charges: {0, 1, -1}
-                        # Explicit Hs size: 4
-                        # Explicit Hs: {0, 1, 2, 3}
-                        count=prod(
-                            zinc_feature_bins
-                        ),  # 9 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
-                        encoder_cls=CombinatoricIntegerEncoder,
-                        index_range=IndexRange((0, 4)),
-                        bins=zinc_feature_bins,
-                    ),
-                ),
-            ]
-        ),
-    )
+    depth = 3
+    # Set config
+    ds.default_cfg.seed = seed
+    ds.default_cfg.hv_dim = hv_dim
+    ds.default_cfg.vsa = vsa
+    ds.default_cfg.depth = depth
+    ds.default_cfg.device = "cpu"
 
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, depth=depth, use_edge_codebook=False, ds=ds)
+    device = torch.device("cpu")
+    hypernet = HyperNet(config=ds.default_cfg, depth=depth, use_edge_codebook=True).to(device)
     assert not hypernet.use_edge_features()
     assert not hypernet.use_graph_features()
 
-    batch_size = 8
-    zinc_smiles = ZincSmiles(split="train")
-    dataloader = DataLoader(dataset=zinc_smiles, batch_size=batch_size, shuffle=False)
+    batch_size = 1024
+    dataset = ZincSmiles(split="train") if "zinc" in ds.value.lower() else QM9Smiles(split="train")
+    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
     batch = next(iter(dataloader))
 
     # Encode the whole graph in one HV
@@ -489,7 +454,7 @@ def test_edge_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
 
     ### Save metrics
     run_metrics = {
-        "dataset": "ZincSmiles (4 features - codebook size 540)",
+        "dataset": "QM9Smiles (4 features - codebook size 300)",
         "date": datetime.now().isoformat(),
         "depth": depth,
         "normalize_graph_term": normalise_graph_embedding,
@@ -512,9 +477,9 @@ def test_edge_terms_decoding(hv_dim, vsa, depth, normalise_graph_embedding):
         "H3_avg_graph_term_cos_sim": H3_graph_term_sim,
     }
 
-    # --- new code starts here ---
+
     # --- save metrics to disk ---
-    asset_dir = TEST_ARTIFACTS_PATH / "nodes_and_edges" / "edge_terms"
+    asset_dir = TEST_ARTIFACTS_PATH / "nodes_and_edges" / "edge_terms_qm9"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "res_normalizing.parquet"

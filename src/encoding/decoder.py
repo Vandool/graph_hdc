@@ -284,6 +284,22 @@ def powerset(iterable):
     s = list(iterable)
     return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
 
+def wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
+    """WL hash that respects `feat`."""
+    H = G.copy()
+    for n in H.nodes:
+        f = H.nodes[n]["feat"]
+        H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
+    return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
+
+def hash(G: nx.Graph) -> tuple[str, int, int]:
+    return wl_hash(G), G.number_of_nodes(), G.number_of_edges()
+
+def order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
+    """Unique feature tuples, sorted by final degree (asc), then lexicographically."""
+    uniq = list(ctr.keys())
+    uniq.sort(key=lambda t: (t[1] + 1, t))
+    return uniq
 
 def greedy_oracle_decoder(
     node_multiset: Counter,
@@ -307,23 +323,7 @@ def greedy_oracle_decoder(
     ys = []
     ps = []
 
-    # -- local helpers --
-    def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
-        """WL hash that respects `feat`."""
-        H = G.copy()
-        for n in H.nodes:
-            f = H.nodes[n]["feat"]
-            H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
-        return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
 
-    def _hash(G: nx.Graph) -> tuple[str, int, int]:
-        return _wl_hash(G), G.number_of_nodes(), G.number_of_edges()
-
-    def _order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
-        """Unique feature tuples, sorted by final degree (asc), then lexicographically."""
-        uniq = list(ctr.keys())
-        uniq.sort(key=lambda t: (t[1] + 1, t))
-        return uniq
 
     def _call_oracle(Gs: list[nx.Graph]) -> list[bool]:
         if use_perfect_oracle:
@@ -353,7 +353,7 @@ def greedy_oracle_decoder(
     # 1) Initial population (2-node graphs)
     # ---------------------------
 
-    feat_types = _order_leftovers_by_degree_distinct(full_ctr)
+    feat_types = order_leftovers_by_degree_distinct(full_ctr)
 
     # Trivial case 1
     if total_nodes == 1 and len(feat_types) == 1:
@@ -393,7 +393,7 @@ def greedy_oracle_decoder(
         if add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=total_nodes) is None:
             continue
 
-        key = _hash(G)
+        key = hash(G)
         if key in global_seen:
             continue
         global_seen.add(key)
@@ -410,7 +410,9 @@ def greedy_oracle_decoder(
             for g, (actual, pred) in zip(
                 first_pop, zip(perfect_oracle_results, oracle_results, strict=False), strict=False
             ):
-                draw_nx_with_atom_colorings(g, label=f"actual: {actual}, pred: {pred}")
+                draw_nx_with_atom_colorings(
+                    g, label=f"actual: {actual}, pred: {pred}", overlay_full_graph=full_g_nx, overlay_draw_nodes=True
+                )
                 plt.show()
         y_true = np.asarray(perfect_oracle_results, dtype=bool)
         ys.extend(y_true.tolist())
@@ -455,7 +457,7 @@ def greedy_oracle_decoder(
                 continue
 
             # choose types in ascending final degree (distinct types)
-            leftover_types = _order_leftovers_by_degree_distinct(leftovers_ctr)
+            leftover_types = order_leftovers_by_degree_distinct(leftovers_ctr)
             ancrs = anchors(G)
             if not ancrs:
                 # cannot expand this candidate
@@ -474,7 +476,7 @@ def greedy_oracle_decoder(
                 if nid is None or C.number_of_edges() > total_edges:
                     continue
 
-                key = _hash(C)
+                key = hash(C)
                 if key not in global_seen and key not in local_seen:
                     global_seen.add(key)
                     local_seen.add(key)
@@ -491,7 +493,7 @@ def greedy_oracle_decoder(
                     if nid is None or H.number_of_edges() > total_edges:
                         continue
 
-                    key = _hash(H)
+                    key = hash(H)
                     if key not in global_seen and key not in local_seen:
                         global_seen.add(key)
                         local_seen.add(key)
@@ -515,7 +517,12 @@ def greedy_oracle_decoder(
                 for g, (actual, pred) in zip(
                     children, zip(perfect_oracle_results, oracle_results, strict=False), strict=False
                 ):
-                    draw_nx_with_atom_colorings(g, label=f"actual: {actual}, pred: {pred}")
+                    draw_nx_with_atom_colorings(
+                        g,
+                        label=f"actual: {actual}, pred: {pred}",
+                        overlay_full_graph=full_g_nx,
+                        overlay_draw_nodes=True,
+                    )
                     plt.show()
             y_true = np.asarray(perfect_oracle_results, dtype=bool)
             ys.extend(y_true.tolist())
@@ -565,7 +572,6 @@ def greedy_oracle_decoder_faster(
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
     print(f"Decoding a graph with {total_nodes} nodes and {total_edges} edges.")
-
 
     # -- local helpers --
     def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
@@ -753,7 +759,6 @@ def greedy_oracle_decoder_faster(
             if oracle_results[idx] >= oracle_threshold:
                 accepted.append(children[idx])
 
-
         if not accepted:
             # Oracle rejected all -> stop with the current population
             if strict:
@@ -768,4 +773,3 @@ def greedy_oracle_decoder_faster(
     if strict:
         return _apply_strict_filter(population)
     return population
-

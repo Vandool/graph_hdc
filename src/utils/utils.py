@@ -422,87 +422,6 @@ def pick_device_str() -> str:
 
 class DataTransformer:
     @staticmethod
-    def to_tuple_list(edge_index: Tensor) -> list[tuple[int, ...]]:
-        return list(map(tuple, edge_index.T.tolist()))
-
-    @staticmethod
-    def get_edge_existence_counter(batch: int, data: Data, indexer: TupleIndexer) -> Counter:
-        """
-        Returns a Counter of existing edges for a single graph in the batch,
-        mapping (src_idx, dst_idx) to count.  It converts global node indices
-        into local indices 0..(N-1) before encoding.
-        """
-        # 1) Mask to edges belonging to this graph
-        edge_mask = (data.batch[data.edge_index[0]] == batch) & (data.batch[data.edge_index[1]] == batch)
-        # 2) Extract the global edge index pairs
-        truth_edges_global = [tuple(pair) for pair in data.edge_index[:, edge_mask].t().tolist()]
-
-        # 3) Build mapping from global node index -> local (0..N-1)
-        nodes_global = data.batch.eq(batch).nonzero(as_tuple=False).flatten().tolist()
-        nodes_global.sort()
-        global_to_local = {g: i for i, g in enumerate(nodes_global)}
-
-        # 4) Gather local node feature tuples in the same order
-        x_feats = data.x[data.batch == batch]
-        # If features are vectors, convert each row to a tuple
-        x_list = [tuple(row.tolist()) for row in x_feats] if x_feats.dim() > 1 else x_feats.squeeze(-1).tolist()
-
-        # 5) Re‐encode each edge using the indexer on local node tuples
-        truth_edge_idxs: list[tuple[int, int]] = []
-        for g_u, g_v in truth_edges_global:
-            u_loc = global_to_local[g_u]
-            v_loc = global_to_local[g_v]
-            idx_u = indexer.get_idx(x_list[u_loc])
-            idx_v = indexer.get_idx(x_list[v_loc])
-            truth_edge_idxs.append((idx_u, idx_v))
-
-        # 6) Count and return
-        return Counter(truth_edge_idxs)
-
-    @staticmethod
-    def get_edge_counter(data: Data, batch) -> Counter[tuple[int, ...]]:
-        """
-        Returns a Counter of existing edges for a single graph in the batch,
-        mapping (src_idx, dst_idx) to count.  It converts global node indices
-        into local indices 0..(N-1) before encoding.
-        """
-        # 1) Mask to edges belonging to this graph
-        edge_mask = (data.batch[data.edge_index[0]] == batch) & (data.batch[data.edge_index[1]] == batch)
-        # 2) Extract the global edge index pairs
-        truth_edges_global = [tuple(pair) for pair in data.edge_index[:, edge_mask].t().tolist()]
-
-        # 3) Build mapping from global node index -> local (0..N-1)
-        nodes_global = data.batch.eq(batch).nonzero(as_tuple=False).flatten().tolist()
-        nodes_global.sort()
-        global_to_local = {g: i for i, g in enumerate(nodes_global)}
-
-        # 4) Gather local node feature tuples in the same order
-        x_feats = data.x[data.batch == batch].int()
-        # 5) Re‐encode each edge using the indexer on local node tuples
-        x_list = [tuple(row.tolist()) for row in x_feats] if x_feats.dim() > 1 else x_feats.squeeze(-1).tolist()
-        truth_edge_idxs: list[tuple[int, int]] = []
-        for g_u, g_v in truth_edges_global:
-            u_loc = global_to_local[g_u]
-            v_loc = global_to_local[g_v]
-            truth_edge_idxs.append((x_list[u_loc], x_list[v_loc]))
-
-        # 6) Count and return
-        return Counter(truth_edge_idxs)
-
-    @staticmethod
-    def get_x_from_batch(batch: int, data: Data) -> Tensor:
-        x = data.x.squeeze(-1).int()
-        return x[data.batch == batch].tolist()
-
-    @staticmethod
-    def get_node_counter_from_batch(batch: int, data: Data) -> Counter[tuple[int, ...]]:
-        node_list = DataTransformer.get_x_from_batch(batch, data)
-        if isinstance(node_list[0], list):
-            ## When we have multiple features like in ZINC_D
-            return Counter([tuple(n) for n in node_list])
-        return Counter([(n,) for n in node_list])
-
-    @staticmethod
     def nx_to_pyg(G: nx.Graph) -> "Data":
         """
         Convert an undirected NetworkX graph with ``feat`` attributes to a
@@ -535,10 +454,7 @@ class DataTransformer:
             iu, iv = idx_of[u], idx_of[v]
             src.extend([iu, iv])
             dst.extend([iv, iu])
-        if src:
-            edge_index = torch.tensor([src, dst], dtype=torch.long)
-        else:
-            edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_index = torch.tensor([src, dst], dtype=torch.long) if src else torch.empty((2, 0), dtype=torch.long)
 
         return Data(x=x, edge_index=edge_index)
 
@@ -634,6 +550,87 @@ class DataTransformer:
         # Add edges
         G.add_edges_from(pairs)
         return G
+
+    @staticmethod
+    def to_tuple_list(edge_index: Tensor) -> list[tuple[int, ...]]:
+        return list(map(tuple, edge_index.T.tolist()))
+
+    @staticmethod
+    def get_edge_existence_counter(batch: int, data: Data, indexer: TupleIndexer) -> Counter:
+        """
+        Returns a Counter of existing edges for a single graph in the batch,
+        mapping (src_idx, dst_idx) to count.  It converts global node indices
+        into local indices 0..(N-1) before encoding.
+        """
+        # 1) Mask to edges belonging to this graph
+        edge_mask = (data.batch[data.edge_index[0]] == batch) & (data.batch[data.edge_index[1]] == batch)
+        # 2) Extract the global edge index pairs
+        truth_edges_global = [tuple(pair) for pair in data.edge_index[:, edge_mask].t().tolist()]
+
+        # 3) Build mapping from global node index -> local (0..N-1)
+        nodes_global = data.batch.eq(batch).nonzero(as_tuple=False).flatten().tolist()
+        nodes_global.sort()
+        global_to_local = {g: i for i, g in enumerate(nodes_global)}
+
+        # 4) Gather local node feature tuples in the same order
+        x_feats = data.x[data.batch == batch]
+        # If features are vectors, convert each row to a tuple
+        x_list = [tuple(row.tolist()) for row in x_feats] if x_feats.dim() > 1 else x_feats.squeeze(-1).tolist()
+
+        # 5) Re‐encode each edge using the indexer on local node tuples
+        truth_edge_idxs: list[tuple[int, int]] = []
+        for g_u, g_v in truth_edges_global:
+            u_loc = global_to_local[g_u]
+            v_loc = global_to_local[g_v]
+            idx_u = indexer.get_idx(x_list[u_loc])
+            idx_v = indexer.get_idx(x_list[v_loc])
+            truth_edge_idxs.append((idx_u, idx_v))
+
+        # 6) Count and return
+        return Counter(truth_edge_idxs)
+
+    @staticmethod
+    def get_edge_counter(data: Data, batch) -> Counter[tuple[int, ...]]:
+        """
+        Returns a Counter of existing edges for a single graph in the batch,
+        mapping (src_idx, dst_idx) to count.  It converts global node indices
+        into local indices 0..(N-1) before encoding.
+        """
+        # 1) Mask to edges belonging to this graph
+        edge_mask = (data.batch[data.edge_index[0]] == batch) & (data.batch[data.edge_index[1]] == batch)
+        # 2) Extract the global edge index pairs
+        truth_edges_global = [tuple(pair) for pair in data.edge_index[:, edge_mask].t().tolist()]
+
+        # 3) Build mapping from global node index -> local (0..N-1)
+        nodes_global = data.batch.eq(batch).nonzero(as_tuple=False).flatten().tolist()
+        nodes_global.sort()
+        global_to_local = {g: i for i, g in enumerate(nodes_global)}
+
+        # 4) Gather local node feature tuples in the same order
+        x_feats = data.x[data.batch == batch].int()
+        # 5) Re‐encode each edge using the indexer on local node tuples
+        x_list = [tuple(row.tolist()) for row in x_feats] if x_feats.dim() > 1 else x_feats.squeeze(-1).tolist()
+        truth_edge_idxs: list[tuple[int, int]] = []
+        for g_u, g_v in truth_edges_global:
+            u_loc = global_to_local[g_u]
+            v_loc = global_to_local[g_v]
+            truth_edge_idxs.append((x_list[u_loc], x_list[v_loc]))
+
+        # 6) Count and return
+        return Counter(truth_edge_idxs)
+
+    @staticmethod
+    def get_x_from_batch(batch: int, data: Data) -> Tensor:
+        x = data.x.squeeze(-1).int()
+        return x[data.batch == batch].tolist()
+
+    @staticmethod
+    def get_node_counter_from_batch(batch: int, data: Data) -> Counter[tuple[int, ...]]:
+        node_list = DataTransformer.get_x_from_batch(batch, data)
+        if isinstance(node_list[0], list):
+            ## When we have multiple features like in ZINC_D
+            return Counter([tuple(n) for n in node_list])
+        return Counter([(n,) for n in node_list])
 
     @staticmethod
     def nx_to_mol(

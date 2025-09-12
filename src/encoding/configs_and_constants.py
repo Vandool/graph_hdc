@@ -4,6 +4,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
 
+from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -244,28 +245,53 @@ ZINC_SMILES_HRR_7744_CONFIG = DatasetConfig(
     ),
 )
 
+QMP_SMILES_CONFIG = DatasetConfig(
+    seed=42,
+    name="QM9Smiles",
+    vsa=VSAModel.HRR,
+    hv_dim=88 * 88,
+    device=pick_device_str(),
+    node_feature_configs=OrderedDict(
+        [
+            (
+                Features.ATOM_TYPE,
+                FeatureConfig(
+                    # Atom types size: 4
+                    # Atom types: ['C', 'F', 'N', 'O']
+                    # Degrees size: 5
+                    # Degrees: {0, 1, 2, 3, 4}
+                    # Formal Charges size: 3
+                    # Formal Charges: {0, 1, -1}
+                    # Explicit Hs size: 5
+                    # Explicit Hs: {0, 1, 2, 3, 4}
+                    count=math.prod([4, 5, 3, 5]),
+                    encoder_cls=CombinatoricIntegerEncoder,
+                    index_range=IndexRange((0, 4)),
+                    bins=[4, 5, 3, 5],
+                ),
+            ),
+        ]
+    ),
+)
+
+QM9_SMILES_HRR_1600_CONFIG: DatasetConfig = deepcopy(QMP_SMILES_CONFIG)
+QM9_SMILES_HRR_1600_CONFIG.hv_dim = 1600
+QM9_SMILES_HRR_1600_CONFIG.name = "QM9SmilesHRR1600"
+
 
 class SupportedDataset(enum.Enum):
     ZINC = ("ZINC", ZINC_CONFIG)
     ZINC_NODE_DEGREE = ("ZINC_ND", ZINC_ND_CONFIG)
     ZINC_NODE_DEGREE_COMB = ("ZINC_ND_COMB", ZINC_ND_COMB_CONFIG)
-    # NHA: Neighbourhood Aware
     ZINC_NODE_DEGREE_COMB_NHA = ("ZINC_ND_COMB_NHA", ZINC_ND_COMB_CONFIG_NHA)
     ZINC_SMILES = ("ZINC_SMILES", ZINC_SMILES_CONFIG)
-    QM9 = ("QM9", QM9_CONFIG)
     ZINC_SMILES_HRR_7744 = ("ZINC_SMILES_HRR_7744", ZINC_SMILES_HRR_7744_CONFIG)
+    QM9 = ("QM9", QM9_CONFIG)
+    QM9_SMILES = ("QM9_SMILES", QMP_SMILES_CONFIG)
+    QM9_SMILES_HRR_1600 = ("QM9_SMILES", QM9_SMILES_HRR_1600_CONFIG)
 
     def __new__(cls, value: str, default_cfg: DatasetConfig):
         obj = object.__new__(cls)
         obj._value_ = value
         obj.default_cfg = default_cfg
         return obj
-
-
-class BasisHVSet(enum.Enum):
-    RANDOM = "random"
-    EMPTY = "empty"
-    IDENTITY = "identity"
-    CIRCULAR = "circular"
-    LEVEL = "level"
-    CUSTOM = "custom"
