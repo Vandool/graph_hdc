@@ -205,5 +205,5 @@ if __name__ == "__main__":
     cfg = QM9PairConfig()
     seed_everything(cfg.seed)
     dev_pairs, dev_stats = build_qm9_pairs(force_reprocess=False, debug=False, is_dev=True)
-    # full_pairs, full_stats = build_qm9_pairs(force_reprocess=False, debug=False, is_dev=False)
+    full_pairs, full_stats = build_qm9_pairs(force_reprocess=False, debug=False, is_dev=False)
     print("\nDone.")
