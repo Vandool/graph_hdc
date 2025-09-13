@@ -15,28 +15,18 @@ readme  = "README.rst"
 channels  = ["pytorch", "nvidia", "pyg", "conda-forge"]
 platforms = ["linux-64"]
 
-[tool.pixi.pypi-dependencies]
-graph_hdc        = { path = ".", editable = true }
-# pip-only bits kept loose on purpose
-torch-hd         = "*"
-normflows        = ">=1.7.3"
-auto-slurm       = { git = "https://github.com/the16thpythonist/AutoSlurm.git", rev = "aslurmx" }
-pycomex          = ">=0.9.2"
-rich-click       = ">=1.8.0"
-jsonpickle       = ">=4.0.0"
-python-decouple  = ">=3.6"
+[tool.pixi.environments.cluster]
+features    = ["base"]
+solve-group = "linux-64"
 
-[tool.pixi.dependencies]
-# Pin Python MAJOR.MINOR so PyG matches
-python          = "3.11.*"
+[tool.pixi.environments.local]
+features    = ["base", "gpu"]
+solve-group = "linux-64"
 
-# Let conda figure out exact PT/PyG versions, but force GPU by asking for the CUDA runtime.
-# If some clusters have older drivers, switch this one line to "12.1.*".
-pytorch         = "*"
-pytorch-cuda    = "*"
-pyg             = "*"
-
-# Everything else relaxed (conda)
+[tool.pixi.feature.base.dependencies]
+python            = "3.11.*"
+pytorch           = "*"
+pyg               = "*"
 pytorch-lightning = "*"
 numpy             = "*"
 matplotlib        = "*"
@@ -54,6 +44,21 @@ ipywidgets        = "*"
 decorator         = "*"
 click             = ">=7.1.2"
 jinja2            = ">=3.0.3"
-pytorch-scatter = ">=2.1.2,<3"
-ruff = ">=0.12.12,<0.13"
-pytest = ">=8.4.2,<9"
+pytorch-scatter   = ">=2.1.2,<3"
+ruff              = ">=0.12.12,<0.13"
+pytest            = ">=8.4.2,<9"
+
+[tool.pixi.pypi-dependencies]
+graph_hdc        = { path = ".", editable = true }
+torch-hd         = "*"
+normflows        = ">=1.7.3"
+auto-slurm       = { git = "https://github.com/the16thpythonist/AutoSlurm.git", rev = "aslurmx" }
+pycomex          = ">=0.9.2"
+rich-click       = ">=1.8.0"
+jsonpickle       = ">=4.0.0"
+python-decouple  = ">=3.6"
+
+# CUDA ONLY for local-gpu env
+[tool.pixi.feature.gpu.dependencies]
+pytorch-cuda = "12.1.*"
+libcurand    = "!=10.4.0.35"

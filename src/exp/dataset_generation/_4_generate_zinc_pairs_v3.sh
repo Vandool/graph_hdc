@@ -16,4 +16,4 @@ SPLIT=${SPLITS[$SLURM_ARRAY_TASK_ID]}
 
 
 echo "[JOB] split=${SPLIT}"
-pixi run python "$SCRIPT" --split "$SPLIT"
+pixi run -e cluster --frozen python "$SCRIPT" --split "$SPLIT"
