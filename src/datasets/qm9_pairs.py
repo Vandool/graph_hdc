@@ -298,7 +298,7 @@ class QM9PairConfig:
     cap_cross_parent_tail = cap_cross_parent
 
     # cross-parent throttling
-    cross_parent_rate = 0.07  # ← only ~7% of positives get a cross-parent neg
+    cross_parent_rate = 0.06  # ← only ~7% of positives get a cross-parent neg
 
 
 from enum import IntEnum
