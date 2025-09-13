@@ -173,7 +173,6 @@ def build_zinc_pairs_for_split(
     *,
     cfg: ZincPairV3Config | None = None,
     force_reprocess: bool = False,
-    debug: bool = False,
     is_dev: bool = False,
     n: int | None = None,
     sanity_limit: int | None = None,
@@ -199,7 +198,6 @@ def build_zinc_pairs_for_split(
         split=split,
         cfg=cfg or ZincPairV3Config(),
         dev=is_dev,
-        debug=debug,
         force_reprocess=force_reprocess,
     )
 
@@ -227,7 +225,6 @@ def main():
         split=args.split,
         cfg=cfg,
         force_reprocess=False,
-        debug=False,
         is_dev=True,
         n=args.n,
         sanity_limit=args.sanity_limit,
@@ -237,7 +234,6 @@ def main():
         split=args.split,
         cfg=cfg,
         force_reprocess=False,
-        debug=False,
         is_dev=False,
         n=args.n,
         sanity_limit=args.sanity_limit,
