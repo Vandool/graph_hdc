@@ -1,7 +1,5 @@
 import argparse
-import json
 from collections import Counter
-from pathlib import Path
 
 import torch
 from torch_geometric import seed_everything
@@ -72,8 +70,8 @@ def sanity_check_pairs(pairs: ZincPairsV3, base_ds, *, limit: int | None = None)
                         f"[{i}] POSITIVE_EDGE must be 2 nodes / 1 edge."
                     )
                 elif tcode == PairType.NEGATIVE_EDGE:
-                    assert G1.number_of_nodes() == 2 and G1.number_of_edges() == 0, (
-                        f"[{i}] NEGATIVE_EDGE must be 2 nodes / 0 edges."
+                    assert G1.number_of_nodes() == 2 and G1.number_of_edges() == 1, (
+                        f"[{i}] NEGATIVE_EDGE must be 2 nodes / 1 edges."
                     )
 
             if y == 1:
@@ -230,10 +228,21 @@ def main():
         cfg=cfg,
         force_reprocess=False,
         debug=False,
-        is_dev=args.dev,
+        is_dev=True,
         n=args.n,
         sanity_limit=args.sanity_limit,
     )
+
+    _, stats = build_zinc_pairs_for_split(
+        split=args.split,
+        cfg=cfg,
+        force_reprocess=False,
+        debug=False,
+        is_dev=False,
+        n=args.n,
+        sanity_limit=args.sanity_limit,
+    )
+
 
 if __name__ == "__main__":
     main()

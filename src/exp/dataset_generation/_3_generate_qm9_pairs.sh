@@ -1,30 +1,19 @@
 #!/bin/bash
-#
-# bwUniCluster 3.0 — standard CPU node job
-# Regular CPU queue: `cpu` (72h max). Dev queue `dev_cpu` is limited to ~30 min.  # docs
-#
-
-#SBATCH --job-name=ZincPairsV2
-#SBATCH --partition=cpu          # standard CPU partition (no GPUs)
-#SBATCH --time=11:00:00          # reasonable walltime (adjust as needed)
+#SBATCH --job-name=QM9Pairs
+#SBATCH --partition=cpu
+#SBATCH --time=36:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8        # 8 CPU cores for your Python job
-#SBATCH --mem=64G                # ~32 GB RAM is a sensible default
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --array=0-2
 
-module load devel/cuda/11.8
+PROJECT_DIR="${GHDC_HOME}"
+SCRIPT="${PROJECT_DIR}/src/exp/dataset_generation/generate_qm9_pairs.py"
 
-# ========== Experiment Path Configuration ==========
-PROJECT_DIR="/home/ka/ka_iti/ka_zi9629/projects/graph_hdc"
-EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/dataset_generation"
-SCRIPT_NAME="generate_qm9_pairs.py"
-SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
+SPLITS=(train valid test)
+SPLIT=${SPLITS[$SLURM_ARRAY_TASK_ID]}
 
-# (optional) ensure logs dir exists if you redirect elsewhere
-# mkdir -p "${PROJECT_DIR}/logs"
 
-# Your environment/conda/module loads would go here if needed
-# module load ...
-
-# Run (pixi must be on PATH in your environment)
-pixi run python "$SCRIPT"
+echo "[JOB] split=${SPLIT}"
+pixi run python "$SCRIPT" --split "$SPLIT"

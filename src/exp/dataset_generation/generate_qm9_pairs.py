@@ -1,3 +1,4 @@
+import argparse
 from collections import Counter
 
 import torch
@@ -5,11 +6,10 @@ from torch_geometric import seed_everything
 from torch_geometric.data import Data
 from tqdm.auto import tqdm
 
-from src.datasets.qm9_pairs import QM9PairConfig, PairData, PairType, QM9Pairs
+from src.datasets.qm9_pairs import PairData, PairType, QM9PairConfig, QM9Pairs
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.encoding.decoder import is_induced_subgraph_by_features
 from src.utils.utils import DataTransformer
-
 
 
 def sanity_check_pairs(pairs: QM9Pairs, base_ds, *, limit: int | None = None) -> dict:
@@ -66,11 +66,13 @@ def sanity_check_pairs(pairs: QM9Pairs, base_ds, *, limit: int | None = None) ->
             # k==2 shape invariants
             if k == 2:
                 if tcode == PairType.POSITIVE_EDGE:
-                    assert G1.number_of_nodes() == 2 and G1.number_of_edges() == 1, \
+                    assert G1.number_of_nodes() == 2 and G1.number_of_edges() == 1, (
                         f"[{i}] POSITIVE_EDGE must be 2 nodes / 1 edge."
+                    )
                 elif tcode == PairType.NEGATIVE_EDGE:
-                    assert G1.number_of_nodes() == 2 and G1.number_of_edges() == 0, \
-                        f"[{i}] NEGATIVE_EDGE must be 2 nodes / 0 edges."
+                    assert G1.number_of_nodes() == 2 and G1.number_of_edges() == 1, (
+                        f"[{i}] NEGATIVE_EDGE must be 2 nodes / 1 edges."
+                    )
 
             if y == 1:
                 assert is_sub, f"[{i}] Positive mislabeled (not induced). type={PairType(tcode).name}, k={k}, pid={pid}"
@@ -84,13 +86,14 @@ def sanity_check_pairs(pairs: QM9Pairs, base_ds, *, limit: int | None = None) ->
                 raise AssertionError(f"[{i}] Unexpected y={y} (expected 0/1).")
 
     total = n_pos + n_neg
+
     def pct(num: int, den: int) -> float:
         return (100.0 * num / den) if den > 0 else 0.0
 
     # Named dicts
     per_type_total_named = {PairType(t).name: c for t, c in sorted(per_type.items(), key=lambda kv: kv[0])}
-    per_type_pos_named   = {PairType(t).name: c for t, c in sorted(per_type_pos.items(), key=lambda kv: kv[0])}
-    per_type_neg_named   = {PairType(t).name: c for t, c in sorted(per_type_neg.items(), key=lambda kv: kv[0])}
+    per_type_pos_named = {PairType(t).name: c for t, c in sorted(per_type_pos.items(), key=lambda kv: kv[0])}
+    per_type_neg_named = {PairType(t).name: c for t, c in sorted(per_type_neg.items(), key=lambda kv: kv[0])}
 
     # Detailed breakdown lists
     pos_types = [PairType.POSITIVE_EDGE, PairType.POSITIVE]
@@ -107,20 +110,26 @@ def sanity_check_pairs(pairs: QM9Pairs, base_ds, *, limit: int | None = None) ->
     pos_breakdown = []
     for t in pos_types:
         c = per_type_pos.get(t.value, 0)
-        pos_breakdown.append({
-            "type": t.name, "count": c,
-            "pct_pos": round(pct(c, n_pos), 1),
-            "pct_total": round(pct(c, total), 1),
-        })
+        pos_breakdown.append(
+            {
+                "type": t.name,
+                "count": c,
+                "pct_pos": round(pct(c, n_pos), 1),
+                "pct_total": round(pct(c, total), 1),
+            }
+        )
 
     neg_breakdown = []
     for t in neg_types:
         c = per_type_neg.get(t.value, 0)
-        neg_breakdown.append({
-            "type": t.name, "count": c,
-            "pct_neg": round(pct(c, n_neg), 1),
-            "pct_total": round(pct(c, total), 1),
-        })
+        neg_breakdown.append(
+            {
+                "type": t.name,
+                "count": c,
+                "pct_neg": round(pct(c, n_neg), 1),
+                "pct_total": round(pct(c, total), 1),
+            }
+        )
 
     return {
         "total": total,
@@ -146,64 +155,94 @@ def print_sanity_summary(stats_by_split: dict[str, dict]) -> None:
 
         print("\nPositives breakdown (within positives / of total):")
         for row in S["breakdown"]["positives"]:
-            print(f"  {row['type']:<16} count={row['count']:>8}   %pos={row['pct_pos']:5.1f}%   %total={row['pct_total']:5.1f}%")
+            print(
+                f"  {row['type']:<16} count={row['count']:>8}   %pos={row['pct_pos']:5.1f}%   %total={row['pct_total']:5.1f}%"
+            )
 
         print("\nNegatives breakdown (within negatives / of total):")
         for row in S["breakdown"]["negatives"]:
-            print(f"  {row['type']:<16} count={row['count']:>8}   %neg={row['pct_neg']:5.1f}%   %total={row['pct_total']:5.1f}%")
+            print(
+                f"  {row['type']:<16} count={row['count']:>8}   %neg={row['pct_neg']:5.1f}%   %total={row['pct_total']:5.1f}%"
+            )
 
         print("\nBy type (counts over all samples):", S["per_type_total"])
 
 
-def build_qm9_pairs(
+def build_qm9_pairs_for_split(
+        split: str,
         *,
         cfg: QM9PairConfig | None = None,
         force_reprocess: bool = False,
         debug: bool = False,
         is_dev: bool = False,
-) -> tuple[dict[str, QM9Pairs], dict[str, dict]]:
-    r"""
-    Build QM9Pairs datasets and sanity-check them. Returns (datasets, stats_by_split).
+        n: int | None = None,
+        sanity_limit: int | None = None,
+) -> tuple[QM9Pairs, dict]:
     """
-    plan = [("train", 200, 1_000_000), ("valid", 20, 100_000), ("test", 20, 100_000)]
-    out: dict[str, QM9Pairs] = {}
-    stats_by_split: dict[str, dict] = {}
-    cfg = cfg or QM9PairConfig()
+    Build ONE split and sanity-check it. Returns (dataset, stats).
+    If `n`/`sanity_limit` are None, sensible defaults are chosen based on `is_dev`.
+    """
+    assert split in {"train", "valid", "test"}
 
-    for split, n, sanity_limit in plan:
-        print(f"\n=== Building pairs for split='{split}' with n={n} base molecules ===")
-        base_full = QM9Smiles(split=split)
-        if not is_dev:
-            n = None
-        base = base_full[:n]
+    # Defaults: small dev slice; full otherwise
+    if n is None:
+        n = {"train": 200, "valid": 20, "test": 20}[split] if is_dev else None
+    if sanity_limit is None:
+        sanity_limit = {"train": 1_000_000, "valid": 100_000, "test": 100_000}[split] if is_dev else None
 
-        pairs = QM9Pairs(
-            base_dataset=base,
-            split=split,
-            cfg=cfg,
-            dev=is_dev,
-            debug=debug,
-            force_reprocess=force_reprocess,
-        )
+    print(f"\n=== Building pairs for split='{split}' n={n} dev={is_dev} ===")
+    base_full = QM9Smiles(split=split)
+    base = base_full[:n] if n is not None else base_full
 
-        print(f"  base graphs: {len(base)}")
-        print(f"  pair samples: {len(pairs)}")
-        print(f"  processed_dir: {pairs.processed_dir}")
+    pairs = QM9Pairs(
+        base_dataset=base,
+        split=split,
+        cfg=cfg or QM9PairConfig(),
+        dev=is_dev,
+        debug=debug,
+        force_reprocess=force_reprocess,
+    )
 
-        # ---- collect sanity stats (no printing here) ----
-        stats = sanity_check_pairs(pairs, base, limit=sanity_limit)
-        stats_by_split[split] = stats
+    print(f"  base graphs: {len(base)}")
+    print(f"  pair samples: {len(pairs)}")
+    print(f"  processed_dir: {pairs.processed_dir}")
 
-        out[split] = pairs
+    stats = sanity_check_pairs(pairs, base, limit=sanity_limit)
+    print_sanity_summary({split: stats})
+    return pairs, stats
 
-    # Single consolidated print
-    print_sanity_summary(stats_by_split)
-    return out, stats_by_split
+
+def main():
+    p = argparse.ArgumentParser(description="Generate QM9Pairs for a single split.")
+    p.add_argument("--split", required=True, choices=["train", "valid", "test"])
+    p.add_argument("--dev", action="store_true", help="Use small dev sizes (train=200, valid=20, test=20).")
+    p.add_argument("--n", type=int, default=None, help="Number of base molecules (overrides --dev default).")
+    p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
+    args = p.parse_args()
+
+    cfg = QM9PairConfig()
+    seed_everything(cfg.seed)
+
+    _, stats = build_qm9_pairs_for_split(
+        split=args.split,
+        cfg=cfg,
+        force_reprocess=False,
+        debug=False,
+        is_dev=True,
+        n=args.n,
+        sanity_limit=args.sanity_limit,
+    )
+
+    _, stats = build_qm9_pairs_for_split(
+        split=args.split,
+        cfg=cfg,
+        force_reprocess=False,
+        debug=False,
+        is_dev=False,
+        n=args.n,
+        sanity_limit=args.sanity_limit,
+    )
 
 
 if __name__ == "__main__":
-    cfg = QM9PairConfig()
-    seed_everything(cfg.seed)
-    dev_pairs, dev_stats = build_qm9_pairs(force_reprocess=False, debug=False, is_dev=True)
-    # full_pairs, full_stats = build_qm9_pairs(force_reprocess=False, debug=False, is_dev=False)
-    print("\nDone.")
+    main()
