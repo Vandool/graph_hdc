@@ -113,6 +113,7 @@ class MLPClassifier(nn.Module):
         self,
         hv_dim: int = 88 * 88,
         hidden_dims: list[int] | None = None,
+        *,
         use_layer_norm: bool = False,
         use_batch_norm: bool = False,
     ) -> None:

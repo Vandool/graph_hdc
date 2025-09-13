@@ -323,8 +323,6 @@ def greedy_oracle_decoder(
     ys = []
     ps = []
 
-
-
     def _call_oracle(Gs: list[nx.Graph]) -> list[bool]:
         if use_perfect_oracle:
             return perfect_oracle(gs=Gs, full_g_nx=full_g_nx)

@@ -67,6 +67,7 @@ ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-32}"
 ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-32}"
 RESAMPLE_TRAINING_DATA_ON_BATCH="${RESAMPLE_TRAINING_DATA_ON_BATCH:-True}"
 IS_DEV="${IS_DEV:-False}"
+HV_DIMS="${HV_DIMS:-2048,1024,512,256,128,64,32}"
 
 # If dev, make the experiment name explicit
 shopt -s nocasematch
@@ -90,6 +91,7 @@ PY_ARGS=(
   --oracle_beam_size "$ORACLE_BEAM_SIZE"
   --oracle_num_evals "$ORACLE_NUM_EVALS"
   --resample_training_data_on_batch "$RESAMPLE_TRAINING_DATA_ON_BATCH"
+  --hv_dims "$HV_DIMS"
   --is_dev "$IS_DEV"
 )
 

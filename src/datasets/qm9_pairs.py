@@ -612,6 +612,7 @@ class QM9Pairs(Dataset):
                             continue
                         u, v = pos_map[key]
                         g1_pos = make_subgraph_data(full, [u, v])
+                        assert g1_pos.edge_index.shape == torch.Size([2, 2])
 
                         if self.debug:
                             draw(DataTransformer.pyg_to_nx(g1_pos), label="POSITIVE_EDGE", full_g=G, highlight=[(0, 1)])
@@ -642,7 +643,19 @@ class QM9Pairs(Dataset):
                         # Sanity: must be non-edge in parent
                         if G.has_edge(u, v):
                             continue
-                        g1_neg = make_subgraph_data(full, [u, v])  # will have empty edge_index
+                        # Build a 2-node candidate with the SAME node features but FORCE an edge between them.
+                        H_neg = nx.Graph()
+                        fu = G.nodes[u]["feat"]
+                        fv = G.nodes[v]["feat"]
+                        H_neg.add_node(0, feat=fu, target_degree=fu.target_degree)
+                        H_neg.add_node(1, feat=fv, target_degree=fv.target_degree)
+                        H_neg.add_edge(0, 1)  # illegal: this feature-pair never appears as an edge in the parent
+
+                        # Safety: should NOT embed if pair truly forbidden
+                        if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                            continue
+
+                        g1_neg = DataTransformer.nx_to_pyg(H_neg)
 
                         if self.debug:
                             draw_nx_with_atom_colorings(

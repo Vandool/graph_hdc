@@ -354,7 +354,7 @@ class ZincPairsV3(Dataset):
         self,
         base_dataset,
         split="train",
-        root=GLOBAL_DATASET_PATH / "ZincPairs",
+        root=GLOBAL_DATASET_PATH / "ZincPairsV3",
         cfg=None,
         transform=None,
         pre_transform=None,
