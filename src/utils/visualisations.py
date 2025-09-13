@@ -104,7 +104,7 @@ def _pad_axes_to_text(ax: plt.Axes, pad: float = 0.05) -> None:
 def draw_nx_with_atom_colorings(
     H: nx.Graph,
     *,
-    dataset: Literal["ZincSmile", "QM9Smiles"] = "ZincSmile",
+    dataset: Literal["ZincSmiles", "QM9Smiles"] = "ZincSmiles",
     atom_symbols: Sequence[str] = ATOM_TYPES,
     layout: str = "spring",
     seed: int = 42,
