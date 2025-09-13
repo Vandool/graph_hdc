@@ -6,7 +6,7 @@ from torch_geometric import seed_everything
 from torch_geometric.data import Data
 from tqdm.auto import tqdm
 
-from src.datasets.zinc_pairs_v3 import PairData, PairType, ZincPairConfig, ZincPairsV3
+from src.datasets.zinc_pairs_v3 import PairData, PairType, ZincPairV3Config, ZincPairsV3
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.decoder import is_induced_subgraph_by_features
 from src.utils.utils import DataTransformer
@@ -171,7 +171,7 @@ def print_sanity_summary(stats_by_split: dict[str, dict]) -> None:
 def build_zinc_pairs_for_split(
     split: str,
     *,
-    cfg: ZincPairConfig | None = None,
+    cfg: ZincPairV3Config | None = None,
     force_reprocess: bool = False,
     debug: bool = False,
     is_dev: bool = False,
@@ -197,7 +197,7 @@ def build_zinc_pairs_for_split(
     pairs = ZincPairsV3(
         base_dataset=base,
         split=split,
-        cfg=cfg or ZincPairConfig(),
+        cfg=cfg or ZincPairV3Config(),
         dev=is_dev,
         debug=debug,
         force_reprocess=force_reprocess,
@@ -220,7 +220,7 @@ def main():
     p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
     args = p.parse_args()
 
-    cfg = ZincPairConfig()
+    cfg = ZincPairV3Config()
     seed_everything(cfg.seed)
 
     _, stats = build_zinc_pairs_for_split(

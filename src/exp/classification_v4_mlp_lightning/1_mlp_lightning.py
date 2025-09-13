@@ -291,29 +291,41 @@ class LitMLPClassifier(pl.LightningModule):
         h1, h2, y = self._fix_shapes(h1, h2, y)
         logits = self(h1, h2)
         loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
-        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=False, batch_size=y.size(0))
+        self.log("loss", float(loss.detach()), on_step=True, on_epoch=True, prog_bar=False, batch_size=y.size(0))
         return loss
 
     def validation_step(self, batch, batch_idx: int):
-        h1, h2, y = batch
+        h1, h2, y = batch               # keep the same structure as training
         h1, h2, y = self._fix_shapes(h1, h2, y)
+
         logits = self(h1, h2)
-        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+        loss = F.binary_cross_entropy_with_logits(
+            logits, y, pos_weight=self.pos_weight
+        )
 
-        probs = torch.sigmoid(logits)
-        self.val_auc.update(probs, y.long())
-        self.val_ap.update(probs, y.long())
+        # epoch-level val_loss for EarlyStopping
+        sync = getattr(self.trainer, "world_size", 1) > 1
+        self.log(
+            "val_loss", float(loss.detach()),
+            on_step=False, on_epoch=True, prog_bar=True, logger=True,
+            batch_size=y.size(0), sync_dist=sync
+        )
 
-        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=False, batch_size=y.size(0))
-        return {"val_loss": loss}
+        # metrics expect probabilities and int/bool targets
+        probs = logits.sigmoid()
+        self.val_auc.update(probs, y.int())
+        self.val_ap.update(probs, y.int())
 
     def on_validation_epoch_end(self):
-        auc = self.val_auc.compute()
-        ap = self.val_ap.compute()
-        self.log("val/auc", auc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val/ap", ap, on_step=False, on_epoch=True, prog_bar=True)
-        self.val_auc.reset()
-        self.val_ap.reset()
+        # make sure these get logged too (optional)
+        auc = self.val_auc.compute(); ap = self.val_ap.compute()
+        self.log("val_auc", auc, prog_bar=True)
+        self.log("val_ap", ap,  prog_bar=True)
+        self.val_auc.reset(); self.val_ap.reset()
+
+    def test_step(self, batch, batch_idx: int):
+        # mirror validation for later testing
+        return self.validation_step(batch, batch_idx)
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
@@ -564,15 +576,19 @@ def evaluate_as_oracle(
         )
         nx_GS = list(filter(None, nx_GS))
         if len(nx_GS) == 0:
+            print("Nothing decoded!")
             ys.append(0)
             continue
         ps = []
         for j, g in enumerate(nx_GS):
             is_final = is_induced_subgraph_by_features(g1=g, g2=full_graph_nx, node_keys=["feat"])
-            ax = draw_nx_with_atom_colorings(H=g, label="DECODED")
-            fig = ax.figure
-            fig.savefig(artifact_dir / f"Decoded e{epoch}-{i}-{j}", dpi=600, bbox_inches="tight", pad_inches=0.02)
-            plt.close(fig)  # important in loops
+            if is_final:
+                ax = draw_nx_with_atom_colorings(H=g, label="DECODED")
+                fig = ax.figure
+                fig_path = artifact_dir / f"Decoded e{epoch}-{i}-{j}"
+                fig.savefig(fig_path, dpi=600, bbox_inches="tight", pad_inches=0.02)
+                print(f"Decoded Graph detected saved in: {fig_path}")
+                plt.close(fig)  # important in loops
             ps.append(int(is_final))
         correct_p = int(sum(ps) >= 1)
         if correct_p:
@@ -765,7 +781,7 @@ class MetricsPlotsAndOracleCallback(Callback):
                     oracle_beam_size=self.cfg.oracle_beam_size,
                     oracle_threshold=best_thr,
                     dataset=cfg.dataset,
-                    artefacts_dir=self.artefacts_dir,
+                    artifact_dir=self.artefacts_dir,
                     epoch=epoch,
                 )
             pl_module.log("val_oracle_acc", float(oracle_acc), prog_bar=False, logger=True)
@@ -946,7 +962,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
         pos_weight=(cfg.n_per_parent / cfg.p_per_parent) if cfg.p_per_parent != cfg.n_per_parent else None,
-    )
+    ).to(device=device)
 
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
     log(f"Model on: {next(model.parameters()).device}")
@@ -969,9 +985,10 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=2,
+        patience=4,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
+        check_on_train_epoch_end=False,
         verbose=True,
     )
 
@@ -989,11 +1006,11 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         devices="auto",
         strategy="auto",
         # gradient_clip_val=1.0,  # Do we need this?
-        log_every_n_steps=100 if not is_dev else 1,
+        log_every_n_steps=500 if not is_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
-        num_sanity_val_steps=2,
+        num_sanity_val_steps=100,
         limit_val_batches=100,
     )
 
@@ -1126,8 +1143,9 @@ if __name__ == "__main__":
         cfg: Config = Config(
             exp_dir_name="overfitting_batch_norm",
             seed=42,
-            epochs=1,
+            epochs=10,
             batch_size=4,
+            use_batch_norm=True,
             hv_dim=40 * 40,
             vsa=VSAModel.HRR,
             dataset=SupportedDataset.QM9_SMILES_HRR_1600,
@@ -1139,8 +1157,8 @@ if __name__ == "__main__":
             pin_memory=False,
             continue_from=None,
             resume_retrain_last_epoch=False,
-            p_per_parent=2,
-            n_per_parent=2,
+            p_per_parent=30,
+            n_per_parent=30,
             oracle_beam_size=8,
             oracle_num_evals=8,
             resample_training_data_on_batch=True,
