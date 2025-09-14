@@ -820,17 +820,28 @@ class MetricsPlotsAndOracleCallback(Callback):
         # ---- Plots ----
         self.artefacts_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1) Loss curves
-        epochs = np.arange(len(self._val_losses))
+        # 1) Loss curves (drop first 2 epochs if present; no other dynamics)
         plt.figure()
+
+        # Train
         if self._train_losses:
-            plt.plot(np.arange(len(self._train_losses)), self._train_losses, label="train_loss")
-        plt.plot(epochs, self._val_losses, label="val_loss")
+            tr = np.asarray(self._train_losses, dtype=float)
+            n_tr = tr.shape[0]
+            s_tr = 2 if n_tr > 2 else 0
+            plt.plot(np.arange(n_tr)[s_tr:], tr[s_tr:], label="train_loss")
+
+        # Val
+        val = np.asarray(self._val_losses, dtype=float)
+        n_val = val.shape[0]
+        s_val = 2 if n_val > 2 else 0
+        plt.plot(np.arange(n_val)[s_val:], val[s_val:], label="val_loss")
+
         plt.xlabel("epoch")
         plt.ylabel("loss")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(self.artefacts_dir / "loss_curves.png")
+        (self.artefacts_dir).mkdir(parents=True, exist_ok=True)
+        plt.savefig(self.artefacts_dir / "loss_curves.png", dpi=150)
         plt.close()
 
         # 2) AUC/AP over epochs (if available)
@@ -1143,7 +1154,7 @@ if __name__ == "__main__":
         cfg: Config = Config(
             exp_dir_name="overfitting_batch_norm",
             seed=42,
-            epochs=10,
+            epochs=1,
             batch_size=4,
             use_batch_norm=True,
             hv_dim=40 * 40,
