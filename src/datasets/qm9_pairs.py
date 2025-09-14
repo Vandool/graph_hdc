@@ -1,172 +1,328 @@
+"""
+We want a pairwise classifier f(G_1, G_2) to {0,1} that answers “is G_1 an induced subgraph of G_2” under
+feature-aware matching, with node features frozen to those of the final graph.
+
+•	Positives (P): connected, induced subgraphs G[S] of the full molecule G for sizes k=2,dots,K. Node features are
+    taken from G (as you already do), edges are exactly those among S present in G.
+•	Negatives (N): same node feature convention, but edge pattern (or node set) must differ so that G_1 is not an
+    induced subgraph of G.
+
+Positive Sampling:
+
+
+"""
+
 import collections
 import random
-from collections import defaultdict
 from collections.abc import Sequence
-from itertools import combinations_with_replacement
 from pathlib import Path
 
 import networkx as nx
 import torch
-from matplotlib import pyplot as plt
+from torch import Tensor
 from torch_geometric.data import Data, Dataset
 from torch_geometric.data import InMemoryDataset as _IMD
 from tqdm.auto import tqdm
 
-from src.encoding.decoder import residual_degree, wl_hash
-from src.encoding.the_types import Feat
-from src.utils.utils import GLOBAL_DATASET_PATH, DataTransformer
-from src.utils.visualisations import draw_nx_with_atom_colorings
-
-# Plotting
-plt.show(block=True)
-
-
-# ────────────────────────────── Plotting (Debugging) ─────────────────────────
-def draw(
-    g: nx.Graph, label: str, full_g: nx.Graph | None = None, highlight: list[tuple[int, int]] | None = None
-) -> None:
-    draw_nx_with_atom_colorings(
-        H=g,
-        dataset="QM9Smiles",
-        label=label,
-        overlay_full_graph=full_g,
-        overlay_draw_nodes=True,
-        overlay_labels=True,
-        overlay_node_size=1400,
-        overlay_alpha=0.40,
-        # keep overlay behind subgraph labels
-        # (only needed if you added the overlay-label z knob)
-        # overlay_label_z=1.8,
-        highlight_edges=highlight,
-        highlight_color="#ef4444",
-        highlight_width=5.0,
-        figsize=(12, 9),
-    )
-    plt.tight_layout()
-    plt.show(block=False)
+from src.utils.utils import GLOBAL_DATASET_PATH
 
 
 # ────────────────────────────── utilities (graph I/O) ─────────────────────────
-def is_induced_subgraph_feature_aware_cheap(g: nx.Graph, G: nx.Graph, require_connected: bool = True) -> bool:
-    """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
-    if require_connected and g.number_of_nodes() and not nx.is_connected(g):
-        return False
+def _as_int_tuple_row(x_row: Sequence[float]) -> tuple[int, ...]:
+    """Cast discrete-coded float row -> integer tuple label: (atom_id, degree_idx, charge_idx, num_Hs)."""
+    return tuple(int(v) for v in x_row)
 
-    nm = lambda a, b: a["feat"] == b["feat"]
-    GM = nx.algorithms.isomorphism.GraphMatcher(G, g, node_match=nm)
+
+def pyg_to_nx(data: Data) -> nx.Graph:
+    """PyG Data -> undirected NX graph with node attribute `label` = tuple[int,...]."""
+    G = nx.Graph()
+    x = data.x.cpu().numpy()
+    for i in range(x.shape[0]):
+        G.add_node(i, label=_as_int_tuple_row(x[i]))
+    ei = data.edge_index.cpu().numpy()
+    for u, v in zip(ei[0], ei[1], strict=False):
+        if u < v:
+            G.add_edge(int(u), int(v))
+    return G
+
+
+def induced_edge_index_from_node_set(edge_index: Tensor, nodes: Sequence[int]) -> Tensor:
+    """Undirected both-direction edge_index for induced subgraph on `nodes`."""
+    nodes = list(nodes)
+    pos = {n: i for i, n in enumerate(nodes)}
+    src, dst = edge_index.tolist()
+    undirected = set()
+    for u, v in zip(src, dst, strict=False):
+        if u in pos and v in pos and u < v:
+            undirected.add((pos[u], pos[v]))
+    if not undirected:
+        return torch.empty((2, 0), dtype=torch.long)
+    s, d = [], []
+    for u, v in undirected:
+        s += [u, v]
+        d += [v, u]
+    return torch.tensor([s, d], dtype=torch.long)
+
+
+def make_subgraph_data(full: Data, node_indices: Sequence[int], *, edge_index_override: Tensor | None = None) -> Data:
+    """Create subgraph Data with features copied from the parent (no recompute)."""
+    node_indices = list(node_indices)
+    x_sub = full.x[node_indices].clone()
+    ei_sub = (
+        edge_index_override
+        if edge_index_override is not None
+        else induced_edge_index_from_node_set(full.edge_index, node_indices)
+    )
+    out = Data(x=x_sub, edge_index=ei_sub)
+    out.parent_size = torch.tensor([full.num_nodes], dtype=torch.long)
+    return out
+
+
+def nx_to_edge_index_on_ordered_nodes(H: nx.Graph, ordered_nodes: Sequence[int]) -> Tensor:
+    """NX Graph -> edge_index on local indices defined by `ordered_nodes`."""
+    pos = {n: i for i, n in enumerate(ordered_nodes)}
+    undirected = {(min(pos[u], pos[v]), max(pos[u], pos[v])) for (u, v) in H.edges()}
+    if not undirected:
+        return torch.empty((2, 0), dtype=torch.long)
+    s, d = [], []
+    for u, v in undirected:
+        s += [u, v]
+        d += [v, u]
+    return torch.tensor([s, d], dtype=torch.long)
+
+
+def low_degree_anchor_order(G: nx.Graph) -> list[int]:
+    """Nodes sorted by (target_degree_from_label, actual_degree) ascending."""
+    return sorted(
+        G.nodes(),
+        key=lambda v: (target_degree_from_label(G.nodes[v]["label"]), G.degree[v]),
+    )
+
+
+# ───────── helpers to guarantee negatives by construction ─────────
+def is_induced_subgraph_feature_aware_cheap(G_small: nx.Graph, G_big: nx.Graph) -> bool:
+    """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
+    nm = lambda a, b: a["label"] == b["label"]
+    GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
     return GM.subgraph_is_isomorphic()
 
 
-def make_subgraph_data(full: Data, S: Sequence[int]) -> Data:
-    r"""
-    Build a PyG ``Data`` that contains only nodes in ``S`` and edges between them.
+def node_label(G: nx.Graph, v: int) -> tuple[int, ...]:
+    return G.nodes[v]["label"]
 
-    Parameters
-    ----------
-    full : Data
-        Parent PyG graph (undirected represented as bidirectional directed edges).
-    S : Sequence[int]
-        Node indices (from ``full``) to keep. Order defines the new node order.
 
-    Returns
-    -------
-    Data
-        Subgraph with ``x`` sliced to ``S`` and ``edge_index`` filtered/remapped.
+def parent_label_edge_set(G: nx.Graph) -> set[tuple[tuple[int, ...], tuple[int, ...]]]:
+    S: set[tuple[tuple[int, ...], tuple[int, ...]]] = set()
+    for u, v in G.edges():
+        la, lb = node_label(G, u), node_label(G, v)
+        S.add((la, lb) if la <= lb else (lb, la))
+    return S
+
+
+def unordered_label_pair(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    return (a, b) if a <= b else (b, a)
+
+
+def wrong_add_candidates_anywhere(
+    G_parent: nx.Graph,
+    S: Sequence[int],
+    parent_label_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+) -> list[tuple[int, int]]:
+    """All non-edges (u,v) in G_parent[S] such that residual[u]>0, residual[v]>0,
+    and unordered label pair (label(u),label(v)) DOES NOT occur as an edge anywhere in parent."""
+    H = G_parent.subgraph(S)
+    res = residual_capacity_vector(G_parent, S)
+    # all unordered pairs in S that are non-edges
+    S_list = list(S)
+    non_edges = [
+        (S_list[i], S_list[j])
+        for i in range(len(S_list))
+        for j in range(i + 1, len(S_list))
+        if not H.has_edge(S_list[i], S_list[j])
+    ]
+    bad = []
+    for u, v in non_edges:
+        if res[u] <= 0 or res[v] <= 0:
+            continue
+        lu = node_label(G_parent, u)
+        lv = node_label(G_parent, v)
+        if unordered_label_pair(lu, lv) not in parent_label_pairs:
+            bad.append((u, v))
+    return bad
+
+
+# ───────────────────────── residual-degree utilities ──────────────────────────
+def target_degree_from_label(label: tuple[int, ...]) -> int:
+    """degree_idx is stored as 0..4 for degrees 1..5 → return target degree."""
+    return int(label[1]) + 1
+
+
+def residual_capacity_vector(G: nx.Graph, S: Sequence[int]) -> dict[int, int]:
+    """
+    residual(v) = target_degree_in_final(v) - current_degree_in_subgraph(v), for v in S.
+    Target from node label; current from G.subgraph(S).
+    """
+    H = G.subgraph(S)
+    res = {}
+    for v in S:
+        tgt = target_degree_from_label(G.nodes[v]["label"])
+        cur = H.degree[v]
+        res[v] = tgt - cur
+    return res
+
+
+def forbidden_pairs_k2(
+    G: nx.Graph,
+    parent_pairs: set[tuple[tuple[int, ...], tuple[int, ...]]],
+) -> list[tuple[int, int]]:
+    """
+    All unordered node pairs (u,v), u<v, such that:
+      - (u,v) is NOT an edge in G, and
+      - the unordered label pair (label(u), label(v)) NEVER occurs as an edge anywhere in G, and
+      - both nodes can support at least one incident edge in a 2-node start (target degree >= 1).
+    """
+    nodes = list(G.nodes())
+    bad = []
+    for i, u in enumerate(nodes):
+        lu = node_label(G, u)
+        if target_degree_from_label(lu) < 1:
+            continue
+        for v in nodes[i + 1 :]:
+            if G.has_edge(u, v):
+                continue
+            lv = node_label(G, v)
+            if target_degree_from_label(lv) < 1:
+                continue
+            if unordered_label_pair(lu, lv) not in parent_pairs:
+                bad.append((u, v))
+    return bad
+
+
+# ────────────────────────────── positive samplers ─────────────────────────────
+
+
+def sample_connected_kset_with_anchor(
+    G: nx.Graph,
+    k: int,
+    anchor: int,
+    *,
+    rng: random.Random,
+    max_expands: int = 4,
+) -> list[int] | None:
+    """
+    Sample a connected k-node subset that **contains** a given anchor.
+
+    The procedure is a randomized, anchored BFS-style growth:
+    it starts from ``anchor``, repeatedly adds unvisited neighbors to the
+    partial set, and—if growth stalls—tops up by adding any neighbor of
+    the current set. The returned node set (if any) is connected and
+    includes ``anchor``.
+
+    :param G: Undirected NetworkX graph.
+    :param k: Target subgraph size (``k >= 1``).
+    :param anchor: Node id that must be included in the sample.
+    :param rng: Python ``random.Random`` instance for reproducibility.
+    :param max_expands: Number of independent restart attempts.
+    :returns: List of node ids of length ``k`` if successful, else ``None``.
 
     Notes
     -----
-    * Keeps *only* edges whose endpoints are both in ``S``.
-    * If no such edges exist, ``edge_index`` is an empty tensor of shape ``[2, 0]``.
+    - If the anchor's connected component has fewer than ``k`` nodes, no
+      sample exists and the function will return ``None``.
+    - The “top-up” stage only adds neighbors of the current set, so
+      connectivity is preserved by construction; the final
+      ``nx.is_connected`` check is a safety guard.
+    - Runtime per attempt is roughly ``O(k * avg_degree)`` on sparse graphs.
     """
-    S = list(map(int, S))
-    idx_map: dict[int, int] = {orig: i for i, orig in enumerate(S)}
-    x_sub = full.x[S] if full.x is not None else None
+    # Quick input guards: impossible k, empty graph, or bad anchor.
+    if k <= 0 or k > G.number_of_nodes() or anchor not in G:
+        return None
 
-    if full.edge_index is None or full.edge_index.numel() == 0:
-        ei_sub = torch.empty((2, 0), dtype=torch.long)
-        return Data(x=x_sub, edge_index=ei_sub)
+    for _ in range(max_expands):
+        # Initialize the growing set S, a visited set, and a frontier set.
+        # - S tracks the ordered nodes chosen so far (will be returned).
+        # - visited prevents re-adding the same node.
+        # - frontier contains boundary nodes from which we try to expand.
+        S = [anchor]
+        visited = {anchor}
+        frontier = {anchor}
 
-    src = full.edge_index[0].tolist()
-    dst = full.edge_index[1].tolist()
-    S_set = set(S)
+        # Stage 1: BFS-like randomized expansion along existing edges until |S| == k or frontier empties.
+        while len(S) < k and frontier:
+            # Randomly choose a boundary node to expand.
+            u = rng.choice(list(frontier))
 
-    e_src, e_dst = [], []
-    for u, v in zip(src, dst, strict=False):
-        if u in S_set and v in S_set:
-            e_src.append(idx_map[u])
-            e_dst.append(idx_map[v])
+            # Consider only unvisited neighbors to avoid duplicates.
+            nbrs = [w for w in G.neighbors(u) if w not in visited]
 
-    if not e_src:
-        ei_sub = torch.empty((2, 0), dtype=torch.long)
-    else:
-        ei_sub = torch.tensor([e_src, e_dst], dtype=torch.long)
+            if not nbrs:
+                # Can't expand from u anymore → remove u from the frontier and try another boundary node.
+                frontier.remove(u)
+                continue
 
-    return Data(x=x_sub, edge_index=ei_sub)
+            # Pick a random neighbor and add it to the sample; it becomes part of the frontier as well.
+            w = rng.choice(nbrs)
+            S.append(w)
+            visited.add(w)
+            frontier.add(w)
+
+        # Stage 2: If we still haven't reached size k, try to "top up" the set
+        # by adding *any* neighbor of the current S (still preserves connectivity).
+        if len(S) < k:
+            # Collect neighbors of S excluding nodes already in S.
+            candidates = {w for u in S for w in G.neighbors(u)} - set(S)
+            while len(S) < k and candidates:
+                w = rng.choice(list(candidates))
+                S.append(w)
+                candidates.remove(w)
+
+        # Final safety checks: correct size, connectivity, and anchor containment.
+        if len(S) == k and nx.is_connected(G.subgraph(S)) and anchor in S:
+            return S
+
+    # All attempts failed: either unlucky sampling or anchor's component < k.
+    return None
 
 
+# ---------- helpers for k==2 (feature-pair reps) ----------
 def _feat_tuple(G: nx.Graph, n: int) -> tuple[int, int, int, int]:
-    r"""
-    Return the canonical 4-tuple feature for node ``n``.
-
-    Assumes each node carries ``feat: Feat``.
-    """
-    return G.nodes[n]["feat"].to_tuple()
+    return G.nodes[n]["label"]
 
 
 def _norm_pair(a: tuple, b: tuple) -> tuple[tuple, tuple]:
-    r"""
-    Return a canonical unordered pair of feature tuples: ``(min(a,b), max(a,b))``.
-    """
     return (a, b) if a <= b else (b, a)
 
 
 def distinct_edge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tuple[int, int]]:
-    r"""
-    Map each *distinct* unordered **feature-pair** present as an edge in ``G``
-    to one representative node pair ``(u, v)``.
-
-    Distinctness is by node **features**, not node IDs.
-    """
-    rep: dict[tuple[tuple, tuple], tuple[int, int]] = {}
+    rep = {}
     for u, v in G.edges():
-        fu, fv = _feat_tuple(G, u), _feat_tuple(G, v)
-        key = _norm_pair(fu, fv)
+        key = _norm_pair(_feat_tuple(G, u), _feat_tuple(G, v))
         if key not in rep:
             rep[key] = (u, v)
     return rep
 
 
 def distinct_nonedge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tuple[int, int]]:
-    r"""
-    Map each unordered **feature-pair** that occurs in the node set but **never**
-    as an edge in ``G`` to one representative **non-edge** node pair.
-
-    Returns
-    -------
-    dict
-        Keys are unordered feature-pair tuples; values are node pairs ``(u, v)``
-        with those features such that ``not G.has_edge(u, v)``.
-    """
-    # Nodes by feature
-    nodes_by_feat: dict[tuple, list[int]] = defaultdict(list)
+    # nodes grouped by feature
+    nodes_by_feat = collections.defaultdict(list)
     for n in G.nodes:
         nodes_by_feat[_feat_tuple(G, n)].append(n)
-
     feat_list = sorted(nodes_by_feat.keys())
-    edge_pairs = set(distinct_edge_feature_pairs(G).keys())
+    edge_keys = set(distinct_edge_feature_pairs(G).keys())
 
-    out: dict[tuple[tuple, tuple], tuple[int, int]] = {}
+    out = {}
+    from itertools import combinations_with_replacement
 
     for fa, fb in combinations_with_replacement(feat_list, 2):
         key = _norm_pair(fa, fb)
-        if key in edge_pairs:
+        if key in edge_keys:
             continue
-
         A, B = nodes_by_feat[fa], nodes_by_feat[fb]
+        found = None
         if fa == fb:
             if len(A) < 2:
                 continue
-            found = None
+            # find a non-edge among equal-feature nodes
             for i in range(len(A)):
                 for j in range(i + 1, len(A)):
                     u, v = A[i], A[j]
@@ -176,7 +332,6 @@ def distinct_nonedge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tup
                 if found:
                     break
         else:
-            found = None
             for u in A:
                 for v in B:
                     if not G.has_edge(u, v):
@@ -184,57 +339,8 @@ def distinct_nonedge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tup
                         break
                 if found:
                     break
-
-        if found is not None:
+        if found:
             out[key] = found
-
-    return out
-
-
-# ────────────────────────────── positive samplers ─────────────────────────────
-def _sample_connected_set_bfs(G: nx.Graph, k: int, *, tries: int = 64, rng) -> list[int] | None:
-    r"""
-    Sample a connected node set ``S`` of size ``k`` using random-BFS roots.
-
-    Returns
-    -------
-    list[int] | None
-        Node ids if successful; otherwise ``None`` after ``tries`` attempts.
-    """
-    nodes = tuple(G.nodes)
-    if not nodes:
-        return None
-    for _ in range(tries):
-        s = rng.choice(nodes)
-        order = list(nx.bfs_tree(G, s).nodes())
-        if len(order) >= k:
-            return order[:k]
-    return None
-
-
-def _pick_positive_sets(G: nx.Graph, *, k: int, budget: int, min_edges: int = 2, rng) -> list[list[int]]:
-    r"""
-    Pick up to ``budget`` **connected** induced subgraphs of size ``k``,
-    deduplicated by WL hash (feat-aware). Enforces ``#E >= min_edges``.
-    """
-    out: list[list[int]] = []
-    seen: set[str] = set()
-    # generous attempt cap to avoid rare degenerate cases
-    max_attempts = max(64, 20 * budget)
-    attempts = 0
-    while len(out) < budget and attempts < max_attempts:
-        attempts += 1
-        S = _sample_connected_set_bfs(G, k, rng=rng)
-        if not S:
-            continue
-        H = G.subgraph(S).copy()
-        if H.number_of_edges() < min_edges:
-            continue
-        key = wl_hash(H)  # uses node 'feat' labels
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(S)
     return out
 
 
@@ -279,8 +385,8 @@ class QM9PairConfig:
     # budgets (k > 2)
     pos_per_k_main = 4
     neg_per_pos_main = 5  # ↑ was 2
-    pos_per_k_tail = 2 # Not relvant for QM9
-    neg_per_pos_tail = 3 # Not relevant for QM9
+    pos_per_k_tail = 2  # Not relvant for QM9
+    neg_per_pos_tail = 3  # Not relevant for QM9
 
     # enable families
     neg_forbidden_add = True
@@ -340,7 +446,7 @@ class PairType(IntEnum):
     ANCHOR_AWARE : 6
         Add one real node w∉S and connect to possible anchors in S; verified **not** induced.
     NEGATIVE_EDGE : 7
-        Edges that does not appear in the parent graph, where nodes appear. (Graph with two nodes and no edge), k == 2
+        Edges that does not appear in the parent graph, where nodes appear. (Graph with two nodes and one edge), k == 2
 
     """
 
@@ -476,7 +582,7 @@ class QM9Pairs(Dataset):
             buffer = []
             shard_id += 1
 
-        for pair in self._generate_pairs_stream(debug=self.debug):
+        for pair in self._generate_pairs_stream():
             # enforce uniform schema
             if schema_keys is None:
                 schema_keys = set(pair.keys())
@@ -493,7 +599,7 @@ class QM9Pairs(Dataset):
         flush()
         torch.save({"shards": shard_files, "index": index}, self.idx_path)
 
-    def _generate_pairs_stream(self, debug: bool = False):
+    def _generate_pairs_stream(self):
         r"""
         Build and serialize pair samples for **feature-aware induced-subgraph** containment.
 
@@ -506,44 +612,200 @@ class QM9Pairs(Dataset):
 
         Samples
         -------
-        1) Positives
-            Type -1) Positive edge: all distinct edges in the parent graph. (Graph with two nodes and one edge)
-            Type 0) The rest: connected induced subgraphs G[S] with **frozen** node labels.
-                    (Graph with nodes > 2 and edge > 1)
+        1) Positives: connected induced subgraphs G[S] with **frozen** node labels.
         2) Negatives:
            • Guaranteed-by-construction:
-             Type 1) Wrong-add with a **globally forbidden** label pair inside S.
+             Type1) Wrong-add with a **globally forbidden** label pair inside S.
                 Add an edge (u,v) inside S where the label pair never occurs as an edge anywhere in the parent.
                 Residual-respecting.
            • VF2-verified hard negatives (always correct):
-             Type 2) Wrong-edge (allowed pair): add a non-edge (u,v) in G[S] where the **label pair is allowed**
+             Type2) Wrong-edge (allowed pair): add a non-edge (u,v) in G[S] where the **label pair is allowed**
                 somewhere in G.
-             Type 3) Cross-parent: use positive G[S] against a *different* parent that does not contain it.
+             Type3) Cross-parent: use positive G[S] against a *different* parent that does not contain it.
                 Ensures the oracle actually uses full_g_h and doesn’t devolve into a graph-only classifier. It’s a
                 helpful regularizer for generalization (same motif may or may not be present depending on target).
                 Should be kept capped in training
-             Type 4) Missing-edge: remove an existing edge from G[S].
+             Type4) Missing-edge: remove an existing edge from G[S].
                 any candidate missing a required edge between already-selected nodes must be rejected by an
                 induced-subgraph oracle. This will enforce the oracle to reject subgraphs, that are missing an edge to
                 become a ring structure.
-             Type 5) Degree-preserving rewire: swap endpoints of two disjoint edges within S.
+             Type5) Degree-preserving rewire: swap endpoints of two disjoint edges within S.
                 This might help the decoder, to correct the previously wrnogly made decisions!
                 The decoder can grow into a topology with the same degree sequence yet wrong adjacency due to a wrong
                 early attachment. This family creates strong “looks plausible by degrees, but wrong by structure”
                 examples. Good as hard negatives. Should be kept capped in training
-             Type 6) Anchor-aware (decoder-like): add **one real node** w∉S (its label from G), connect to feasible
+             Type6) Anchor-aware (decoder-like): add **one real node** w∉S (its label from G), connect to feasible
                 anchors in S. This is the closest simulation of what the decoder actually does: add one real node,
                 attach to anchors by residuals, and see if the (k+1) candidate remains induced in the target. This
                 directly teaches the boundary between “good next step” and “bad next step.” Core.
-             Type 7) Illegal-edge: edges that does not appear in the parent graph, where nodes appear.
 
-        All VF2 checks use a cheaper version of VF2, ensuring labels are correct even without VF2 at inference.
-        At the end of the generation VF2 will verify a large sample of the data.
+        All VF2 checks use `is_induced_subgraph_feature_aware`, ensuring labels are correct even without VF2 at inference.
+
+        Notes
+        -----
+        - Positives per (parent,k) are deduplicated by S.
+        - `cfg` may define:
+            k_min, k_max, k_cap,
+            pos_per_k_main, neg_per_pos_main,
+            pos_per_k_tail, neg_per_pos_tail,
+            neg_* flags (enable/disable families),
+            cap_* per-family caps (shared by main/tail unless *_tail provided),
+            tail_anchor_fraction for positive sampling.
         """
         rng, cfg = self._rng, self.cfg
 
+        # -------------------------- local helpers (kept inside) --------------------------
+
+        def _label(v: int, G: nx.Graph) -> tuple[int, ...]:
+            return G.nodes[v]["label"]
+
+        def _target_deg(label: tuple[int, ...]) -> int:
+            # degree_idx (0..4) encodes degrees 1..5
+            return int(label[1]) + 1
+
+        def _allowed_label_pairs(G: nx.Graph) -> set[tuple[tuple[int, ...], tuple[int, ...]]]:
+            """All unordered label pairs that appear as edges **anywhere** in G."""
+            S: set[tuple[tuple[int, ...], tuple[int, ...]]] = set()
+            for u, v in G.edges():
+                a, b = _label(u, G), _label(v, G)
+                S.add((a, b) if a <= b else (b, a))
+            return S
+
+        def _residuals_on_S(G: nx.Graph, S: list[int]) -> dict[int, int]:
+            """Residual(v) = target_degree(v) - degree_in_induced(G,S)(v)."""
+            H = G.subgraph(S)
+            res = {}
+            for v in S:
+                res[v] = _target_deg(_label(v, G)) - H.degree[v]
+            return res
+
+        def _distinct_k_connected_with_anchor(G: nx.Graph, k: int, anchor: int) -> list[int] | None:
+            """Thin wrapper around your anchored sampler."""
+            return sample_connected_kset_with_anchor(G, k, anchor=anchor, rng=rng)
+
+        # ----- Hard negative A: wrong-edge (allowed pair), return (S, edge_index_override) -----
+        def _gen_wrong_edge_allowed(G: nx.Graph, S: list[int], max_neg: int) -> list[tuple[list[int], torch.Tensor]]:
+            H = G.subgraph(S).copy()
+            allowed = _allowed_label_pairs(G)
+            out: list[tuple[list[int], torch.Tensor]] = []
+            L = len(S)
+            for i in range(L):
+                for j in range(i + 1, L):
+                    u, v = S[i], S[j]
+                    if H.has_edge(u, v):
+                        continue  # must be a non-edge in S
+                    pair = (_label(u, G), _label(v, G))
+                    pair = pair if pair[0] <= pair[1] else (pair[1], pair[0])
+                    if pair not in allowed:
+                        continue  # this is the "forbidden" family handled elsewhere
+                    H2 = H.copy()
+                    H2.add_edge(u, v)
+                    if nx.is_connected(H2) and not is_induced_subgraph_feature_aware_cheap(H2, G):
+                        ei = nx_to_edge_index_on_ordered_nodes(H2, S)
+                        out.append((S, ei))
+                        if len(out) >= max_neg:
+                            return out
+            return out
+
+        # ----- Hard negative B: missing-edge (verified), return (S, edge_index_override) -----
+        def _gen_missing_edge_verified(G: nx.Graph, S: list[int], max_neg: int) -> list[tuple[list[int], torch.Tensor]]:
+            H = G.subgraph(S).copy()
+            out: list[tuple[list[int], torch.Tensor]] = []
+            for u, v in list(H.edges()):
+                H2 = H.copy()
+                H2.remove_edge(u, v)
+                if nx.is_connected(H2) and not is_induced_subgraph_feature_aware_cheap(H2, G):
+                    ei = nx_to_edge_index_on_ordered_nodes(H2, S)
+                    out.append((S, ei))
+                    if len(out) >= max_neg:
+                        break
+            return out
+
+        # ----- Hard negative C: degree-preserving rewire (verified), return (S, edge_index_override) -----
+        def _gen_rewire_degree_preserving(
+            G: nx.Graph, S: list[int], max_neg: int
+        ) -> list[tuple[list[int], torch.Tensor]]:
+            H = G.subgraph(S).copy()
+            out: list[tuple[list[int], torch.Tensor]] = []
+            E = list(H.edges())
+            for i in range(len(E)):
+                a, b = E[i]
+                for j in range(i + 1, len(E)):
+                    c, d = E[j]
+                    if len({a, b, c, d}) < 4:
+                        continue  # need disjoint edges
+                    for (x, y), (p, q) in [((a, c), (b, d)), ((a, d), (b, c))]:
+                        if H.has_edge(*sorted((x, y))) or H.has_edge(*sorted((p, q))):
+                            continue
+                        H2 = H.copy()
+                        H2.remove_edge(a, b)
+                        H2.remove_edge(c, d)
+                        H2.add_edge(*sorted((x, y)))
+                        H2.add_edge(*sorted((p, q)))
+                        if nx.is_connected(H2) and not is_induced_subgraph_feature_aware_cheap(H2, G):
+                            ei = nx_to_edge_index_on_ordered_nodes(H2, S)
+                            out.append((S, ei))
+                            if len(out) >= max_neg:
+                                return out
+            return out
+
+        # ----- Hard negative D: cross-parent indices (verified by VF2) -----
+        def _gen_cross_parent_indices(
+            G_pos: nx.Graph, parents: list[nx.Graph], self_idx: int, max_neg: int
+        ) -> list[int]:
+            out = []
+            for j, G_other in enumerate(parents):
+                if j == self_idx:
+                    continue
+                if not is_induced_subgraph_feature_aware_cheap(G_pos, G_other):
+                    out.append(j)
+                    if len(out) >= max_neg:
+                        break
+            return out
+
+        # ----- Hard negative E: anchor-aware (decoder-like), return (S_plus, edge_index_override) -----
+        def _gen_anchor_aware(G: nx.Graph, S: list[int], max_neg: int) -> list[tuple[list[int], torch.Tensor]]:
+            """
+            Add ONE real node w ∉ S (keep its label), connect to a feasible subset of anchors in S.
+            Keep only if connected and NOT induced anywhere in G. Returns exact edge_index override.
+            """
+            H = G.subgraph(S).copy()
+            res = _residuals_on_S(G, S)
+            anchors_now = [v for v in S if res[v] > 0]
+            if not anchors_now:
+                return []
+
+            pool = [w for w in G.nodes() if w not in S]
+            if not pool:
+                return []
+
+            out: list[tuple[list[int], torch.Tensor]] = []
+            tries = 0
+            while len(out) < max_neg and tries < 50 * max_neg:
+                tries += 1
+                w = rng.choice(pool)
+                lab_w = _label(w, G)
+                deg_w = _target_deg(lab_w)
+
+                d_new = min(max(1, deg_w), len(anchors_now))
+                cand_anchors = [a for a in anchors_now if res[a] > 0]
+                if len(cand_anchors) < d_new:
+                    continue
+                chosen = rng.sample(cand_anchors, d_new)
+
+                H2 = H.copy()
+                H2.add_node(w, label=lab_w)
+                for a in chosen:
+                    H2.add_edge(w, a)
+
+                if nx.is_connected(H2) and not is_induced_subgraph_feature_aware_cheap(H2, G):
+                    S_plus = S + [w]
+                    ei = nx_to_edge_index_on_ordered_nodes(H2, S_plus)
+                    out.append((S_plus, ei))
+            return out
+
         # -------------------------- precompute NX views --------------------------
-        nx_views = [DataTransformer.pyg_to_nx(self.base[i]) for i in range(len(self.base))]
+        nx_views = [pyg_to_nx(self.base[i]) for i in range(len(self.base))]
 
         # -------------------------- config (main vs tail budgets) --------------------------
         k_min = getattr(cfg, "k_min", 2)
@@ -555,16 +817,12 @@ class QM9Pairs(Dataset):
         pos_per_k_tail = getattr(cfg, "pos_per_k_tail", 1)
         neg_per_pos_tail = getattr(cfg, "neg_per_pos_tail", 1)
 
-        cross_parent_rate = getattr(cfg, "cross_parent_rate", 0.2)
         # enable/disable hard negatives
         use_wrong_edge_allowed = getattr(cfg, "neg_wrong_edge_allowed", True)
         use_missing_edge_verified = getattr(cfg, "neg_missing_edge_verified", True)
         use_rewire = getattr(cfg, "neg_rewire", True)
         use_cross_parent = getattr(cfg, "neg_cross_parent", True)
         use_anchor_aware = getattr(cfg, "neg_anchor_aware", True)
-        use_forbidden_add = getattr(cfg, "neg_forbidden_add", True)
-        cap_forbidden_add = getattr(cfg, "cap_forbidden_add", 1)
-        cap_forbidden_add_t = getattr(cfg, "cap_forbidden_add_tail", cap_forbidden_add)
 
         # per-family caps (shared for main/tail unless *_tail provided)
         cap_wrong_edge_allowed = getattr(cfg, "cap_wrong_edge_allowed", 1)
@@ -572,6 +830,7 @@ class QM9Pairs(Dataset):
         cap_rewire = getattr(cfg, "cap_rewire", 1)
         cap_cross_parent = getattr(cfg, "cap_cross_parent", 1)
         cap_anchor_aware = getattr(cfg, "cap_anchor_aware", 1)
+        cross_parent_rate = getattr(cfg, "cross_parent_rate", 0.2)
 
         cap_wrong_edge_allowed_t = getattr(cfg, "cap_wrong_edge_allowed_tail", cap_wrong_edge_allowed)
         cap_missing_edge_t = getattr(cfg, "cap_missing_edge_tail", cap_missing_edge)
@@ -592,12 +851,11 @@ class QM9Pairs(Dataset):
         for parent_idx in parent_iter:
             full: Data = self.base[parent_idx]
             G = nx_views[parent_idx]
-            # Distinct feature-pairs that occur as edges in parent G
-            edge_feat_keys = set(distinct_edge_feature_pairs(G).keys())
-            if debug:
-                draw_nx_with_atom_colorings(H=G, label=f"ORIGINAL Parten {parent_idx}")
+            parent_pairs = _allowed_label_pairs(G)
 
             N = G.number_of_nodes()
+            if k_min > N:
+                continue
 
             k_hi = N if (k_max is None) else min(k_max, N)
 
@@ -610,27 +868,20 @@ class QM9Pairs(Dataset):
             )
 
             for k in k_iter:
-                seen_set: set[tuple[tuple, tuple]] = set()
-
                 if k == 2:
-                    # ---- positives: distinct edges by feature-pair ----
-                    pos_map = distinct_edge_feature_pairs(G)  # { (featA,featB) : (u,v) }
-                    pos_keys_sorted = sorted(pos_map.keys())  # deterministic order
+                    # ---- POSITIVES: one per distinct edge feature-pair ----
+                    pos_map = distinct_edge_feature_pairs(G)  # {featpair: (u,v)}
+                    pos_keys = sorted(pos_map.keys())
                     num_pos = 0
-
-                    for key in pos_keys_sorted:
-                        if key in seen_set:
-                            continue
+                    for key in pos_keys:
                         u, v = pos_map[key]
-                        g1_pos = make_subgraph_data(full, [u, v])
-                        assert g1_pos.edge_index.shape == torch.Size([2, 2])
-
-                        if self.debug:
-                            draw(DataTransformer.pyg_to_nx(g1_pos), label="POSITIVE_EDGE", full_g=G, highlight=[(0, 1)])
-
+                        # Build subgraph by slicing parent (cheap)
+                        x1 = full.x[[u, v]]
+                        # undirected edge (both directions)
+                        ei = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
                         yield PairData(
-                            x1=g1_pos.x,
-                            edge_index1=g1_pos.edge_index,
+                            x1=x1,
+                            edge_index1=ei,
                             x2=full.x,
                             edge_index2=full.edge_index,
                             y=torch.tensor([1], dtype=torch.long),
@@ -638,432 +889,201 @@ class QM9Pairs(Dataset):
                             neg_type=torch.tensor([PairType.POSITIVE_EDGE], dtype=torch.long),
                             parent_idx=torch.tensor([parent_idx], dtype=torch.long),
                         )
-                        seen_set.add(key)
                         num_pos += 1
 
-                    # ---- negatives: distinct non-edges by feature-pair (match count) ----
-                    neg_map = distinct_nonedge_feature_pairs(G)  # { (featA,featB) : (u,v) }
-                    neg_keys_sorted = sorted(k for k in neg_map.keys() if k not in seen_set)
-
-                    num_neg_needed = num_pos
-                    neg_emitted = 0
-                    for key in neg_keys_sorted:
-                        if neg_emitted >= num_neg_needed:
-                            break
-                        u, v = neg_map[key]
-                        # Sanity: must be non-edge in parent
-                        if G.has_edge(u, v):
-                            continue
-                        # Build a 2-node candidate with the SAME node features but FORCE an edge between them.
-                        H_neg = nx.Graph()
-                        fu = G.nodes[u]["feat"]
-                        fv = G.nodes[v]["feat"]
-                        H_neg.add_node(0, feat=fu, target_degree=fu.target_degree)
-                        H_neg.add_node(1, feat=fv, target_degree=fv.target_degree)
-                        H_neg.add_edge(0, 1)  # illegal: this feature-pair never appears as an edge in the parent
-
-                        # Safety: should NOT embed if pair truly forbidden
-                        if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
-                            continue
-
-                        g1_neg = DataTransformer.nx_to_pyg(H_neg)
-
-                        if self.debug:
-                            draw_nx_with_atom_colorings(
-                                DataTransformer.pyg_to_nx(g1_neg), label="NEGATIVE_EDGE", overlay_full_graph=G
+                    # ---- NEGATIVES: one per distinct **non-edge** feature-pair, capped to #positives ----
+                    if num_pos > 0:
+                        neg_map = distinct_nonedge_feature_pairs(G)  # {featpair: (u,v) non-edge}
+                        neg_keys = [k for k in sorted(neg_map.keys()) if k not in pos_map]
+                        neg_take = min(len(neg_keys), num_pos)
+                        for key in neg_keys[:neg_take]:
+                            u, v = neg_map[key]
+                            # 2-node candidate with the *same* features but FORCE an edge between them.
+                            # This pair never appears as an edge anywhere in parent → guaranteed negative.
+                            x1 = full.x[[u, v]]
+                            ei = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+                            yield PairData(
+                                x1=x1,
+                                edge_index1=ei,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0], dtype=torch.long),
+                                k=torch.tensor([2], dtype=torch.long),
+                                neg_type=torch.tensor([PairType.NEGATIVE_EDGE], dtype=torch.long),
+                                parent_idx=torch.tensor([parent_idx], dtype=torch.long),
                             )
+                        continue  # k == 2 over
 
-                        yield PairData(
-                            x1=g1_neg.x,
-                            edge_index1=g1_neg.edge_index,  # expected shape [2, 0]
-                            x2=full.x,
-                            edge_index2=full.edge_index,
-                            y=torch.tensor([0], dtype=torch.long),
-                            k=torch.tensor([2], dtype=torch.long),
-                            neg_type=torch.tensor([PairType.NEGATIVE_EDGE], dtype=torch.long),
-                            parent_idx=torch.tensor([parent_idx], dtype=torch.long),
-                        )
-                        seen_set.add(key)
-                        neg_emitted += 1
+                # -------- pick budgets for this k (main vs tail) --------
+                is_tail = k > k_cap
+                pos_budget = pos_per_k_tail if is_tail else pos_per_k_main
+                neg_per_pos = neg_per_pos_tail if is_tail else neg_per_pos_main
 
-                    # done with k==2 for this parent
-                    continue
+                capA = cap_wrong_edge_allowed_t if is_tail else cap_wrong_edge_allowed
+                capB = cap_missing_edge_t if is_tail else cap_missing_edge
+                capC = cap_rewire_t if is_tail else cap_rewire
+                capE = cap_anchor_aware_t if is_tail else cap_anchor_aware
+                capD = cap_cross_parent_t if is_tail else cap_cross_parent
 
-                # -------------------- k > 2 positives -------------------------
-                # budgets per k
-                if k <= k_cap:
-                    pos_budget = pos_per_k_main
-                    neg_per_pos = neg_per_pos_main
-                    capA, capB, capC, capD, capE, capF = (
-                        cap_wrong_edge_allowed,
-                        cap_missing_edge,
-                        cap_rewire,
-                        cap_cross_parent,
-                        cap_anchor_aware,
-                        cap_forbidden_add,
-                    )
-                else:
-                    pos_budget = pos_per_k_tail
-                    neg_per_pos = neg_per_pos_tail
-                    capA, capB, capC, capD, capE, capF = (
-                        cap_wrong_edge_allowed_t,
-                        cap_missing_edge_t,
-                        cap_rewire_t,
-                        cap_cross_parent_t,
-                        cap_anchor_aware_t,
-                        cap_forbidden_add_t,
-                    )
+                # ---- collect positives for this (parent,k) ----
+                pos_sets: list[list[int]] = []
+                pos_seen: set[tuple[int, ...]] = set()
 
-                # choose connected induced subgraphs; require ≥2 edges for k>2
-                pos_sets: list[list[int]] = _pick_positive_sets(G, k=k, budget=pos_budget, min_edges=2, rng=rng)
+                anchors_order = low_degree_anchor_order(G)
+                n_anchor = max(1, int(round(pos_budget * tail_anchor_fraction)))
+                n_anchor = min(n_anchor, len(anchors_order))
 
-                # emit positives
+                # anchored slice
+                tries = 0
+                i = 0
+                max_tries = 30 * max(1, pos_budget)
+                while len(pos_sets) < n_anchor and tries < max_tries:
+                    tries += 1
+                    anchor = anchors_order[i % max(1, n_anchor)]
+                    i += 1
+                    S = _distinct_k_connected_with_anchor(G, k, anchor=anchor)
+                    if S is None:
+                        continue
+                    key = tuple(sorted(S))
+                    if key in pos_seen:
+                        continue
+                    pos_sets.append(S)
+                    pos_seen.add(key)
+
+                # top up to pos_budget
+                tries = 0
+                max_tries = 30 * (pos_budget - len(pos_sets) + 1)
+                j = 0
+                while len(pos_sets) < pos_budget and tries < max_tries:
+                    tries += 1
+                    anchor = anchors_order[j % max(1, len(anchors_order))]
+                    j += 1
+                    S = _distinct_k_connected_with_anchor(G, k, anchor=anchor)
+                    if S is None:
+                        continue
+                    key = tuple(sorted(S))
+                    if key in pos_seen:
+                        continue
+                    pos_sets.append(S)
+                    pos_seen.add(key)
+
+                try:
+                    k_iter.set_postfix_str(f"pos={len(pos_sets)}/{pos_budget}{' tail' if is_tail else ''}")
+                except Exception:
+                    pass
+
+                # ---- emit positives + negatives ----
                 for S in pos_sets:
-                    H_pos = G.subgraph(S).copy()
-                    g1_pos = DataTransformer.nx_to_pyg(H_pos)
-
-                    if self.debug:
-                        draw_nx_with_atom_colorings(H=H_pos, label=f"POSITIVE k={k}", overlay_full_graph=G)
-
+                    # Positive
+                    g1_pos = make_subgraph_data(full, S)
                     yield PairData(
                         x1=g1_pos.x,
                         edge_index1=g1_pos.edge_index,
                         x2=full.x,
                         edge_index2=full.edge_index,
-                        y=torch.tensor([1], dtype=torch.long),
-                        k=torch.tensor([k], dtype=torch.long),
-                        neg_type=torch.tensor([PairType.POSITIVE], dtype=torch.long),
-                        parent_idx=torch.tensor([parent_idx], dtype=torch.long),
+                        y=torch.tensor([1]),
+                        k=torch.tensor([k]),
+                        neg_type=torch.tensor([PairType.POSITIVE]),  # positive
+                        parent_idx=torch.tensor([parent_idx]),
                     )
 
-                    # ---- Negatives per positive (A..E), WL-dedupe within this S ----
-                    neg_seen: set[str] = set()
-                    neg_emitted = 0
-
-                    # ---------- Type-1 FORBIDDEN_ADD: add a non-edge in S whose feature-pair NEVER occurs as an edge anywhere in parent ----------
-                    if use_forbidden_add and k >= 2 and capF > 0 and neg_emitted < neg_per_pos:
-                        # Non-edges within S
-                        non_edges = [
-                            (u, v) for u in H_pos.nodes for v in H_pos.nodes if u < v and not H_pos.has_edge(u, v)
-                        ]
-                        # Keep only those whose feature-pair is globally forbidden in this parent (not present as ANY edge)
-                        cand = []
-                        for u, v in non_edges:
-                            fu = G.nodes[u]["feat"].to_tuple()
-                            fv = G.nodes[v]["feat"].to_tuple()
-                            key = (fu, fv) if fu <= fv else (fv, fu)
-                            if key not in edge_feat_keys:
-                                cand.append((u, v))
-                        rng.shuffle(cand)
-
-                        taken = 0
-                        for u, v in cand:
-                            if taken >= min(capF, neg_per_pos - neg_emitted):
-                                break
-                            H_neg = H_pos.copy()
-                            # Decoder respects the residuals
-                            if (
-                                residual_degree(H_neg, u) <= 0 or residual_degree(H_neg, v) <= 0
-                            ) and rng.random() < 0.5:
-                                continue
-                            H_neg.add_edge(u, v)  # guaranteed to break inducedness against G[S]
-                            # Safety: skip if somehow still induced (shouldn't happen)
-                            if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
-                                continue
-                            hkey = wl_hash(H_neg)
-                            if hkey in neg_seen:
-                                continue
-                            neg_seen.add(hkey)
-
-                            g1_neg = DataTransformer.nx_to_pyg(H_neg)
-                            if self.debug:
-                                draw_nx_with_atom_colorings(
-                                    H=H_neg,
-                                    label=f"NEG FORBIDDEN_ADD k={k}",
-                                    overlay_full_graph=G,
-                                    highlight_edges=[(u, v)],
-                                )
-
+                    # ----- Guaranteed negatives: wrong-add (globally forbidden label pair) -----
+                    bad_pairs_forbidden = wrong_add_candidates_anywhere(G, S, parent_pairs)
+                    if bad_pairs_forbidden and neg_per_pos > 0:
+                        m = min(len(bad_pairs_forbidden), neg_per_pos)
+                        for u, v in rng.sample(bad_pairs_forbidden, m):
+                            H = G.subgraph(S).copy()
+                            H.add_edge(u, v)
+                            ei_neg = nx_to_edge_index_on_ordered_nodes(H, S)
+                            g1_neg = make_subgraph_data(full, S, edge_index_override=ei_neg)
                             yield PairData(
                                 x1=g1_neg.x,
                                 edge_index1=g1_neg.edge_index,
                                 x2=full.x,
                                 edge_index2=full.edge_index,
-                                y=torch.tensor([0], dtype=torch.long),
-                                k=torch.tensor([k], dtype=torch.long),
-                                neg_type=torch.tensor([PairType.FORBIDDEN_ADD], dtype=torch.long),
-                                parent_idx=torch.tensor([parent_idx], dtype=torch.long),
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.FORBIDDEN_ADD]),  # forbidden-pair wrong-add
+                                parent_idx=torch.tensor([parent_idx]),
                             )
-                            taken += 1
-                            neg_emitted += 1
 
-                    # ---------- A) WRONG_EDGE_ALLOWED (add non-edge in S where feat-pair is allowed in parent) ----------
-                    if use_wrong_edge_allowed and k >= 2 and capA > 0 and neg_emitted < neg_per_pos:
-                        non_edges = [
-                            (u, v) for u in H_pos.nodes for v in H_pos.nodes if u < v and not H_pos.has_edge(u, v)
-                        ]
-                        # prioritize feature-pairs that are allowed somewhere in parent
-                        cand = []
-                        for u, v in non_edges:
-                            fu = G.nodes[u]["feat"].to_tuple()
-                            fv = G.nodes[v]["feat"].to_tuple()
-                            key = (fu, fv) if fu <= fv else (fv, fu)
-                            if key in edge_feat_keys:
-                                cand.append((u, v))
-                        rng.shuffle(cand)
-
-                        taken = 0
-                        for u, v in cand:
-                            if taken >= min(capA, neg_per_pos - neg_emitted):
-                                break
-                            H_neg = H_pos.copy()
-                            # Decoder respects the residuals
-                            if (
-                                residual_degree(H_neg, u) <= 0 or residual_degree(H_neg, v) <= 0
-                            ) and rng.random() < 0.5:
-                                continue
-                            H_neg.add_edge(u, v)
-                            # Adding an edge keeps connectivity; verify non-induced:
-                            if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
-                                continue
-                            hkey = wl_hash(H_neg)
-                            if hkey in neg_seen:
-                                continue
-                            neg_seen.add(hkey)
-
-                            g1_neg = DataTransformer.nx_to_pyg(H_neg)
-                            if self.debug:
-                                draw_nx_with_atom_colorings(
-                                    H=H_neg,
-                                    label=f"NEG A: wrong-edge-allowed k={k}",
-                                    overlay_full_graph=G,
-                                    highlight_edges=[(u, v)],
-                                )
-
+                    # ----- Hard A: wrong-edge (allowed pair), verified -----
+                    if use_wrong_edge_allowed and k >= 2 and capA > 0:
+                        for Sx, ei in _gen_wrong_edge_allowed(G, S, max_neg=capA):
+                            g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
                             yield PairData(
                                 x1=g1_neg.x,
                                 edge_index1=g1_neg.edge_index,
                                 x2=full.x,
                                 edge_index2=full.edge_index,
-                                y=torch.tensor([0], dtype=torch.long),
-                                k=torch.tensor([k], dtype=torch.long),
-                                neg_type=torch.tensor([PairType.WRONG_EDGE_ALLOWED], dtype=torch.long),
-                                parent_idx=torch.tensor([parent_idx], dtype=torch.long),
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.WRONG_EDGE_ALLOWED]),  # allowed-pair wrong-edge
+                                parent_idx=torch.tensor([parent_idx]),
                             )
-                            taken += 1
-                            neg_emitted += 1
 
-                    # ---------- B) MISSING_EDGE (remove existing edge; keep connected) ----------
-                    if use_missing_edge_verified and k >= 2 and capB > 0 and neg_emitted < neg_per_pos:
-                        edges = list(H_pos.edges())
-                        rng.shuffle(edges)
-                        taken = 0
-                        for u, v in edges:
-                            if taken >= min(capB, neg_per_pos - neg_emitted):
-                                break
-                            H_neg = H_pos.copy()
-                            H_neg.remove_edge(u, v)
-                            if not nx.is_connected(H_neg):
-                                continue
-                            # Removing a real edge should break inducedness:
-                            if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
-                                continue
-                            hkey = wl_hash(H_neg)
-                            if hkey in neg_seen:
-                                continue
-                            neg_seen.add(hkey)
-
-                            g1_neg = DataTransformer.nx_to_pyg(H_neg)
-                            if self.debug:
-                                draw_nx_with_atom_colorings(
-                                    H=H_neg, label=f"NEG B: missing-edge k={k}", overlay_full_graph=G
-                                )
-
+                    # ----- Hard B: missing-edge (verified) -----
+                    if use_missing_edge_verified and k >= 2 and capB > 0:
+                        for Sx, ei in _gen_missing_edge_verified(G, S, max_neg=capB):
+                            g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
                             yield PairData(
                                 x1=g1_neg.x,
                                 edge_index1=g1_neg.edge_index,
                                 x2=full.x,
                                 edge_index2=full.edge_index,
-                                y=torch.tensor([0], dtype=torch.long),
-                                k=torch.tensor([k], dtype=torch.long),
-                                neg_type=torch.tensor([PairType.MISSING_EDGE], dtype=torch.long),
-                                parent_idx=torch.tensor([parent_idx], dtype=torch.long),
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.MISSING_EDGE]),  # missing-edge
+                                parent_idx=torch.tensor([parent_idx]),
                             )
-                            taken += 1
-                            neg_emitted += 1
 
-                    # ---------- C) REWIRE: degree-preserving swap of two disjoint edges inside S ----------
-                    if use_rewire and k >= 4 and capC > 0 and neg_emitted < neg_per_pos:
-                        edges = list(H_pos.edges())
-                        if len(edges) >= 2:
-                            rng.shuffle(edges)
-                            # Try pairs of disjoint edges
-                            taken = 0
-                            for i in range(len(edges)):
-                                if taken >= min(capC, neg_per_pos - neg_emitted):
-                                    break
-                                a, b = edges[i]
-                                for j in range(i + 1, len(edges)):
-                                    c, d = edges[j]
-                                    # Four distinct endpoints?
-                                    if len({a, b, c, d}) < 4:
-                                        continue
+                    # ----- Hard C: degree-preserving rewire (verified) -----
+                    if use_rewire and k >= 4 and capC > 0:
+                        for Sx, ei in _gen_rewire_degree_preserving(G, S, max_neg=capC):
+                            g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
+                            yield PairData(
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.REWIRE]),  # rewire
+                                parent_idx=torch.tensor([parent_idx]),
+                            )
 
-                                    # Two possible rewires: (a,c)+(b,d) or (a,d)+(b,c)
-                                    candidates = [((a, c), (b, d)), ((a, d), (b, c))]
-                                    rng.shuffle(candidates)
+                    # ----- Hard E: anchor-aware (decoder-like), verified -----
+                    if use_anchor_aware and k >= 2 and capE > 0:
+                        for Sx, ei in _gen_anchor_aware(G, S, max_neg=capE):
+                            g1_neg = make_subgraph_data(full, Sx, edge_index_override=ei)
+                            yield PairData(
+                                x1=g1_neg.x,
+                                edge_index1=g1_neg.edge_index,
+                                x2=full.x,
+                                edge_index2=full.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([len(Sx)]),  # note: this is k+1
+                                neg_type=torch.tensor([PairType.ANCHOR_AWARE]),  # anchor-aware
+                                parent_idx=torch.tensor([parent_idx]),
+                            )
 
-                                    success = False
-                                    for (e1u, e1v), (e2u, e2v) in candidates:
-                                        if e1u == e1v or e2u == e2v:
-                                            continue
-                                        # avoid adding existing edges
-                                        if H_pos.has_edge(e1u, e1v) or H_pos.has_edge(e2u, e2v):
-                                            continue
-                                        H_neg = H_pos.copy()
-                                        H_neg.remove_edge(a, b)
-                                        H_neg.remove_edge(c, d)
-                                        H_neg.add_edge(e1u, e1v)
-                                        H_neg.add_edge(e2u, e2v)
-                                        if not nx.is_connected(H_neg):
-                                            continue
-                                        # Rewired structure must not be an induced subgraph
-                                        if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
-                                            continue
-                                        hkey = wl_hash(H_neg)
-                                        if hkey in neg_seen:
-                                            continue
-                                        neg_seen.add(hkey)
-
-                                        g1_neg = DataTransformer.nx_to_pyg(H_neg)
-                                        if self.debug:
-                                            draw_nx_with_atom_colorings(
-                                                H=H_neg,
-                                                label=f"NEG C: rewire k={k}",
-                                                overlay_full_graph=G,
-                                                highlight_edges=[(e1u, e1v), (e2u, e2v)],
-                                            )
-
-                                        yield PairData(
-                                            x1=g1_neg.x,
-                                            edge_index1=g1_neg.edge_index,
-                                            x2=full.x,
-                                            edge_index2=full.edge_index,
-                                            y=torch.tensor([0], dtype=torch.long),
-                                            k=torch.tensor([k], dtype=torch.long),
-                                            neg_type=torch.tensor([PairType.REWIRE], dtype=torch.long),
-                                            parent_idx=torch.tensor([parent_idx], dtype=torch.long),
-                                        )
-                                        taken += 1
-                                        neg_emitted += 1
-                                        success = True
-                                        break  # move to next edge-pair
-                                    if success and taken >= min(capC, neg_per_pos - neg_emitted):
-                                        break
-
-                    # ---------- E) ANCHOR_AWARE: add one real node w∉S and connect to feasible anchors in S ----------
-                    if use_anchor_aware and capE > 0 and neg_emitted < neg_per_pos:
-                        outside = [n for n in G.nodes if n not in H_pos.nodes]
-                        if outside:
-                            rng.shuffle(outside)
-
-                            # current anchors in S (residual > 0)
-                            S_anchors = [n for n in H_pos.nodes if residual_degree(H_pos, n) > 0]
-                            if S_anchors:
-                                taken = 0
-                                for w in outside:
-                                    if taken >= min(capE, neg_per_pos - neg_emitted):
-                                        break
-                                    fw: Feat = G.nodes[w]["feat"]
-                                    w_target = fw.target_degree
-
-                                    # Feasible anchors limited by their residual and w's degree
-                                    feas = [a for a in S_anchors if residual_degree(H_pos, a) > 0]
-                                    if not feas:
-                                        break
-                                    rng.shuffle(feas)
-                                    max_attach = min(w_target, len(feas))
-                                    if max_attach <= 0:
-                                        continue
-
-                                    if k <= k_cap:
-                                        attach_cnt = rng.randint(1, max_attach)
-                                    else:
-                                        # tail uses a fixed fraction (>=1)
-                                        attach_cnt = max(1, int(max_attach * tail_anchor_fraction))
-
-                                    use_anchors = feas[:attach_cnt]
-
-                                    H_neg = H_pos.copy()
-                                    # add real node w with its attributes
-                                    H_neg.add_node(w, feat=fw, target_degree=fw.target_degree)
-                                    for a in use_anchors:
-                                        H_neg.add_edge(w, a)
-
-                                    # Must be connected (it is if attach_cnt>=1) and NOT induced
-                                    if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
-                                        continue
-                                    hkey = wl_hash(H_neg)
-                                    if hkey in neg_seen:
-                                        continue
-                                    neg_seen.add(hkey)
-
-                                    g1_neg = DataTransformer.nx_to_pyg(H_neg)
-                                    if self.debug:
-                                        draw_nx_with_atom_colorings(
-                                            H=H_neg,
-                                            label=f"NEG E: anchor-aware k={k}, w={w}",
-                                            overlay_full_graph=G,
-                                            highlight_edges=[(w, a) for a in use_anchors],
-                                        )
-
-                                    yield PairData(
-                                        x1=g1_neg.x,
-                                        edge_index1=g1_neg.edge_index,
-                                        x2=full.x,
-                                        edge_index2=full.edge_index,
-                                        y=torch.tensor([0], dtype=torch.long),
-                                        k=torch.tensor([k], dtype=torch.long),
-                                        neg_type=torch.tensor([PairType.ANCHOR_AWARE], dtype=torch.long),
-                                        parent_idx=torch.tensor([parent_idx], dtype=torch.long),
-                                    )
-                                    taken += 1
-                                    neg_emitted += 1
-
-                    # ----- D) CROSS_PARENT: for each POSITIVE, pick other parents that do NOT contain it -----
-                    if use_cross_parent and capD > 0 and pos_sets:
-                        other_parents = [j for j in range(len(nx_views)) if j != parent_idx]
-                        rng.shuffle(other_parents)
-
-                        for S in pos_sets:
-                            # throttle: only some positives produce a cross-parent negative
-                            if rng.random() > cross_parent_rate:
-                                continue
-
-                            H_pos = G.subgraph(S).copy()
-                            g1_pos = DataTransformer.nx_to_pyg(H_pos)
-                            taken = 0
-                            for j in other_parents:
-                                if taken >= capD:
-                                    break
-                                Gj = nx_views[j]
-                                if is_induced_subgraph_feature_aware_cheap(H_pos, Gj, require_connected=True):
-                                    continue
-                                full_j: Data = self.base[j]
-
-                                if self.debug:
-                                    draw_nx_with_atom_colorings(
-                                        H=H_pos, label=f"NEG D: cross-parent vs parent#{j}", overlay_full_graph=Gj
-                                    )
-
-                                yield PairData(
-                                    x1=g1_pos.x,
-                                    edge_index1=g1_pos.edge_index,
-                                    x2=full_j.x,
-                                    edge_index2=full_j.edge_index,
-                                    y=torch.tensor([0], dtype=torch.long),
-                                    k=torch.tensor([k], dtype=torch.long),
-                                    neg_type=torch.tensor([PairType.CROSS_PARENT], dtype=torch.long),
-                                    parent_idx=torch.tensor([j], dtype=torch.long),
-                                )
-                                taken += 1
+                # ----- Hard D: cross-parent negatives for each POSITIVE we just emitted -----
+                if use_cross_parent and pos_sets and capD > 0:
+                    for S in pos_sets:
+                        G_pos = G.subgraph(S).copy()
+                        other_idxs = _gen_cross_parent_indices(G_pos, nx_views, parent_idx, max_neg=capD)
+                        if not other_idxs or rng.random() > cross_parent_rate:
+                            continue
+                        g1_pos = make_subgraph_data(full, S)
+                        for j in other_idxs:
+                            other = self.base[j]
+                            yield PairData(
+                                x1=g1_pos.x,
+                                edge_index1=g1_pos.edge_index,
+                                x2=other.x,
+                                edge_index2=other.edge_index,
+                                y=torch.tensor([0]),
+                                k=torch.tensor([k]),
+                                neg_type=torch.tensor([PairType.CROSS_PARENT]),  # cross-parent
+                                parent_idx=torch.tensor([j]),
+                            )
