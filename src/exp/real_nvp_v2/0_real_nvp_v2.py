@@ -878,10 +878,14 @@ def run_experiment(cfg: FlowConfig):
     # ----- W&B -----
     loggers = [csv_logger]
     if not local_dev:
+        p = os.environ.get("WANDB_PROJECT", PROJECT_NAME)
+        e = os.environ.get("WANDB_ENTITY")
+        n = os.environ.get("WANDB_NAME", f"run_{cfg.hv_dim}_{cfg.seed}")
+        log(f"W&B logging to project={p} entity={e} name={n}")
         run = wandb.run or wandb.init(
-            project=os.environ.get("WANDB_PROJECT", PROJECT_NAME),
-            entity=os.environ.get("WANDB_ENTITY"),
-            name=os.environ.get("WANDB_NAME", f"run_{cfg.hv_dim}_{cfg.seed}"),
+            project=p,
+            entity=e,
+            name=n,
             config=cfg.__dict__,
             reinit=True,
         )
@@ -891,7 +895,7 @@ def run_experiment(cfg: FlowConfig):
             f"flows={cfg.num_flows}",
             f"hidden={cfg.num_hidden_channels}",
             f"actnorm={cfg.use_act_norm}",
-            "dataset=ZincSmiles",
+            f"dataset={cfg.dataset.value}",
         ]
         loggers.append(WandbLogger(log_model=True, experiment=run))
 
@@ -1086,6 +1090,7 @@ def run_experiment(cfg: FlowConfig):
     ).to_parquet(evals_dir / "sample_head.parquet", index=False)
 
     log("Experiment completed.")
+
 
 if __name__ == "__main__":
 

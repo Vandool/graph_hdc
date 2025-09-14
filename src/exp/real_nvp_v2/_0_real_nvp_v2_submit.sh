@@ -32,8 +32,6 @@ SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
 # Logging / naming
-ENTITY="${ENTITY:-arvand-kaveh-karlsruhe-institute-of-technology}"
-PROJECT="${PROJECT:-real_nvp_v2}"
 EXP_NAME="${EXP_NAME:-}"        # if empty we build a deterministic one
 
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
@@ -164,6 +162,7 @@ contains_in_filter() {
   return 1
 }
 
+# W&B logging to project=/home/iti/zi9629 entity=arvand-kaveh-karlsruhe-institute-of-technology name=nvp_small_actnorm_qm9
 submit_one() {
   local partition="$1" time="$2" mem="$3"
 
@@ -184,8 +183,8 @@ echo 'Node:' \$(hostname)
 echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
 export WANDB_API_KEY=\${WANDB_API_KEY:-}
-export WANDB_ENTITY='${ENTITY}'
-export WANDB_PROJECT='${PROJECT}'
+export WANDB_ENTITY='arvand-kaveh-karlsruhe-institute-of-technology'
+export WANDB_PROJECT='real_nvp_v2'
 export WANDB_NAME='${EXP_NAME}'
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
