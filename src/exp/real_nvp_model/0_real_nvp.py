@@ -1,13 +1,13 @@
 import argparse
 import datetime
+import enum
 import math
 import os
 import random
 import shutil
 import string
 import time
-from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -23,13 +23,13 @@ from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
+from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange
-from src.encoding.feature_encoders import CombinatoricIntegerEncoder
-from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
+from src.encoding.configs_and_constants import Features, SupportedDataset
+from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import AbstractNFModel
-from src.utils.utils import GLOBAL_MODEL_PATH
+from src.utils.utils import GLOBAL_MODEL_PATH, pick_device, report_node_distribution
 
 
 # ---------------------------------------------------------------------
@@ -39,6 +39,20 @@ from src.utils.utils import GLOBAL_MODEL_PATH
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
+
+
+def pick_precision():
+    if not torch.cuda.is_available():
+        return 32
+    # A100/H100 etc → bf16
+    if torch.cuda.is_bf16_supported():
+        return "bf16-mixed"
+    # Volta/Turing/Ampere+ (sm >= 70) → fp16 mixed
+    major, minor = torch.cuda.get_device_capability()
+    if major >= 7:
+        return "16-mixed"
+    # Maxwell/Pascal and older → plain fp32
+    return 32
 
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
@@ -88,10 +102,13 @@ class FlowConfig:
     batch_size: int = 64
     lr: float = 1e-3
     weight_decay: float = 0.0
-    device: str = "cuda"
 
-    hv_dim: int = 7744
+    # HDC / encoder
+    hv_dim: int = 40 * 40  # 1600
     vsa: VSAModel = VSAModel.HRR
+    dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
+
+    # Model knobs
     num_flows: int = 8
     num_hidden_channels: int = 512
 
@@ -101,18 +118,19 @@ class FlowConfig:
 
 
 def get_flow_cli_args() -> FlowConfig:
-    parser = argparse.ArgumentParser(description="Real NVP Flow CLI")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--epochs", "-e", type=int, default=10)
-    parser.add_argument("--batch_size", "-bs", type=int, default=64)
-    parser.add_argument("--vsa", "-v", type=VSAModel, required=True)
-    parser.add_argument("--hv_dim", "-hd", type=int, required=True)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight_decay", "-wd", type=float, default=0.0)
-    parser.add_argument(
-        "--device", "-dev", type=str, choices=["cpu", "cuda"], default="cuda" if torch.cuda.is_available() else "cpu"
-    )
-    return FlowConfig(**vars(parser.parse_args()))
+    def _parse_supported_dataset(s: str) -> SupportedDataset:
+        return s if isinstance(s, SupportedDataset) else SupportedDataset(s)
+
+    p = argparse.ArgumentParser(description="Real NVP Flow CLI")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--epochs", "-e", type=int, default=10)
+    p.add_argument("--batch_size", "-bs", type=int, default=64)
+    p.add_argument("--vsa", "-v", type=VSAModel, required=True)
+    p.add_argument("--hv_dim", "-hd", type=int, required=True)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--weight_decay", "-wd", type=float, default=0.0)
+    p.add_argument("--dataset", "-ds", type=_parse_supported_dataset, default=argparse.SUPPRESS)
+    return FlowConfig(**vars(p.parse_args()))
 
 
 class BoundedMLP(torch.nn.Module):
@@ -156,12 +174,16 @@ class RealNVPLightning(AbstractNFModel):
     def configure_optimizers(self):
         opt = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
         # 5% warmup then cosine
-        steps_per_epoch = max(1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1, self.trainer.max_epochs))
+        steps_per_epoch = max(
+            1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1, self.trainer.max_epochs)
+        )
         warmup = int(0.05 * self.trainer.max_epochs) * steps_per_epoch
         total = self.trainer.max_epochs * steps_per_epoch
         sched = torch.optim.lr_scheduler.LambdaLR(
             opt,
-            lambda step: min(1.0, step / max(1, warmup)) * 0.5 * (1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup)))
+            lambda step: min(1.0, step / max(1, warmup))
+            * 0.5
+            * (1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup))),
         )
         return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
 
@@ -340,37 +362,32 @@ def run_experiment(cfg: FlowConfig):
     evals_dir = Path(dirs["evals_dir"])
     artefacts_dir = Path(dirs["artefacts_dir"])
 
-    # ----- hypernet config (kept for provenance; not needed in this flow) -----
-    ds_name = "ZincSmilesHRR7744"
-    zinc_feature_bins = [9, 6, 3, 4]
-    dataset_config = DatasetConfig(
-        seed=cfg.seed,
-        name=ds_name,
-        vsa=cfg.vsa,
-        hv_dim=cfg.hv_dim,
-        device=cfg.device,
-        node_feature_configs=OrderedDict(
-            [
-                (
-                    Features.ATOM_TYPE,
-                    FeatureConfig(
-                        count=math.prod(zinc_feature_bins),
-                        encoder_cls=CombinatoricIntegerEncoder,
-                        index_range=IndexRange((0, 4)),
-                        bins=zinc_feature_bins,
-                    ),
-                ),
-            ]
-        ),
+    # Save the config
+    def _json_sanitize(obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, enum.Enum):
+            return obj.value
+        return obj
+
+    (evals_dir / "run_config.json").write_text(
+        json.dumps({k: _json_sanitize(v) for k, v in asdict(cfg).items()}, indent=2)
     )
+
+    seed_everything(cfg.seed)
+
+    # Dataset & Encoder (HRR @ 7744)
+    ds_cfg = cfg.dataset.default_cfg
+    device = pick_device()
+    log(f"Using device: {device!s}")
 
     log("Loading/creating hypernet …")
-    hypernet: HyperNet = (
-        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(cfg.device).eval()
-    )
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log("Hypernet ready.")
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    encoder = hypernet.to(device).eval()
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
-
 
     # ----- W&B -----
     run = wandb.run or wandb.init(
@@ -381,24 +398,36 @@ def run_experiment(cfg: FlowConfig):
     wandb_logger = WandbLogger(log_model=True, experiment=run)
 
     # ----- datasets / loaders -----
-    train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
-    validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    log(f"Loading {cfg.dataset.value} pair datasets.")
+    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
+        train_dataset = QM9Smiles(split="train", enc_suffix="HRR7744")
+        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR7744")
+    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
+        train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
+        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    log(
+        f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+    )
 
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        num_workers=2,
+        num_workers=16,
         pin_memory=torch.cuda.is_available(),
         drop_last=True,
+        persistent_workers=True,
+        prefetch_factor=6,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=16,
         pin_memory=torch.cuda.is_available(),
         drop_last=False,
+        persistent_workers=True,
+        prefetch_factor=6,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -425,9 +454,12 @@ def run_experiment(cfg: FlowConfig):
         accelerator="auto",
         devices="auto",
         gradient_clip_val=1.0,
-        log_every_n_steps=25,
+        log_every_n_steps=500,
         enable_progress_bar=True,
         deterministic=False,
+        precision=pick_precision(),
+        num_sanity_val_steps=100,
+        limit_val_batches=100,
     )
 
     # ----- train -----
@@ -476,7 +508,7 @@ def run_experiment(cfg: FlowConfig):
     val_nll = _evaluate_loader_nll(best_model, validation_dataloader, device)
     if val_nll.size:
         # report bits per dimension
-        bpd = val_nll / ((2*cfg.hv_dim) * np.log(2)) # [node|graph]
+        bpd = val_nll / ((2 * cfg.hv_dim) * np.log(2))  # [node|graph]
         df = pd.DataFrame({"nll": val_nll, "bpd": bpd})
         df.to_parquet(evals_dir / "val_nll.parquet", index=False)
 
@@ -501,16 +533,17 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        node_s, graph_s, logs = best_model.sample_split(2048)  # each [K, D]
+        node_s, graph_s, logs = best_model.sample_split(4096)  # each [K, D]
+
 
     node_s = node_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
 
     node_counters = hypernet.decode_order_zero_counter(node_s)
-    for i, ctr in node_counters.items():
-        if i >= 4:
-            break
-        log(f"Sample {i}: total nodes: {ctr.total()}, \n{ctr}")
+    report = report_node_distribution(node_types=node_counters, artefact_dir=artefacts_dir)
+    log(report["summary"])
+    log(report["paths"])
+
 
     node_np = node_s.detach().cpu().numpy()
     graph_np = graph_s.detach().cpu().numpy()

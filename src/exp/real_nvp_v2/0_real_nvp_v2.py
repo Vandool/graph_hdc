@@ -1,14 +1,15 @@
 import argparse
 import contextlib
 import datetime
+import enum
+import json
 import math
 import os
 import random
 import shutil
 import string
 import time
-from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pprint
 
@@ -24,15 +25,15 @@ from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
+from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange
-from src.encoding.feature_encoders import CombinatoricIntegerEncoder
-from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
+from src.encoding.configs_and_constants import Features, SupportedDataset
+from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import AbstractNFModel
-from src.utils.utils import GLOBAL_MODEL_PATH
+from src.utils.utils import GLOBAL_MODEL_PATH, generated_node_edge_dist, pick_device, str2bool
 
-LOCAL_DEV = "LOCAL_HDC"
+LOCAL_DEV = "LOCAL_HDC_miss"
 
 PROJECT_NAME = "real_nvp_v2"
 
@@ -97,10 +98,13 @@ class FlowConfig:
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 0.0
-    device: str = "cuda"
+    is_dev: bool = False
 
-    hv_dim: int = 7744
+    # HDC / encoder
+    hv_dim: int = 40 * 40  # 1600
     vsa: VSAModel = VSAModel.HRR
+    dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
+
     num_flows: int = 4
     num_hidden_channels: int = 256
 
@@ -146,7 +150,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         flows = []
 
         # ActNorm layers
-        use_act_norm = getattr(cfg, "use_act_norm", True)
+        use_act_norm = cfg.use_act_norm
         if use_act_norm and hasattr(nf.flows, "ActNorm"):
             flows.append(nf.flows.ActNorm(self.flat_dim))  # learns per-feature shift/scale
 
@@ -755,7 +759,8 @@ def _finite_clean(x: np.ndarray, *, max_abs: float | None = None) -> np.ndarray:
     return a
 
 
-def run_experiment(cfg: FlowConfig, local_dev: bool = False):
+def run_experiment(cfg: FlowConfig):
+    local_dev = cfg.is_dev
     pprint(cfg)
     # ----- setup dirs -----
     log("Parsing args done. Starting run_experiment …")
@@ -765,43 +770,50 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     evals_dir = Path(dirs["evals_dir"])
     artefacts_dir = Path(dirs["artefacts_dir"])
 
-    seed_everything(cfg.seed)
+    # Save the config
+    def _json_sanitize(obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, enum.Enum):
+            return obj.value
+        return obj
 
-    # ----- hypernet config (kept for provenance; not needed in this flow) -----
-    ds_name = "ZincSmilesHRR7744"
-    zinc_feature_bins = [9, 6, 3, 4]
-    dataset_config = DatasetConfig(
-        seed=cfg.seed,
-        name=ds_name,
-        vsa=cfg.vsa,
-        hv_dim=cfg.hv_dim,
-        device=cfg.device,
-        node_feature_configs=OrderedDict(
-            [
-                (
-                    Features.ATOM_TYPE,
-                    FeatureConfig(
-                        count=math.prod(zinc_feature_bins),
-                        encoder_cls=CombinatoricIntegerEncoder,
-                        index_range=IndexRange((0, 4)),
-                        bins=zinc_feature_bins,
-                    ),
-                ),
-            ]
-        ),
+    (evals_dir / "run_config.json").write_text(
+        json.dumps({k: _json_sanitize(v) for k, v in asdict(cfg).items()}, indent=2)
     )
 
-    log(f"Loading/creating hypernet … on device {cfg.device}")
-    hypernet: HyperNet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(cfg.device).eval()
+    seed_everything(cfg.seed)
+
+    # Dataset & Encoder (HRR @ 7744)
+    ds_cfg = cfg.dataset.default_cfg
+    device = pick_device()
+    log(f"Using device: {device!s}")
+
+    log("Loading/creating hypernet …")
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log("Hypernet ready.")
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    encoder = hypernet.to(device).eval()
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    log("Hypernet ready.")
+
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
 
     # ----- datasets / loaders -----
-    train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
-    validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    log(f"Loading {cfg.dataset.value} pair datasets.")
+    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
+        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600")
+        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600")
+    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
+        train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
+        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    log(
+        f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+    )
 
     # pick worker counts per GPU; tune for your cluster
-    num_workers = 8 if torch.cuda.is_available() else 0
+    num_workers = 16 if torch.cuda.is_available() else 0
     if local_dev:
         train_dataset = train_dataset[: cfg.batch_size]
         validation_dataset = validation_dataset[: cfg.batch_size]
@@ -815,6 +827,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
+        # prefetch_factor=6,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -824,12 +837,13 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
+        # prefetch_factor=6,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # ----- model / trainer -----
     model = RealNVPV2Lightning(cfg)
-    fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=cfg.device)
+    fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=device)
 
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
@@ -893,6 +907,8 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
+        num_sanity_val_steps=100,
+        limit_val_batches=100,
     )
 
     # ----- train -----
@@ -927,10 +943,10 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
 
     log(f"Loading best checkpoint: {best_path}")
     best_model = RealNVPV2Lightning.load_from_checkpoint(best_path)
-    best_model.to(cfg.device).eval()
+    best_model.to(device).eval()
 
     # ---- per-sample NLL (really the KL objective) on validation ----
-    val_stats = _eval_flow_metrics(best_model, validation_dataloader, cfg.device, hv_dim=cfg.hv_dim)
+    val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)
     nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))
     if nll_arr.size:
         # save full arrays for later deep-dive
@@ -974,7 +990,7 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        node_s, graph_s, logs = best_model.sample_split(1024)  # each [K, D]
+        node_s, graph_s, logs = best_model.sample_split(4096)  # each [K, D]
 
     node_s = node_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
@@ -984,10 +1000,11 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
     log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
 
     node_counters = hypernet.decode_order_zero_counter(node_s)
-    for i, ctr in node_counters.items():
-        if i >= 16:
-            break
-        log(f"Sample {i}: total nodes: {ctr.total()}, total edges: {sum(e + 1 for _, e, _, _ in ctr)} \n{ctr}")
+    node_counters = hypernet.decode_order_zero_counter(node_s)
+    report = generated_node_edge_dist(
+        node_types=node_counters, artefact_dir=artefacts_dir, wandb=wandb if wandb.run else None
+    )
+    pprint(report)
 
     node_np = node_s.detach().cpu().numpy()
     graph_np = graph_s.detach().cpu().numpy()
@@ -1070,27 +1087,10 @@ def run_experiment(cfg: FlowConfig, local_dev: bool = False):
 
     log("Experiment completed.")
 
-
-def sweep_entrypoint():
-    run = wandb.init()
-    cfg_dict = run.config.as_dict()
-
-    cfg = FlowConfig(
-        seed=int(cfg_dict.get("seed", 42)),
-        epochs=int(cfg_dict.get("epochs", 10)),
-        batch_size=int(cfg_dict.get("batch_size", 64)),
-        lr=float(cfg_dict.get("lr", 1e-3)),
-        weight_decay=float(cfg_dict.get("weight_decay", 0.0)),
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        hv_dim=int(cfg_dict.get("hv_dim", 7744)),
-        vsa=VSAModel.HRR,
-        num_flows=int(cfg_dict.get("num_flows", 8)),
-        num_hidden_channels=int(cfg_dict.get("num_hidden_channels", 128)),
-    )
-    run_experiment(cfg)
-
-
 if __name__ == "__main__":
+
+    def _parse_supported_dataset(s: str) -> SupportedDataset:
+        return s if isinstance(s, SupportedDataset) else SupportedDataset(s)
 
     def get_flow_cli_args() -> FlowConfig:
         p = argparse.ArgumentParser(description="Real NVP V2")
@@ -1099,12 +1099,12 @@ if __name__ == "__main__":
         p.add_argument("--epochs", "-e", type=int, default=50)
         p.add_argument("--batch_size", "-bs", type=int, default=64)
         p.add_argument("--vsa", "-v", type=VSAModel, default=VSAModel.HRR)
+        p.add_argument("--dataset", "-ds", type=_parse_supported_dataset, default=argparse.SUPPRESS)
         p.add_argument("--hv_dim", "-hd", type=int, default=88 * 88)
         p.add_argument("--lr", type=float, default=1e-4)
         p.add_argument("--weight_decay", "-wd", type=float, default=0.0)
-        p.add_argument(
-            "--device", "-dev", choices=["cpu", "cuda", "mps"], default="cuda" if torch.cuda.is_available() else "cpu"
-        )
+
+        p.add_argument("--is_dev", "-dev", type=str2bool, default=0.0)
 
         # model capacity knobs
         p.add_argument("--num_flows", type=int, default=8)
@@ -1132,16 +1132,16 @@ if __name__ == "__main__":
                 epochs=500,
                 batch_size=128,
                 lr=1e-4,
-                device="cuda",
                 hv_dim=88 * 88,
                 vsa=VSAModel.HRR,
                 num_flows=4,
                 num_hidden_channels=128,
                 use_act_norm=True,
+                is_dev=True,
                 # continue_from="/Users/arvandkaveh/Projects/kit/graph_hdc/src/exp/real_nvp_v2/results/0_real_nvp_v2/DEBUG/models/last.ckpt"
-            ),
-            local_dev=True,
+            )
         )
     else:
         log("Cluster run ...")
-        run_experiment(get_flow_cli_args())
+        cfg = get_flow_cli_args()
+        run_experiment(cfg)
