@@ -16,7 +16,7 @@ echo "DryRun  : ${DRY_RUN}"
 # -----------------------------
 CLUSTER="${CLUSTER:-local}"
 
-JOB_NAME="${JOB_NAME:-MLP_Lightning}"
+JOB_NAME="${JOB_NAME:-BAH_Lightning}"
 GPUS="${GPUS:-1}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set by cluster block if empty
 NODES="${NODES:-1}"
@@ -26,7 +26,7 @@ MODULE_LOAD_DEFAULT=''
 
 PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
 EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/classification_v4_mlp_lightning}"
-SCRIPT_NAME="${SCRIPT_NAME:-1_mlp_lightning.py}"
+SCRIPT_NAME="${SCRIPT_NAME:-2_bah_lightning.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
@@ -50,30 +50,45 @@ shopt -u nocasematch
 SEED="${SEED:-42}"
 EPOCHS="${EPOCHS:-5}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
+MODEL_NAME="${MODEL_NAME:-biaffine_head}"
+IS_DEV="${IS_DEV:-False}"
 
-HIDDEN_DIMS="${HIDDEN_DIMS:-2048,1024,512,256,128,64,32}"
-USE_LAYER_NORM="${USE_LAYER_NORM:-True}"
-USE_BATCH_NORM="${USE_BATCH_NORM:-False}"
+# Biaffine head
+PROJ_DIM="${PROJ_DIM:-1024}"
+N_HEADS="${N_HEADS:-8}"
+PROJ_hidden="${PROJ_hidden:-}"          # empty -> None
+DROPOUT="${DROPOUT:-0.0}"
+SHARE_PROJ="${SHARE_PROJ:-False}"
+NORM="${NORM:-True}"
+USE_LAYERNORM="${USE_LAYERNORM:-True}"
+USE_TEMPERATURE="${USE_TEMPERATURE:-True}"
+POS_WEIGHT="${POS_WEIGHT:-}"             # empty -> None
 
+# Oracle evals
 ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-1}"
 ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-8}"
 
+# HDC / encoder
 HV_DIM="${HV_DIM:-1600}"
 VSA="${VSA:-HRR}"
 DATASET="${DATASET:-QM9_SMILES_HRR_1600}"
 
+# Optim
 LR="${LR:-1e-3}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 
+# Loader
 NUM_WORKERS="${NUM_WORKERS:-16}"
-PREFETCH_FACTOR="${PREFETCH_FACTOR:-6}"   # pass "none" to your CLI if you want None
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-6}"
 PIN_MEMORY="${PIN_MEMORY:-True}"
 MICRO_BS="${MICRO_BS:-64}"
 PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-True}"
 
+# Checkpointing
 CONTINUE_FROM="${CONTINUE_FROM:-}"
 RESUME_RETRAIN_LAST_EPOCH="${RESUME_RETRAIN_LAST_EPOCH:-False}"
 
+# Stratification
 STRATIFY="${STRATIFY:-True}"
 P_PER_PARENT="${P_PER_PARENT:-20}"
 N_PER_PARENT="${N_PER_PARENT:-20}"
@@ -91,11 +106,16 @@ PY_ARGS=(
   --seed "$SEED"
   --epochs "$EPOCHS"
   --batch_size "$BATCH_SIZE"
+  --model_name "$MODEL_NAME"
   --is_dev "$IS_DEV"
 
-  --hidden_dims "$HIDDEN_DIMS"
-  --use_layer_norm "$USE_LAYER_NORM"
-  --use_batch_norm "$USE_BATCH_NORM"
+  --proj_dim "$PROJ_DIM"
+  --n_heads "$N_HEADS"
+  --dropout "$DROPOUT"
+  --share_proj "$SHARE_PROJ"
+  --norm "$NORM"
+  --use_layernorm "$USE_LAYERNORM"
+  --use_temperature "$USE_TEMPERATURE"
 
   --oracle_num_evals "$ORACLE_NUM_EVALS"
   --oracle_beam_size "$ORACLE_BEAM_SIZE"
@@ -119,12 +139,15 @@ PY_ARGS=(
   --n_per_parent "$N_PER_PARENT"
   --resample_training_data_on_batch "$RESAMPLE_TRAINING_DATA_ON_BATCH"
 )
+
+# Optional / nullable args
+[[ -n "$PROJ_hidden" ]] && PY_ARGS+=( --proj_hidden "$PROJ_hidden" )
+[[ -n "$POS_WEIGHT"  ]] && PY_ARGS+=( --pos_weight "$POS_WEIGHT" )
 [[ -n "$CONTINUE_FROM" ]] && PY_ARGS+=( --continue_from "$CONTINUE_FROM" )
 [[ -n "$EXCLUDE_NEGS"  ]] && PY_ARGS+=( --exclude_negs "$EXCLUDE_NEGS" )
 
 # Quote each arg so --wrap re-splits correctly on the remote shell
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
-
 # -----------------------------
 # Partitions + Pixi env per cluster
 # -----------------------------

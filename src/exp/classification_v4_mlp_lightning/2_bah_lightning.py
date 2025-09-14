@@ -3,6 +3,7 @@ import contextlib
 import enum
 import itertools
 import json
+import math
 import os
 import random
 import shutil
@@ -36,6 +37,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 from torch import nn
+from torch.nn import Module
 from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader
@@ -103,20 +105,26 @@ class Config:
     seed: int = 42
     epochs: int = 5
     batch_size: int = 256
-    model_name: str = "mlp"
+    model_name: str = "biaffine_head"
     is_dev: bool = False
 
-    # Model (shared knobs)
-    hidden_dims: list[int] = field(default_factory=lambda: [2048, 1024, 512, 256, 128, 64, 32])
-    use_layer_norm: bool = True
-    use_batch_norm: bool = False
+    # Biaffine model knobs
+    proj_dim: int = 1024
+    n_heads: int = 8
+    proj_hidden: int | None = None  # None => single Linear
+    dropout: float = 0.0
+    share_proj: bool = False
+    norm: bool = True  # L2 normalize h1/h2 before projecting
+    use_layernorm: bool = True
+    use_temperature: bool = True
+    pos_weight: float | None = None  # BCE pos_weight
 
     # Oracle Evals
     oracle_num_evals: int = 1
     oracle_beam_size: int = 8
 
     # HDC / encoder
-    hv_dim: int = 40 * 40  # 7744
+    hv_dim: int = 40 * 40  # 1600
     vsa: VSAModel = VSAModel.HRR
     dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
 
@@ -190,47 +198,104 @@ def setup_exp(dir_name: str | None = None) -> dict:
 # ---------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------
-# MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
-class MLPClassifier(nn.Module):
+class BiaffineHead(nn.Module):
     def __init__(
         self,
-        hv_dim: int = 88 * 88,
-        hidden_dims: list[int] | None = None,
+        hv_dim: int,
+        proj_dim: int = 1024,
+        n_heads: int = 8,
+        proj_hidden: int | None = None,
+        dropout: float = 0.0,
+        tau_init: float = 8.0,  # large τ to tame early logits
         *,
-        use_layer_norm: bool = False,
-        use_batch_norm: bool = False,
-    ) -> None:
-        """
-        hv_dim: dimension of each HRR vector (e.g., 7744)
-        hidden_dims: e.g., [4096, 2048, 512, 128]
-        """
+        share_proj: bool = False,
+        norm: bool = True,
+        use_layernorm: bool = True,
+        use_temperature: bool = True,
+    ):
         super().__init__()
-        hidden_dims = hidden_dims or [2048, 1024, 512, 128]
-        d_in = hv_dim * 2
-        layers: list[nn.Module] = []
-        log(f"Using Layer Normalization: {use_layer_norm}\nUsing Batch Normalization: {use_batch_norm}")
-        if use_layer_norm:
-            layers.append(nn.LayerNorm(d_in))
-        last = d_in
-        for h in hidden_dims:
-            layers.append(nn.Linear(last, h))
-            if use_batch_norm:
-                layers.append(nn.BatchNorm1d(h))
-            layers.append(nn.GELU())
-            last = h
-        layers += [nn.Linear(last, 1)]
-        self.net = nn.Sequential(*layers)
+        self.norm = norm
+        self.use_layernorm = use_layernorm
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.n_heads = n_heads
+        P = proj_dim
 
-    def forward(self, h1: torch.Tensor, h2: torch.Tensor) -> torch.Tensor:
-        # h1,h2: [B, hv_dim]
-        x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
-        return self.net(x).squeeze(-1)  # [B]
+        def proj_mlp() -> Module:
+            if proj_hidden is None:
+                return nn.Linear(hv_dim, P, bias=False)
+            return nn.Sequential(
+                nn.Linear(hv_dim, proj_hidden, bias=True),
+                nn.GELU(),
+                nn.Linear(proj_hidden, P, bias=False),
+            )
+
+        self.p1 = proj_mlp()
+        self.p2 = self.p1 if share_proj else proj_mlp()
+
+        self.ln1 = nn.LayerNorm(P) if use_layernorm else nn.Identity()
+        self.ln2 = nn.LayerNorm(P) if use_layernorm else nn.Identity()
+
+        self.W = nn.Parameter(torch.empty(n_heads, P, P))
+        nn.init.xavier_uniform_(self.W)
+
+        self.gate = nn.Linear(3, n_heads, bias=True)
+        nn.init.xavier_uniform_(self.gate.weight)
+        nn.init.zeros_(self.gate.bias)
+
+        self.diag_w = nn.Parameter(torch.zeros(P))
+        self.alpha = nn.Parameter(torch.tensor(0.0))
+        self.bias = nn.Parameter(torch.zeros(()))
+
+        self.use_temperature = use_temperature
+        if use_temperature:
+            # τ = softplus(log_tau)  with τ≈tau_init at start
+            self.log_tau = nn.Parameter(torch.tensor(math.log(math.exp(tau_init) - 1.0)))
+
+        # init: orthogonal for any Linear with bias=False (covers final layers)
+        for m in self.modules():
+            if isinstance(m, nn.Linear) and m.bias is None:
+                nn.init.orthogonal_(m.weight)
+
+    def forward(self, h1, h2):
+        # accept [B,1,D]
+        if h1.ndim == 3 and h1.size(1) == 1:
+            h1 = h1.squeeze(1)
+        if h2.ndim == 3 and h2.size(1) == 1:
+            h2 = h2.squeeze(1)
+
+        if self.norm:
+            h1 = F.normalize(h1, dim=-1)
+            h2 = F.normalize(h2, dim=-1)
+
+        u = self.ln1(self.p1(h1))
+        v = self.ln2(self.p2(h2))
+        u = self.dropout(u)
+        v = self.dropout(v)
+
+        # biaffine heads
+        s_heads = torch.einsum("bp,hpq,bq->bh", u, self.W, v)  # [B,H]
+
+        # tiny feature gate per head
+        uv = u * v
+        cos = (u * v).sum(-1) / (u.norm(dim=-1) * v.norm(dim=-1) + 1e-12)
+        feat = torch.stack([uv.mean(-1), (u - v).abs().mean(-1), cos], dim=-1)  # [B,3]
+        gates = torch.softmax(self.gate(feat), dim=-1)  # [B,H]
+
+        s_biaff = (gates * s_heads).sum(-1)  # [B]
+        s_diag = (uv * self.diag_w).sum(-1)  # [B]
+        s_dot = self.alpha * (u * v).sum(-1)  # [B]
+        logits = s_biaff + s_diag + s_dot + self.bias
+
+        if self.use_temperature:
+            tau = F.softplus(self.log_tau) + 1e-6
+            logits = logits / tau
+        return logits
 
 
 # ---------------------------------------------------------------------
 # Lightning wrapper
 # ---------------------------------------------------------------------
-class LitMLPClassifier(pl.LightningModule):
+class LitBAHClassifier(pl.LightningModule):
     """
     Expect batches as (h1, h2, y) or {"h1":..., "h2":..., "y":...}, with h1/h2 ~ [B, D].
     If collate yields [B, 1, D], we squeeze the middle dim.
@@ -240,12 +305,17 @@ class LitMLPClassifier(pl.LightningModule):
         self,
         *,
         hv_dim: int,
-        hidden_dims: list[int] | None = None,
-        use_layer_norm: bool = False,
-        use_batch_norm: bool = False,
+        proj_dim: int = 1024,  # 1024–1536 are good starting points
+        n_heads: int = 8,  # 4–16; more heads => more expressiveness
+        norm: bool = True,
+        proj_hidden: int | None = None,
+        dropout: float = 0.0,
         lr: float = 1e-3,
         weight_decay: float = 0.0,
         pos_weight: float | None = None,  # None -> unweighted BCE
+        share_proj: bool = False,  # or e.g. 2048 for 2-layer projections if you want even more capacity_
+        use_layernorm: bool = True,
+        use_temperature: bool = True,
     ) -> None:
         super().__init__()
         # Save EVERYTHING for checkpoint load
@@ -253,11 +323,16 @@ class LitMLPClassifier(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
 
-        self.model = MLPClassifier(
+        self.model = BiaffineHead(
             hv_dim=hv_dim,
-            hidden_dims=hidden_dims,
-            use_layer_norm=use_layer_norm,
-            use_batch_norm=use_batch_norm,
+            proj_dim=proj_dim,
+            n_heads=n_heads,
+            share_proj=share_proj,
+            norm=norm,
+            use_layernorm=use_layernorm,
+            proj_hidden=proj_hidden,
+            dropout=dropout,
+            use_temperature=use_temperature,
         )
 
         # Register pos_weight as a buffer so device moves are handled automatically
@@ -322,19 +397,23 @@ class LitMLPClassifier(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         # make sure these get logged too (optional)
-        auc = self.val_auc.compute()
-        ap = self.val_ap.compute()
-        self.log("val_auc", auc, prog_bar=True)
-        self.log("val_ap", ap, prog_bar=True)
+        self.log("val_auc", self.val_auc.compute(), prog_bar=True)
+        self.log("val_ap", self.val_ap.compute(), prog_bar=True)
         self.val_auc.reset()
         self.val_ap.reset()
 
     def test_step(self, batch, batch_idx: int):
-        # mirror validation for later testing
-        return self.validation_step(batch, batch_idx)
+        h1, h2, y = batch
+        h1, h2, y = self._fix_shapes(h1, h2, y)
+        logits = self(h1, h2)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+        probs = logits.sigmoid()
+        self.log("test_loss", loss, prog_bar=True)
+        self.log("test_auc", self.val_auc(probs, y.int()), prog_bar=True)
+        self.log("test_ap", self.val_ap(probs, y.int()), prog_bar=True)
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
 
 # ---------------------------------------------------------------------
@@ -453,7 +532,7 @@ class PairsDataModule(pl.LightningDataModule):
         self.valid_loader = None
 
     def setup(self, stage=None):
-        log("Loading pair datasets …")
+        log(f"Loading {cfg.dataset.value} pair datasets -- Dev:{self.is_dev}…")
         if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
             self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)
             self.valid_full = QM9Pairs(split="valid", base_dataset=QM9Smiles(split="valid"), dev=self.is_dev)
@@ -963,14 +1042,19 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     dm = PairsDataModule(cfg, encoder=cpu_encoder, device=torch.device("cpu"), is_dev=is_dev)
 
     # ----- model + optim -----
-    model = LitMLPClassifier(
+    model = LitBAHClassifier(
         hv_dim=cfg.hv_dim,
-        hidden_dims=cfg.hidden_dims,
-        use_layer_norm=cfg.use_layer_norm,
-        use_batch_norm=cfg.use_batch_norm,
+        proj_dim=cfg.proj_dim,
+        n_heads=cfg.n_heads,
+        norm=cfg.norm,
+        proj_hidden=cfg.proj_hidden,
+        dropout=cfg.dropout,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
         pos_weight=(cfg.n_per_parent / cfg.p_per_parent) if cfg.p_per_parent != cfg.n_per_parent else None,
+        share_proj=cfg.share_proj,
+        use_layernorm=cfg.use_layernorm,
+        use_temperature=cfg.use_temperature,
     ).to(device=device)
 
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
@@ -1014,7 +1098,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         accelerator="auto",
         devices="auto",
         strategy="auto",
-        # gradient_clip_val=1.0,  # Do we need this?
+        gradient_clip_val=1.0,
         log_every_n_steps=1000 if not is_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
@@ -1059,33 +1143,27 @@ if __name__ == "__main__":
         """
         cfg = Config()  # start with your defaults
 
-        p = argparse.ArgumentParser(description="Experiment Config (unified)")
-
-        # IMPORTANT: default=SUPPRESS so unspecified flags don't overwrite dataclass defaults
-        p.add_argument(
-            "--project_dir",
-            "-pdir",
-            type=Path,
-            default=argparse.SUPPRESS,
-            help="Project root (will be created if missing)",
-        )
-        p.add_argument("--exp_dir_name", type=str, default=argparse.SUPPRESS)
+        p = argparse.ArgumentParser(description="Biaffine Head Experiment Config")
 
         # General
+        p.add_argument("--project_dir", "-pdir", type=Path, default=argparse.SUPPRESS)
+        p.add_argument("--exp_dir_name", type=str, default=argparse.SUPPRESS)
         p.add_argument("--seed", type=int, default=argparse.SUPPRESS)
         p.add_argument("--epochs", "-e", type=int, default=argparse.SUPPRESS)
         p.add_argument("--batch_size", "-bs", type=int, default=argparse.SUPPRESS)
+        p.add_argument("--model_name", type=str, default=argparse.SUPPRESS)
         p.add_argument("--is_dev", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
 
-        # Model knobs
-        p.add_argument(
-            "--hidden_dims",
-            type=_parse_int_list,
-            default=argparse.SUPPRESS,
-            help="Comma-separated: e.g. '2048,1024,512,256,128,64,32'",
-        )
-        p.add_argument("--use_layer_norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
-        p.add_argument("--use_batch_norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        # Biaffine model knobs
+        p.add_argument("--proj_dim", type=int, default=argparse.SUPPRESS)
+        p.add_argument("--n_heads", type=int, default=argparse.SUPPRESS)
+        p.add_argument("--proj_hidden", type=_parse_maybe_int, default=argparse.SUPPRESS)
+        p.add_argument("--dropout", type=float, default=argparse.SUPPRESS)
+        p.add_argument("--share_proj", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        p.add_argument("--norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        p.add_argument("--use_layernorm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        p.add_argument("--use_temperature", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        p.add_argument("--pos_weight", type=_parse_maybe_float, default=argparse.SUPPRESS)
 
         # Oracle evals
         p.add_argument("--oracle_num_evals", type=int, default=argparse.SUPPRESS)
@@ -1121,9 +1199,8 @@ if __name__ == "__main__":
         p.add_argument("--resample_training_data_on_batch", type=str2bool, default=argparse.SUPPRESS)
 
         ns = p.parse_args(argv)
-        provided = vars(ns)  # only the keys the user actually passed
+        provided = vars(ns)
 
-        # Apply only provided keys onto cfg
         for k, v in provided.items():
             if k == "vsa" and isinstance(v, str):
                 v = VSAModel(v)
@@ -1136,7 +1213,7 @@ if __name__ == "__main__":
         return cfg
 
     log(f"Running {Path(__file__).resolve()}")
-    is_dev = os.getenv("LOCAL_HDC", False)
+    is_dev = os.getenv("LOCAL_HDC_", False)
 
     if is_dev:
         log("Running in local HDC (DEV) ...")
@@ -1145,7 +1222,6 @@ if __name__ == "__main__":
             seed=42,
             epochs=10,
             batch_size=4,
-            use_batch_norm=True,
             hv_dim=40 * 40,
             vsa=VSAModel.HRR,
             dataset=SupportedDataset.QM9_SMILES_HRR_1600,

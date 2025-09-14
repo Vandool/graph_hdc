@@ -8,5 +8,5 @@ VSA=HRR \
 BATCH_SIZE=768 \
 LR=1.5e-3 \
 WEIGHT_DECAY=2e-4 \
-EPOCHS=1 \
+EPOCHS=20 \
 ./_1_mlp_lightning.sh

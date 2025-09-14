@@ -287,7 +287,7 @@ class SupportedDataset(enum.Enum):
     ZINC_SMILES_HRR_7744 = ("ZINC_SMILES_HRR_7744", ZINC_SMILES_HRR_7744_CONFIG)
     QM9 = ("QM9", QM9_CONFIG)
     QM9_SMILES = ("QM9_SMILES", QM9_SMILES_CONFIG)
-    QM9_SMILES_HRR_1600 = ("QM9_SMILES_SMILES_HRR_1600", QM9_SMILES_HRR_1600_CONFIG)
+    QM9_SMILES_HRR_1600 = ("QM9_SMILES_HRR_1600", QM9_SMILES_HRR_1600_CONFIG)
 
     def __new__(cls, value: str, default_cfg: DatasetConfig):
         obj = object.__new__(cls)

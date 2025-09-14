@@ -7,5 +7,5 @@ DATASET=QM9_SMILES_HRR_1600 \
 VSA=HRR \
 BATCH_SIZE=1024 \
 LR=2e-3 \
-WEIGHT_DECAY=1e-4 \
+EPOCHS=20 \
 ./_1_mlp_lightning.sh
