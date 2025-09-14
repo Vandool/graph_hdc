@@ -54,6 +54,9 @@ from src.exp.classification_v2.classification_utils import (
 )
 from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, pick_device
 
+# Plotting
+plt.show(block=True)
+
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
 
@@ -331,7 +334,7 @@ def evaluate_as_oracle(
     graph_terms_hd = graph_term.as_subclass(HRRTensor)
 
     # Create Oracle
-    oracle = Oracle(model=model)
+    oracle = Oracle(model=model, model_type="mlp")
     oracle.encoder = encoder
 
     ground_truth_counters = {}
@@ -573,6 +576,55 @@ def train(
     # Since training can take long, we save based on time
     last_save_t = time.time()
 
+    # @torch.no_grad()
+    # def collision_report_for_loader(encoder, loader, device, decimals: int = 5):
+    #     xs_all, ys_all = [], []
+    #     for g1_b, g2_b, y, parent_ids in loader:
+    #         for g1, g2, y in zip(g1_b.to_data_list(), g2_b.to_data_list(), y.tolist(), strict=False):
+    #             a = DataTransformer.pyg_to_nx(g1)
+    #             b = DataTransformer.pyg_to_nx(g2)
+    #             draw_nx_with_atom_colorings(H=a, overlay_full_graph=b, label=f"Label {y}")
+    #             plt.show()
+    #
+    #         h1 = encode_batch(encoder, g1_b, device=device, micro_bs=64, depth=2)
+    #         h2 = encode_batch(encoder, g2_b, device=device, micro_bs=64, depth=3)
+    #
+    #         print(torchhd.dot(h1, h1).diag())
+    #         print(f"{torchhd.cos(h1[0], h1[1])=}")
+    #         print(f"{torchhd.cos(h2[0], h2[1])=}")
+    #         print(f"{torchhd.dot(h1[0], h1[1])=}")
+    #         print(f"{torchhd.dot(h2[0], h2[1])=}")
+    #         print(f"{torchhd.cos(torch.cat([h1[0], h2[0]]), torch.cat([h1[1], h2[1]]))}=")
+    #         print(h1[1])
+    #         print(torchhd.dot(h2, h2))
+    #
+    #         xs_all.append(torch.cat([h1.squeeze(1), h2.squeeze(1)], dim=-1).cpu())
+    #         ys_all.append(y.view(-1).cpu().to(torch.int64))
+    #     X = torch.cat(xs_all, dim=0)  # [N, 2D]
+    #     Y = torch.cat(ys_all, dim=0)  # [N]
+    #
+    #     Xr = torch.round(X, decimals=decimals)
+    #     # unique buckets & inverse mapping
+    #     uniq, inv = torch.unique(Xr, dim=0, return_inverse=True)
+    #     counts = torch.bincount(inv, minlength=uniq.size(0))
+    #
+    #     # count positives/negatives per bucket
+    #     pos = torch.zeros_like(counts)
+    #     neg = torch.zeros_like(counts)
+    #     pos.index_add_(0, inv, Y)
+    #     neg.index_add_(0, inv, (1 - Y))
+    #
+    #     feature_collisions = int((counts > 1).sum().item())
+    #     conflicting_buckets = int(((pos > 0) & (neg > 0)).sum().item())
+    #     conflicting_samples = int((counts[((pos > 0) & (neg > 0))]).sum().item())
+    #
+    #     print(f"[collision report] buckets={uniq.size(0)}  N={X.size(0)}")
+    #     print(f"  feature-collision buckets: {feature_collisions}")
+    #     print(f"  conflicting buckets:       {conflicting_buckets}")
+    #     print(f"  conflicting samples:       {conflicting_samples}")
+
+    # collision_report_for_loader(encoder, train_loader, device, decimals=4)
+
     log(f"Starting training on {device}")
     last_epoch_run = start_epoch - 1
     for epoch in range(start_epoch, cfg.epochs + 1):
@@ -582,12 +634,15 @@ def train(
         pbar = tqdm(train_loader, desc=f"train e{epoch}", dynamic_ncols=True)
         t0 = time.time()
 
+        xs = []
+        ys = []
         for g1_b, g2_b, y, parent_ids in pbar:
             n = y.size(0)
             n_seen += n
             y = y.to(device)
 
             # Precompute encodings (no grad) to keep training simple and fast
+
             with torch.no_grad():
                 h1 = encode_batch(encoder, g1_b, device=device, micro_bs=cfg.micro_bs)
                 h2 = encode_g2_with_cache(encoder, g2_b, parent_ids, device, g2_cache_train, cfg.micro_bs)
@@ -938,18 +993,18 @@ if __name__ == "__main__":
     if is_dev:
         log("Running in local HDC (DEV) ...")
         cfg: Config = Config(
-            exp_dir_name="overfitting_batch_norm",
+            exp_dir_name="overfitting",
             seed=42,
-            epochs=3,
-            batch_size=512,
+            epochs=500,
+            batch_size=256,
             train_parents_start=None,
             train_parents_end=None,
             valid_parents_start=None,
             valid_parents_end=None,
-            hidden_dims=[2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 1024, 512, 128],
+            hidden_dims=[1024, 1024, 1024, 1024, 1024, 1024, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2],
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
-            lr=1e-4,
+            lr=1e-3,
             weight_decay=0.0,
             num_workers=0,
             prefetch_factor=1,
@@ -964,7 +1019,7 @@ if __name__ == "__main__":
             p_per_parent=2,
             n_per_parent=2,
             use_layer_norm=False,
-            use_batch_norm=True,
+            use_batch_norm=False,
             oracle_beam_size=8,
             oracle_num_evals=8,
             resample_training_data_on_batch=True,

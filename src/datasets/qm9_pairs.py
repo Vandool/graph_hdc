@@ -12,7 +12,7 @@ from torch_geometric.data import Data, Dataset
 from torch_geometric.data import InMemoryDataset as _IMD
 from tqdm.auto import tqdm
 
-from src.encoding.decoder import is_induced_subgraph_by_features, residual_degree, wl_hash
+from src.encoding.decoder import residual_degree, wl_hash
 from src.encoding.the_types import Feat
 from src.utils.utils import GLOBAL_DATASET_PATH, DataTransformer
 from src.utils.visualisations import draw_nx_with_atom_colorings
@@ -47,6 +47,16 @@ def draw(
 
 
 # ────────────────────────────── utilities (graph I/O) ─────────────────────────
+def is_induced_subgraph_feature_aware_cheap(g: nx.Graph, G: nx.Graph, require_connected: bool = True) -> bool:
+    """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
+    if require_connected and g.number_of_nodes() and not nx.is_connected(g):
+        return False
+
+    nm = lambda a, b: a["feat"] == b["feat"]
+    GM = nx.algorithms.isomorphism.GraphMatcher(G, g, node_match=nm)
+    return GM.subgraph_is_isomorphic()
+
+
 def make_subgraph_data(full: Data, S: Sequence[int]) -> Data:
     r"""
     Build a PyG ``Data`` that contains only nodes in ``S`` and edges between them.
@@ -527,7 +537,8 @@ class QM9Pairs(Dataset):
                 directly teaches the boundary between “good next step” and “bad next step.” Core.
              Type 7) Illegal-edge: edges that does not appear in the parent graph, where nodes appear.
 
-        All VF2 checks use `is_induced_subgraph_feature_aware`, ensuring labels are correct even without VF2 at inference.
+        All VF2 checks use a cheaper version of VF2, ensuring labels are correct even without VF2 at inference.
+        At the end of the generation VF2 will verify a large sample of the data.
         """
         rng, cfg = self._rng, self.cfg
 
@@ -652,7 +663,7 @@ class QM9Pairs(Dataset):
                         H_neg.add_edge(0, 1)  # illegal: this feature-pair never appears as an edge in the parent
 
                         # Safety: should NOT embed if pair truly forbidden
-                        if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                        if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
                             continue
 
                         g1_neg = DataTransformer.nx_to_pyg(H_neg)
@@ -757,7 +768,7 @@ class QM9Pairs(Dataset):
                                 continue
                             H_neg.add_edge(u, v)  # guaranteed to break inducedness against G[S]
                             # Safety: skip if somehow still induced (shouldn't happen)
-                            if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                            if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
                                 continue
                             hkey = wl_hash(H_neg)
                             if hkey in neg_seen:
@@ -813,7 +824,7 @@ class QM9Pairs(Dataset):
                                 continue
                             H_neg.add_edge(u, v)
                             # Adding an edge keeps connectivity; verify non-induced:
-                            if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                            if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
                                 continue
                             hkey = wl_hash(H_neg)
                             if hkey in neg_seen:
@@ -855,7 +866,7 @@ class QM9Pairs(Dataset):
                             if not nx.is_connected(H_neg):
                                 continue
                             # Removing a real edge should break inducedness:
-                            if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                            if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
                                 continue
                             hkey = wl_hash(H_neg)
                             if hkey in neg_seen:
@@ -917,7 +928,7 @@ class QM9Pairs(Dataset):
                                         if not nx.is_connected(H_neg):
                                             continue
                                         # Rewired structure must not be an induced subgraph
-                                        if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                                        if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
                                             continue
                                         hkey = wl_hash(H_neg)
                                         if hkey in neg_seen:
@@ -990,7 +1001,7 @@ class QM9Pairs(Dataset):
                                         H_neg.add_edge(w, a)
 
                                     # Must be connected (it is if attach_cnt>=1) and NOT induced
-                                    if is_induced_subgraph_by_features(H_neg, G, require_connected=True):
+                                    if is_induced_subgraph_feature_aware_cheap(H_neg, G, require_connected=True):
                                         continue
                                     hkey = wl_hash(H_neg)
                                     if hkey in neg_seen:
@@ -1036,7 +1047,7 @@ class QM9Pairs(Dataset):
                                 if taken >= capD:
                                     break
                                 Gj = nx_views[j]
-                                if is_induced_subgraph_by_features(H_pos, Gj, require_connected=True):
+                                if is_induced_subgraph_feature_aware_cheap(H_pos, Gj, require_connected=True):
                                     continue
                                 full_j: Data = self.base[j]
 

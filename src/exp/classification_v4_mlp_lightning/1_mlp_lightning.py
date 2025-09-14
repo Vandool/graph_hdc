@@ -103,6 +103,7 @@ class Config:
     seed: int = 42
     epochs: int = 5
     batch_size: int = 256
+    model_name: str = "mlp"
     is_dev: bool = False
 
     # Model (shared knobs)
@@ -128,12 +129,10 @@ class Config:
     prefetch_factor: int | None = 6
     pin_memory: bool = True
     micro_bs: int = 64
-    hv_scale: float | None = None
     persistent_workers: bool = True
 
     # Checkpointing
-    save_every_seconds: int = 3600  # every 60 minutes
-    keep_last_k: int = 2  # rolling snapshots to keep
+    # for lightning resume
     continue_from: Path | None = None
     resume_retrain_last_epoch: bool = False
 
@@ -291,24 +290,27 @@ class LitMLPClassifier(pl.LightningModule):
         h1, h2, y = self._fix_shapes(h1, h2, y)
         logits = self(h1, h2)
         loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
-        self.log("loss", float(loss.detach()), on_step=True, on_epoch=True, prog_bar=False, batch_size=y.size(0))
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=y.size(0), logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx: int):
-        h1, h2, y = batch               # keep the same structure as training
+        h1, h2, y = batch  # keep the same structure as training
         h1, h2, y = self._fix_shapes(h1, h2, y)
 
         logits = self(h1, h2)
-        loss = F.binary_cross_entropy_with_logits(
-            logits, y, pos_weight=self.pos_weight
-        )
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
 
         # epoch-level val_loss for EarlyStopping
         sync = getattr(self.trainer, "world_size", 1) > 1
         self.log(
-            "val_loss", float(loss.detach()),
-            on_step=False, on_epoch=True, prog_bar=True, logger=True,
-            batch_size=y.size(0), sync_dist=sync
+            "val_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=y.size(0),
+            sync_dist=sync,
         )
 
         # metrics expect probabilities and int/bool targets
@@ -318,10 +320,12 @@ class LitMLPClassifier(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         # make sure these get logged too (optional)
-        auc = self.val_auc.compute(); ap = self.val_ap.compute()
+        auc = self.val_auc.compute()
+        ap = self.val_ap.compute()
         self.log("val_auc", auc, prog_bar=True)
-        self.log("val_ap", ap,  prog_bar=True)
-        self.val_auc.reset(); self.val_ap.reset()
+        self.log("val_ap", ap, prog_bar=True)
+        self.val_auc.reset()
+        self.val_ap.reset()
 
     def test_step(self, batch, batch_idx: int):
         # mirror validation for later testing
@@ -415,6 +419,9 @@ class PairsEncodedDataset(Dataset):
         # Encode a single graph safely
         batch_g2 = Batch.from_data_list([g2]).to(self.device)
         h2 = self.encoder.forward(batch_g2)["graph_embedding"]  # [1, D] on device
+
+        h1 = h1.as_subclass(torch.Tensor)
+        h2 = h2.as_subclass(torch.Tensor)
 
         # target/meta
         y = float(item.y.view(-1)[0].item())
@@ -666,7 +673,7 @@ class MetricsPlotsAndOracleCallback(Callback):
         # concat
         y = torch.cat(self._ys).numpy().astype(int)
         z = torch.cat(self._logits).numpy().astype(np.float32)
-        p = 1.0 / (1.0 + np.exp(-z))  # sigmoid
+        p = torch.sigmoid(torch.from_numpy(z)).numpy()
 
         # unweighted val loss for comparability
         val_loss = float(
@@ -741,7 +748,7 @@ class MetricsPlotsAndOracleCallback(Callback):
 
         # log to Lightning
         metrics = {
-            "val_loss": val_loss,
+            "val_loss_cb": val_loss,
             "val_auc": auc,
             "val_ap": ap,
             "val_brier": brier,
@@ -751,10 +758,10 @@ class MetricsPlotsAndOracleCallback(Callback):
             "val_bal_acc@0.5": bal05,
             "val_mcc@0.5": mcc05,
             # Confusion matrix counts (scalars => safe for Lightning/CSVLogger)
-            "val_tn@0.5": tn05,
-            "val_fp@0.5": fp05,
-            "val_fn@0.5": fn05,
-            "val_tp@0.5": tp05,
+            # "val_tn@0.5": tn05,
+            # "val_fp@0.5": fp05,
+            # "val_fn@0.5": fn05,
+            # "val_tp@0.5": tp05,
             "val_best_f1": f1_best,
             "val_best_thr": best_thr,
             # confusion matrix at best threshold
@@ -985,7 +992,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=4,
+        patience=10,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         check_on_train_epoch_end=False,
@@ -1006,7 +1013,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         devices="auto",
         strategy="auto",
         # gradient_clip_val=1.0,  # Do we need this?
-        log_every_n_steps=500 if not is_dev else 1,
+        log_every_n_steps=1000 if not is_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
@@ -1023,21 +1030,24 @@ def run_experiment(cfg: Config, is_dev: bool = False):
 
 
 if __name__ == "__main__":
-    # ----------------- CLI parsing that never clobbers defaults -----------------
+
     def _parse_int_list(s: str) -> list[int]:
-        # accept "4096,2048,512,128" or with spaces
+        # accept "4096,2048,512,128" (spaces ignored)
         return [int(tok) for tok in s.replace(" ", "").split(",") if tok]
 
     def _parse_vsa(s: str) -> VSAModel:
-        # Accepts e.g. "HRR", not VSAModel.HRR
-        if isinstance(s, VSAModel):
-            return s
-        return VSAModel(s)
+        return s if isinstance(s, VSAModel) else VSAModel(s)
 
     def _parse_supported_dataset(s: str) -> SupportedDataset:
-        if isinstance(s, SupportedDataset):
-            return s
-        return SupportedDataset(s)
+        return s if isinstance(s, SupportedDataset) else SupportedDataset(s)
+
+    def _parse_maybe_int(s: str) -> int | None:
+        sl = s.strip().lower()
+        return None if sl in {"none", "null", "nil", ""} else int(s)
+
+    def _parse_maybe_float(s: str) -> float | None:
+        sl = s.strip().lower()
+        return None if sl in {"none", "null", "nil", ""} else float(s)
 
     def get_args(argv: list[str] | None = None) -> Config:
         """
@@ -1059,42 +1069,27 @@ if __name__ == "__main__":
         )
         p.add_argument("--exp_dir_name", type=str, default=argparse.SUPPRESS)
 
+        # General
         p.add_argument("--seed", type=int, default=argparse.SUPPRESS)
         p.add_argument("--epochs", "-e", type=int, default=argparse.SUPPRESS)
         p.add_argument("--batch_size", "-bs", type=int, default=argparse.SUPPRESS)
         p.add_argument("--is_dev", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
 
-        # Evals
+        # Model knobs
+        p.add_argument(
+            "--hidden_dims",
+            type=_parse_int_list,
+            default=argparse.SUPPRESS,
+            help="Comma-separated: e.g. '2048,1024,512,256,128,64,32'",
+        )
+        p.add_argument("--use_layer_norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        p.add_argument("--use_batch_norm", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+
+        # Oracle evals
         p.add_argument("--oracle_num_evals", type=int, default=argparse.SUPPRESS)
         p.add_argument("--oracle_beam_size", type=int, default=argparse.SUPPRESS)
 
-        # Model knobs
-        p.add_argument(
-            "--film_units",
-            type=_parse_int_list,
-            default=argparse.SUPPRESS,
-            help="Comma-separated: e.g. '128,64'",
-        )
-        p.add_argument(
-            "--cond_units", type=_parse_int_list, default=argparse.SUPPRESS, help="Comma-separated: e.g. '256,128'"
-        )
-        p.add_argument(
-            "--cond_emb_dim",
-            type=int,
-            default=argparse.SUPPRESS,
-            help="If omitted but --cond_units is given, will default to last(cond_units)",
-        )
-        p.add_argument(
-            "--conv_units", type=_parse_int_list, default=argparse.SUPPRESS, help="Comma-separated: e.g. '64,64,64'"
-        )
-        p.add_argument(
-            "--pred_head_units",
-            type=_parse_int_list,
-            default=argparse.SUPPRESS,
-            help="Comma-separated: e.g. '256,64,1'",
-        )
-
-        # HDC
+        # HDC / encoder
         p.add_argument("--hv_dim", "-hd", type=int, default=argparse.SUPPRESS)
         p.add_argument("--vsa", "-v", type=_parse_vsa, default=argparse.SUPPRESS)
         p.add_argument("--dataset", "-ds", type=_parse_supported_dataset, default=argparse.SUPPRESS)
@@ -1105,8 +1100,9 @@ if __name__ == "__main__":
 
         # Loader
         p.add_argument("--num_workers", type=int, default=argparse.SUPPRESS)
-        p.add_argument("--prefetch_factor", type=int, default=argparse.SUPPRESS)
+        p.add_argument("--prefetch_factor", type=_parse_maybe_int, default=argparse.SUPPRESS)
         p.add_argument("--pin_memory", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
+        p.add_argument("--micro_bs", type=int, default=argparse.SUPPRESS)
         p.add_argument("--persistent_workers", type=str2bool, nargs="?", const=True, default=argparse.SUPPRESS)
 
         # Checkpointing
@@ -1114,6 +1110,7 @@ if __name__ == "__main__":
         p.add_argument("--resume_retrain_last_epoch", type=str2bool, default=argparse.SUPPRESS)
 
         # Stratification
+        p.add_argument("--stratify", type=str2bool, default=argparse.SUPPRESS)
         p.add_argument("--p_per_parent", type=int, default=argparse.SUPPRESS)
         p.add_argument("--n_per_parent", type=int, default=argparse.SUPPRESS)
         p.add_argument(
@@ -1126,11 +1123,12 @@ if __name__ == "__main__":
 
         # Apply only provided keys onto cfg
         for k, v in provided.items():
-            # Make sure VSAModel parsed if user typed the enum value directly
             if k == "vsa" and isinstance(v, str):
                 v = VSAModel(v)
             if k == "dataset" and isinstance(v, str):
                 v = SupportedDataset(v)
+            if k == "exclude_negs" and isinstance(v, list):
+                v = set(v)
             setattr(cfg, k, v)
 
         return cfg
@@ -1162,7 +1160,7 @@ if __name__ == "__main__":
             oracle_beam_size=8,
             oracle_num_evals=8,
             resample_training_data_on_batch=True,
-            is_dev=True
+            is_dev=True,
         )
     else:
         log("Running in cluster ...")

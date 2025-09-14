@@ -464,7 +464,7 @@ def stratified_per_parent_indices_with_caps(
 
     global_offset = 0  # re-walk shards and only touch rows we actually selected
     sel = selected  # alias
-    si = 0          # moving pointer into `sel` (since both are sorted)
+    si = 0  # moving pointer into `sel` (since both are sorted)
 
     for shard_id in range(num_shards):
         data, slices = ds._get_shard(shard_id)
@@ -499,10 +499,12 @@ def stratified_per_parent_indices_with_caps(
         neg_pct = 100.0 * neg_cnt / total
         # stable order by neg_type
         hist_items = sorted(neg_hist.items())
-        hist_str = ", ".join(f"{t}:{c} ({(0 if neg_cnt==0 else 100.0*c/neg_cnt):.1f}%)" for t, c in hist_items)
+        hist_str = ", ".join(f"{t}:{c} ({(0 if neg_cnt == 0 else 100.0 * c / neg_cnt):.1f}%)" for t, c in hist_items)
         print("=== Sanity summary (selected subset) ===", flush=True)
-        print(f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | "
-              f"negatives={neg_cnt} ({neg_pct:.1f}%)", flush=True)
+        print(
+            f"[SEL] size={total} | positives={pos_cnt} ({pos_pct:.1f}%) | negatives={neg_cnt} ({neg_pct:.1f}%)",
+            flush=True,
+        )
         print(f"[SEL] neg_type histogram: {hist_str}", flush=True)
     else:
         print("=== Sanity summary: no samples selected ===", flush=True)

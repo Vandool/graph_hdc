@@ -233,15 +233,15 @@ def main():
         sanity_limit=args.sanity_limit,
     )
 
-    _, stats = build_qm9_pairs_for_split(
-        split=args.split,
-        cfg=cfg,
-        force_reprocess=False,
-        debug=False,
-        is_dev=False,
-        n=args.n,
-        sanity_limit=args.sanity_limit,
-    )
+    # _, stats = build_qm9_pairs_for_split(
+    #     split=args.split,
+    #     cfg=cfg,
+    #     force_reprocess=False,
+    #     debug=False,
+    #     is_dev=False,
+    #     n=args.n,
+    #     sanity_limit=args.sanity_limit,
+    # )
 
 
 if __name__ == "__main__":

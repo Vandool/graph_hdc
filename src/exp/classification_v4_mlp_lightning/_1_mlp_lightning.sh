@@ -1,169 +1,178 @@
 #!/usr/bin/env bash
 # universal_cluster_submit.sh
 # Submit the same experiment to multiple partitions depending on $CLUSTER.
-# Supported CLUSTER values:
-#   uc3  -> bwUniCluster 3.0
-#       Available Nodes : cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il|
-#   hk   -> HoreKa
-#       Available Nodes: # Available partitions: cpuonly large accelerated accelerated-h100 accelerated-200
-#                        # Available dev partitions: dev_cpuonly dev_accelerated dev_accelerated-h100
-#   haic -> HAICORE (default)
-#   home ->
-# Usage for dry-run:
-# ```sh
-# CLUSTER=uc3 DRY_RUN=1 ./universal_cluster_submit.sh
-# ```
-# Usage for targeting partitions:
-# ```sh
-# CLUSTER=uc3 ONLY_PARTITIONS=gpu_h100,gpu_a100_il ./universal_cluster_submit.sh
-# ```
+# CLUSTER: uc3 | hk | haic | local
 
 set -euo pipefail
+
+# --- DRY-RUN normalization & early debug ---
+DRY_RUN_RAW="${DRY_RUN:-0}"
+DRY_RUN="$(printf '%s' "$DRY_RUN_RAW" | tr -d '\r[:space:]')"
+DRY_RUN="${DRY_RUN:-0}"
+echo "DryRun  : ${DRY_RUN}"
 
 # -----------------------------
 # User-configurable parameters
 # -----------------------------
+CLUSTER="${CLUSTER:-local}"
 
-# Cluster selector: uc3 | hk | haic | home
-CLUSTER="${CLUSTER:-home}"
-
-# Slurm common settings
-JOB_NAME="${JOB_NAME:-GNN_FILM_Baseline}"
+JOB_NAME="${JOB_NAME:-MLP_Lightning}"
 GPUS="${GPUS:-1}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set by cluster block if empty
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
-# Module loading (override per cluster below if needed)
 MODULE_LOAD_DEFAULT=''
 
-# Paths
-PROJECT_DIR="${GHDC_HOME}"
-EXPERIMENTS_PATH="${PROJECT_DIR}/src/exp/classification_v3_gnn"
-SCRIPT_NAME="${SCRIPT_NAME:-2_gnn_film.py}"
+PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
+EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/classification_v4_mlp_lightning}"
+SCRIPT_NAME="${SCRIPT_NAME:-1_mlp_lightning.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
+echo "Script  : ${SCRIPT}"
 
-# W&B (optional)
 ENTITY="${ENTITY:-akaveh}"
 PROJECT="${PROJECT:-graph_hdc}"
-EXP_NAME="${JOB_NAME}"
+EXP_NAME="${EXP_NAME:-$JOB_NAME}"
 
-# Dry run to preview sbatch commands without submitting: 0 or 1
-DRY_RUN="${DRY_RUN:-0}"
-
-# Optional partition filter (comma-separated). If set, only those partitions are submitted.
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 
-# -----------------------------
-# Python args (edit as needed)
-# -----------------------------
-# Aligned with classification_v2/1_mlp.py parameters in your example.
-EPOCHS="${EPOCHS:-9}"
-BATCH_SIZE="${BATCH_SIZE:-256}"
-LR="${LR:-1e-4}"
-P_PER_PARENT="${P_PER_PARENT:-20}"
-N_PER_PARENT="${N_PER_PARENT:-20}"
-ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-32}"
-ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-32}"
-RESAMPLE_TRAINING_DATA_ON_BATCH="${RESAMPLE_TRAINING_DATA_ON_BATCH:-True}"
-IS_DEV="${IS_DEV:-False}"
-HV_DIMS="${HV_DIMS:-2048,1024,512,256,128,64,32}"
-
-# If dev, make the experiment name explicit
 shopt -s nocasematch
+IS_DEV="${IS_DEV:-False}"
 if [[ "$IS_DEV" =~ ^(1|true|yes|on)$ ]]; then
   EXP_NAME="DEBUG_${EXP_NAME}"
   JOB_NAME="DEBUG_${JOB_NAME}"
 fi
 shopt -u nocasematch
 
-# Build python args array
-# shellcheck disable=SC2054
+# -----------------------------
+# Args aligned to your parser
+# -----------------------------
+SEED="${SEED:-42}"
+EPOCHS="${EPOCHS:-5}"
+BATCH_SIZE="${BATCH_SIZE:-256}"
+
+HIDDEN_DIMS="${HIDDEN_DIMS:-2048,1024,512,256,128,64,32}"
+USE_LAYER_NORM="${USE_LAYER_NORM:-True}"
+USE_BATCH_NORM="${USE_BATCH_NORM:-False}"
+
+ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-1}"
+ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-8}"
+
+HV_DIM="${HV_DIM:-1600}"
+VSA="${VSA:-HRR}"
+DATASET="${DATASET:-QM9_SMILES_HRR_1600}"
+
+LR="${LR:-1e-3}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
+
+NUM_WORKERS="${NUM_WORKERS:-16}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-6}"   # pass "none" to your CLI if you want None
+PIN_MEMORY="${PIN_MEMORY:-True}"
+MICRO_BS="${MICRO_BS:-64}"
+PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-True}"
+
+CONTINUE_FROM="${CONTINUE_FROM:-}"
+RESUME_RETRAIN_LAST_EPOCH="${RESUME_RETRAIN_LAST_EPOCH:-False}"
+
+STRATIFY="${STRATIFY:-True}"
+P_PER_PARENT="${P_PER_PARENT:-20}"
+N_PER_PARENT="${N_PER_PARENT:-20}"
+EXCLUDE_NEGS="${EXCLUDE_NEGS:-}"
+RESAMPLE_TRAINING_DATA_ON_BATCH="${RESAMPLE_TRAINING_DATA_ON_BATCH:-False}"
+
+# -----------------------------
+# Build python args (array) + safe quoted string
+# -----------------------------
 PY_ARGS=(
   "$SCRIPT"
   --project_dir "$PROJECT_DIR"
   --exp_dir_name "$EXP_NAME"
+
+  --seed "$SEED"
   --epochs "$EPOCHS"
   --batch_size "$BATCH_SIZE"
+  --is_dev "$IS_DEV"
+
+  --hidden_dims "$HIDDEN_DIMS"
+  --use_layer_norm "$USE_LAYER_NORM"
+  --use_batch_norm "$USE_BATCH_NORM"
+
+  --oracle_num_evals "$ORACLE_NUM_EVALS"
+  --oracle_beam_size "$ORACLE_BEAM_SIZE"
+
+  --hv_dim "$HV_DIM"
+  --vsa "$VSA"
+  --dataset "$DATASET"
+
   --lr "$LR"
+  --weight_decay "$WEIGHT_DECAY"
+
+  --num_workers "$NUM_WORKERS"
+  --prefetch_factor "$PREFETCH_FACTOR"
+  --pin_memory "$PIN_MEMORY"
+  --persistent_workers "$PERSISTENT_WORKERS"
+  --micro_bs "$MICRO_BS"
+
+  --resume_retrain_last_epoch "$RESUME_RETRAIN_LAST_EPOCH"
+  --stratify "$STRATIFY"
   --p_per_parent "$P_PER_PARENT"
   --n_per_parent "$N_PER_PARENT"
-  --oracle_beam_size "$ORACLE_BEAM_SIZE"
-  --oracle_num_evals "$ORACLE_NUM_EVALS"
   --resample_training_data_on_batch "$RESAMPLE_TRAINING_DATA_ON_BATCH"
-  --hv_dims "$HV_DIMS"
-  --is_dev "$IS_DEV"
 )
+[[ -n "$CONTINUE_FROM" ]] && PY_ARGS+=( --continue_from "$CONTINUE_FROM" )
+[[ -n "$EXCLUDE_NEGS"  ]] && PY_ARGS+=( --exclude_negs "$EXCLUDE_NEGS" )
 
-# ---------------------------------
-# Partition/time/mem tuples by site
-# ---------------------------------
-# NOTE: comments indicate stated max walltimes for reference.
+# Quote each arg so --wrap re-splits correctly on the remote shell
+QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
 
+# -----------------------------
+# Partitions + Pixi env per cluster
+# -----------------------------
 case "$CLUSTER" in
-  home)
+  local)
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
-    TUPLES=$(
-      cat <<'EOF'
-debug|00:10:00|8G
-EOF
-    )
+    PIXI_ENV="local"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
+    TUPLES=$'debug|00:10:00|8G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"
-    # Partitions (bwUniCluster 3.0 — GPU dev/standard)
-    # cpu_il dev_cpu_il | cpu dev_cpu | highmem dev_highmem | gpu_h100 dev_gpu_h100 | gpu_mi300 | gpu_a100_il gpu_h100_il
-    TUPLES=$(
-      cat <<'EOF'
-gpu_h100|36:00:00|64G
-gpu_a100_il|36:00:00|64G
-gpu_h100_il|36:00:00|64G
-EOF
-    )
+    PIXI_ENV="cluster"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    TUPLES=$'gpu_h100|36:00:00|64G\ngpu_a100_il|36:00:00|64G\ngpu_h100_il|36:00:00|64G'
     ;;
   hk)
-    # HoreKa
     MODULE_LOAD="module load devel/cuda"
-    # (accelerated, 24:00:00, 64G)   # max 48:00:00
-    # (accelerated-h100, 24:00:00, 64G) # max 48:00:00
-    TUPLES=$(
-      cat <<'EOF'
-accelerated|36:00:00|64G
-accelerated-h100|36:00:00|64G
-EOF
-    )
+    PIXI_ENV="cluster"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    TUPLES=$'accelerated|36:00:00|64G\naccelerated-h100|36:00:00|64G'
     ;;
-  *)
-    # HAICORE default
+  haic|*)
     MODULE_LOAD="module load devel/cuda"
-    # (normal, 24:00:00, 64G)   # max 72:00:00
-    # (advanced, 24:00:00, 64G) # max 72:00:00 -> not allowed for me = (
-    TUPLES=$(
-      cat <<'EOF'
-normal|48:00:00|64G
-EOF
-    )
+    PIXI_ENV="cluster"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    TUPLES=$'normal|48:00:00|64G'
     ;;
 esac
 
-# ---------------------------------
-# Helpers
-# ---------------------------------
+# Normalize TUPLES newlines for portability
+TUPLES="$(printf '%s' "${TUPLES:-}" | tr -d '\r')"
+[[ "$DRY_RUN" == "1" ]] && { echo "---- TUPLES ----"; printf '%s\n' "$TUPLES"; echo "-----------------"; }
 
+# -----------------------------
+# Helpers
+# -----------------------------
 contains_in_filter() {
   local part="$1"
   [[ -z "$ONLY_PARTITIONS" ]] && return 0
   IFS=',' read -r -a arr <<<"$ONLY_PARTITIONS"
-  for p in "${arr[@]}"; do
-    [[ "$p" == "$part" ]] && return 0
-  done
+  for p in "${arr[@]}"; do [[ "$p" == "$part" ]] && return 0; done
   return 1
 }
 
 submit_one() {
   local partition="$1" time="$2" mem="$3"
 
-  # Compose sbatch command
   local cmd=( sbatch
     --job-name="$JOB_NAME"
     --partition="$partition"
@@ -177,9 +186,8 @@ submit_one() {
       cat <<WRAP
 set -euo pipefail
 $MODULE_LOAD
-echo 'Node: ' \$(hostname)
-echo 'CUDA visible devices:'
-nvidia-smi || true
+echo 'Node:' \$(hostname)
+echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
 export WANDB_API_KEY=\${WANDB_API_KEY:-}
 export WANDB_ENTITY='${ENTITY}'
@@ -189,27 +197,26 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
 cd '${EXPERIMENTS_PATH}'
-pixi run python ${PY_ARGS[*]}
+# Use Pixi lockfile (frozen) and pick env based on cluster/local
+pixi run --frozen -e '${PIXI_ENV}' python ${QUOTED_ARGS}
 WRAP
     )"
   )
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "[DRY-RUN] ${cmd[*]}"
-  else
-    "${cmd[@]}"
+    printf '[DRY-RUN] '; printf '%q ' "${cmd[@]}"; printf '\n'
+    return 0
   fi
+  "${cmd[@]}"
 }
 
-# ---------------------------------
-# Main loop
-# ---------------------------------
-echo "Cluster: $CLUSTER"
-echo "Script : $SCRIPT"
-echo "Exp    : $EXP_NAME"
-echo "DryRun : $DRY_RUN"
+# -----------------------------
+# Main
+# -----------------------------
+echo "Cluster : $CLUSTER"
+echo "PixiEnv : ${PIXI_ENV}"
+echo "Exp     : $EXP_NAME"
 
-# Basic existence check
 if [[ ! -f "$SCRIPT" ]]; then
   echo "ERROR: Script not found: $SCRIPT" >&2
   exit 1
@@ -217,8 +224,9 @@ fi
 
 while IFS='|' read -r PARTITION TIME MEM; do
   [[ -z "${PARTITION:-}" ]] && continue
+  echo "Tuple    -> partition='${PARTITION}' time='${TIME}' mem='${MEM}'"
   if contains_in_filter "$PARTITION"; then
-    echo "Submitting -> partition=${PARTITION} time=${TIME} mem=${MEM}"
+    echo "Submitting -> partition=${PARTITION} time=${TIME} mem=${MEM} cpus=${CPUS_PER_TASK}"
     submit_one "$PARTITION" "$TIME" "$MEM"
   else
     echo "Skipping (filtered) -> ${PARTITION}"
