@@ -13,7 +13,7 @@ SUBMIT="${SUBMIT:-./_0_real_nvp_v2_submit.sh}"
 DATASET="${DATASET:-QM9_SMILES_HRR_1600}"   # or ZINC_SMILES_HRR_7744
 EPOCHS="${EPOCHS:-500}"
 DEVICE="${DEVICE:-cuda}"
-IS_DEV="${IS_DEV:-True}"
+IS_DEV="${IS_DEV:-False}"
 
 # Infer short dataset tag for naming
 DS_LOWER="$(printf '%s' "$DATASET" | tr '[:upper:]' '[:lower:]')"
