@@ -326,21 +326,21 @@ def _first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
 
 
 def plot_train_val_loss(
-        df: pd.DataFrame,
-        artefacts_dir: Path,
-        *,
-        skip_first: int | float = 0.1,   # int: num epochs to skip; float in (0,1): fraction of epochs to skip
-        min_epoch: int | None = None,  # overrides skip_first if set
-        clip_top_q: float | None = None,  # e.g. 0.98 to clip outliers on y-axis
-        smooth_window: int | None = None, # rolling mean window (in points)
-        logy: bool = False,
+    df: pd.DataFrame,
+    artefacts_dir: Path,
+    *,
+    skip_first: float = 0.1,  # int: num epochs to skip; float in (0,1): fraction of epochs to skip
+    min_epoch: int | None = None,  # overrides skip_first if set
+    clip_top_q: float | None = None,  # e.g. 0.98 to clip outliers on y-axis
+    smooth_window: int | None = None,  # rolling mean window (in points)
+    logy: bool = False,
 ):
     # possible names across PL versions / logging configs
     train_epoch_keys = ["train_loss_epoch", "train_loss", "epoch_train_loss"]
     val_epoch_keys = ["val_loss", "val/loss", "validation_loss"]
 
     train_col = _first_existing(df, train_epoch_keys)
-    val_col   = _first_existing(df, val_epoch_keys)
+    val_col = _first_existing(df, val_epoch_keys)
     epoch_col = _first_existing(df, ["epoch", "step"])
 
     if epoch_col is None or (train_col is None and val_col is None):
@@ -422,7 +422,6 @@ def plot_train_val_loss(
     plt.savefig(out, dpi=150)
     plt.close()
     print(f"Saved train/val loss plot to {out} (cutoff ≥ {cutoff})")
-
 
 
 def pick_precision():
@@ -1059,7 +1058,7 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        node_s, graph_s, logs = best_model.sample_split(4096)  # each [K, D]
+        node_s, graph_s, logs = best_model.sample_split(10_000)  # each [K, D]
 
     node_s = node_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
@@ -1069,9 +1068,12 @@ def run_experiment(cfg: FlowConfig):
     log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
 
     node_counters = hypernet.decode_order_zero_counter(node_s)
-    node_counters = hypernet.decode_order_zero_counter(node_s)
     report = generated_node_edge_dist(
-        node_types=node_counters, artefact_dir=artefacts_dir, wandb=wandb if wandb.run else None
+        generated_node_types=node_counters,
+        artefact_dir=artefacts_dir,
+        wandb=wandb if wandb.run else None,
+        dataset_val=cfg.dataset.value,
+        dataset=train_dataset
     )
     pprint(report)
 

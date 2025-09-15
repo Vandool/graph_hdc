@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import itertools
 import json
 import os
@@ -21,7 +22,7 @@ import torch
 import torchhd
 from rdkit import Chem
 from torch import Tensor
-from torch_geometric.data import Data
+from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.utils import scatter
 from torchhd import VSATensor
 from torchhd.tensors.hrr import HRRTensor
@@ -877,62 +878,51 @@ class DataTransformer:
                         mol.GetAtomWithIdx(rd_idx).SetAtomMapNum(int(n))
                 if sanitize:
                     # try a gentle sanitize (may still fail if graph is impossible chemically)
-                    try:
+                    with contextlib.suppress(Exception):
                         Chem.SanitizeMol(mol)
-                    except Exception:
-                        pass
 
         return mol, nx_to_rd
 
 
 def generated_node_edge_dist(
-    node_types: dict[int, Counter],
+    generated_node_types: dict[int, Counter],
     artefact_dir: Path,
     wandb=None,
     *,
     title: str = "Generated graphs",
+    dataset_val: str = "",
+    dataset: InMemoryDataset | None = None,
 ) -> dict[str, Any]:
     """
-    Aggregate per-graph node/edge counts from generated samples and save artifacts.
-
-    Args:
-        node_types: dict[graph_id -> Counter], where each Counter maps 4-tuples to counts.
-                    The second element of each tuple is e_idx; the per-node contribution
-                    to degree is (e_idx + 1). We multiply by the tuple count.
-        artefact_dir: where to save plots/reports.
-        wandb: optional wandb module (or run). If provided, logs images + tables.
-        undirected: if True, converts total degree to edges as sum_deg // 2.
-        title: plot titles prefix.
-
-    Returns:
-        A summary dict with global stats and per-graph rows.
+    Build per-graph node/edge counts & plots for GENERATED samples.
+    Overlay REAL dataset distributions (if provided) in grey, using normalized densities.
+    Returns node-type set differences (generated-only vs dataset-only).
     """
     artefact_dir = Path(artefact_dir)
     artefact_dir.mkdir(parents=True, exist_ok=True)
 
-    per_graph = []
-    num_nodes_list, num_edges_list = [], []
+    # ----------- aggregate GENERATED -----------
+    per_graph: list[dict[str, int]] = []
+    gen_nodes, gen_edges = [], []
+    gen_type_ctr: Counter = Counter()
 
-    for gid, ctr in node_types.items():
-        # nodes = total count across all 4-tuples
-        n_nodes = int(sum(ctr.values()))
-
-        # total degree = sum((e_idx + 1) * count) over all tuple types
+    for gid, ctr in generated_node_types.items():
+        c = ctr if isinstance(ctr, Counter) else Counter(ctr)
+        gen_type_ctr.update(c)
+        n_nodes = int(sum(int(v) for v in c.values()))
         total_degree = 0
-        for key, cnt in ctr.items():
+        for key, cnt in c.items():
             if not (isinstance(key, tuple) and len(key) == 4):
                 raise ValueError(f"Counter keys must be 4-tuples; got {key!r}")
             _, e_idx, _, _ = key
             total_degree += (int(e_idx) + 1) * int(cnt)
-
-        n_edges = int(total_degree)
-
+        n_edges = int(total_degree) // 2  # undirected
         per_graph.append({"graph_id": int(gid), "num_nodes": n_nodes, "num_edges": n_edges})
-        num_nodes_list.append(n_nodes)
-        num_edges_list.append(n_edges)
+        gen_nodes.append(n_nodes)
+        gen_edges.append(n_edges)
 
-    def _stats(arr):
-        if len(arr) == 0:
+    def _stats(arr: list[int]) -> dict[str, Any]:
+        if not arr:
             return {"min": 0, "max": 0, "mean": 0.0, "median": 0.0, "std": 0.0}
         a = np.asarray(arr, dtype=float)
         return {
@@ -946,98 +936,300 @@ def generated_node_edge_dist(
     summary = {
         "title": title,
         "num_graphs": len(per_graph),
-        "nodes": _stats(num_nodes_list),
-        "edges": _stats(num_edges_list),
+        "nodes": _stats(gen_nodes),
+        "edges": _stats(gen_edges),
+        "total_node_types": len(gen_type_ctr),
     }
 
-    # ---------- save CSV ----------
+    # ----------- REAL dataset (background only) -----------
+    real_nodes, real_edges = [], []
+    real_type_ctr: Counter = Counter()
+    if dataset is not None:
+        try:
+            for data in dataset:
+                n = int(data.num_nodes)
+                e = int(getattr(data, "num_edges", 0)) // 2  # undirected
+                real_nodes.append(n)
+                real_edges.append(e)
+
+                x: torch.Tensor = data.x
+                if x.dim() != 2 or x.size(1) != 4:
+                    raise ValueError(f"Expected x shape [N, 4], got {tuple(x.shape)}")
+                rows = x.detach().cpu().to(torch.int64).tolist()
+                real_type_ctr.update(map(tuple, rows))
+        except Exception as e:
+            print(f"[generated_node_edge_dist] real dataset parse skipped: {e}")
+            real_nodes, real_edges, real_type_ctr = [], [], Counter()
+
+    # ----------- save generated CSV/JSON -----------
     csv_path = artefact_dir / "per_graph_nodes_edges.csv"
     with csv_path.open("w") as f:
         f.write("graph_id,num_nodes,num_edges\n")
         for row in per_graph:
             f.write(f"{row['graph_id']},{row['num_nodes']},{row['num_edges']}\n")
 
-    # ---------- save JSON summary ----------
     json_path = artefact_dir / "summary_nodes_edges.json"
     with json_path.open("w") as f:
         json.dump({"summary": summary, "per_graph_count": len(per_graph)}, f, indent=2)
 
-    # ---------- plots ----------
-    # Nodes histogram
+    # ----------- axis ranges & bins -----------
+    ds_val_lower = str(dataset_val).lower()
+    # Fix the x axis range for the generated dataset
+    if "qm9" in ds_val_lower:
+        nodes_xlim = (0, 20)
+        edges_xlim = (0, 20)
+    else:
+        nodes_xlim = (5, 40)
+        edges_xlim = (5, 50)
+
+    node_bins = 30
+    edge_bins = 30
+
+    # ----------- combined panel (normalized overlays) -----------
+    fig = plt.figure(figsize=(16, 10))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 3])
+    ax_nodes = fig.add_subplot(gs[0, 0])
+    ax_edges = fig.add_subplot(gs[0, 1])
+    ax_types = fig.add_subplot(gs[1, :])
+    plt.subplots_adjust(bottom=0.25)
+
+    # Nodes: REAL (grey, full width), GENERATED (narrower), both density=True
+    if real_nodes:
+        ax_nodes.hist(
+            real_nodes,
+            bins=node_bins,
+            range=nodes_xlim,
+            density=True,
+            color="lightgrey",
+            edgecolor="grey",
+            alpha=0.8,
+            label="real (dataset)",
+            histtype="bar",
+            rwidth=1.0,
+        )
+    if gen_nodes:
+        ax_nodes.hist(
+            gen_nodes,
+            bins=node_bins,
+            range=nodes_xlim,
+            density=True,
+            color="steelblue",
+            edgecolor="black",
+            alpha=0.9,
+            label="generated",
+            histtype="bar",
+            rwidth=0.75,
+        )
+    ax_nodes.set_title(f"{title} – Node count (density)")
+    ax_nodes.set_xlabel("num_nodes")
+    ax_nodes.set_ylabel("density")
+    ax_nodes.set_xlim(*nodes_xlim)
+    ax_nodes.legend(loc="upper right")
+
+    # Edges: REAL (grey) then GENERATED (narrower), density
+    if real_edges:
+        ax_edges.hist(
+            real_edges,
+            bins=edge_bins,
+            range=edges_xlim,
+            density=True,
+            color="lightgrey",
+            edgecolor="grey",
+            alpha=0.8,
+            label="real (dataset)",
+            histtype="bar",
+            rwidth=1.0,
+        )
+    if gen_edges:
+        ax_edges.hist(
+            gen_edges,
+            bins=edge_bins,
+            range=edges_xlim,
+            density=True,
+            color="darkorange",
+            edgecolor="black",
+            alpha=0.9,
+            label="generated",
+            histtype="bar",
+            rwidth=0.75,
+        )
+    ax_edges.set_title(f"{title} – Edge count (density)")
+    ax_edges.set_xlabel("num_edges")
+    ax_edges.set_ylabel("density")
+    ax_edges.set_xlim(*edges_xlim)
+    ax_edges.legend(loc="upper right")
+
+    # Node-type bar overlay — normalize to proportions
+    union_labels = list(set(gen_type_ctr.keys()) | set(real_type_ctr.keys()))
+    if union_labels:
+        # Sort by REAL freq desc, fallback to GEN
+        union_labels.sort(key=lambda k: (real_type_ctr.get(k, 0), gen_type_ctr.get(k, 0)), reverse=True)
+        gen_total = max(1, sum(gen_type_ctr.values()))
+        real_total = max(1, sum(real_type_ctr.values()))
+        gen_vals = [gen_type_ctr.get(k, 0) / gen_total for k in union_labels]
+        real_vals = [real_type_ctr.get(k, 0) / real_total for k in union_labels]
+
+        x = np.arange(len(union_labels))
+        # background (real) full width
+        ax_types.bar(x, real_vals, color="lightgrey", edgecolor="grey", label="real (dataset)", width=1.0)
+        # overlay (generated) narrower
+        ax_types.bar(x, gen_vals, color="seagreen", edgecolor="black", alpha=0.9, label="generated", width=0.6)
+        ax_types.set_xticks(x)
+        ax_types.set_xticklabels([str(l) for l in union_labels], rotation=90, fontsize=8)
+    ax_types.set_title(f"{title} – Node type distribution (proportion)")
+    ax_types.set_xlabel("node type (tuple)")
+    ax_types.set_ylabel("proportion")
+    ax_types.legend(loc="upper right")
+
+    fig.tight_layout()
+    panel_png = artefact_dir / "panel_nodes_edges_types.png"
+    fig.savefig(panel_png, dpi=150)
+    plt.close(fig)
+
+    # Optional separate overlays (also normalized)
+    # Nodes-only
     fig1 = plt.figure(figsize=(7, 4.5))
     ax1 = fig1.add_subplot(111)
-    ax1.hist(num_nodes_list, bins=min(50, max(10, int(np.sqrt(max(1, len(num_nodes_list)))))))
-    ax1.set_title(f"{title} – Node count")
+    if real_nodes:
+        ax1.hist(
+            real_nodes,
+            bins=node_bins,
+            range=nodes_xlim,
+            density=True,
+            color="lightgrey",
+            edgecolor="grey",
+            alpha=0.8,
+            label="real",
+            histtype="bar",
+            rwidth=1.0,
+        )
+    if gen_nodes:
+        ax1.hist(
+            gen_nodes,
+            bins=node_bins,
+            range=nodes_xlim,
+            density=True,
+            color="steelblue",
+            edgecolor="black",
+            alpha=0.9,
+            label="generated",
+            histtype="bar",
+            rwidth=0.75,
+        )
+    ax1.set_title(f"{title} – Node count (density)")
     ax1.set_xlabel("num_nodes")
-    ax1.set_ylabel("frequency")
-    fig1.tight_layout()
+    ax1.set_ylabel("density")
+    ax1.set_xlim(*nodes_xlim)
+    ax1.legend(loc="upper right")
     nodes_png = artefact_dir / "hist_nodes.png"
+    fig1.tight_layout()
     fig1.savefig(nodes_png, dpi=150)
     plt.close(fig1)
 
-    # Edges histogram
+    # Edges-only
     fig2 = plt.figure(figsize=(7, 4.5))
     ax2 = fig2.add_subplot(111)
-    ax2.hist(num_edges_list, bins=min(50, max(10, int(np.sqrt(max(1, len(num_edges_list)))))))
-    ax2.set_title(f"{title} – Edge count")
+    if real_edges:
+        ax2.hist(
+            real_edges,
+            bins=edge_bins,
+            range=edges_xlim,
+            density=True,
+            color="lightgrey",
+            edgecolor="grey",
+            alpha=0.8,
+            label="real",
+            histtype="bar",
+            rwidth=1.0,
+        )
+    if gen_edges:
+        ax2.hist(
+            gen_edges,
+            bins=edge_bins,
+            range=edges_xlim,
+            density=True,
+            color="darkorange",
+            edgecolor="black",
+            alpha=0.9,
+            label="generated",
+            histtype="bar",
+            rwidth=0.75,
+        )
+    ax2.set_title(f"{title} – Edge count (density)")
     ax2.set_xlabel("num_edges")
-    ax2.set_ylabel("frequency")
-    fig2.tight_layout()
+    ax2.set_ylabel("density")
+    ax2.set_xlim(*edges_xlim)
+    ax2.legend(loc="upper right")
     edges_png = artefact_dir / "hist_edges.png"
+    fig2.tight_layout()
     fig2.savefig(edges_png, dpi=150)
     plt.close(fig2)
 
-    # Nodes vs Edges scatter
-    fig3 = plt.figure(figsize=(6, 6))
-    ax3 = fig3.add_subplot(111)
-    ax3.scatter(num_nodes_list, num_edges_list, s=12, alpha=0.6)
-    ax3.set_title(f"{title} – Nodes vs Edges")
-    ax3.set_xlabel("num_nodes")
-    ax3.set_ylabel("num_edges")
-    fig3.tight_layout()
-    scatter_png = artefact_dir / "scatter_nodes_vs_edges.png"
-    fig3.savefig(scatter_png, dpi=150)
-    plt.close(fig3)
+    # Types-only (proportions)
+    types_png = artefact_dir / "node_types_overlay.png"
+    figt = plt.figure(figsize=(12, 5))
+    axt = figt.add_subplot(111)
+    if union_labels:
+        x = np.arange(len(union_labels))
+        real_vals = [real_type_ctr.get(k, 0) / max(1, sum(real_type_ctr.values())) for k in union_labels]
+        gen_vals = [gen_type_ctr.get(k, 0) / max(1, sum(gen_type_ctr.values())) for k in union_labels]
+        axt.bar(x, real_vals, color="lightgrey", edgecolor="grey", label="real (dataset)", width=1.0)
+        axt.bar(x, gen_vals, color="seagreen", edgecolor="black", alpha=0.9, label="generated", width=0.6)
+        axt.set_xticks(x)
+        axt.set_xticklabels([str(l) for l in union_labels], rotation=90, fontsize=8)
+    axt.set_title(f"{title} – Node type distribution (proportion)")
+    axt.set_xlabel("node type (tuple)")
+    axt.set_ylabel("proportion")
+    axt.legend(loc="upper right")
+    figt.tight_layout()
+    figt.savefig(types_png, dpi=150)
+    plt.close(figt)
 
-    # ---------- W&B logging (optional) ----------
+    # ----------- set differences -----------
+    gen_types_set = set(gen_type_ctr.keys())
+    real_types_set = set(real_type_ctr.keys())
+    novel_node_types = sorted(gen_types_set - real_types_set)
+    missing_node_types = sorted(real_types_set - gen_types_set)
+
+    # ----------- optional W&B -----------
     if wandb is not None:
-        # Safe if wandb is a module or a run; both expose .log and .Image via module
         try:
-            # Per-graph table
+            # table (generated only)
             try:
                 table = wandb.Table(columns=["graph_id", "num_nodes", "num_edges"])
                 for r in per_graph:
                     table.add_data(r["graph_id"], r["num_nodes"], r["num_edges"])
                 wandb.log({"generated/per_graph_table": table})
             except Exception:
-                pass  # table is optional
-
-            # Images
+                pass
             wandb.log(
                 {
-                    "generated/hist_nodes": wandb.Image(str(nodes_png), caption="Node count distribution"),
-                    "generated/hist_edges": wandb.Image(str(edges_png), caption="Edge count distribution"),
-                    "generated/scatter_nodes_edges": wandb.Image(
-                        str(scatter_png), caption="Nodes vs Edges (per graph)"
-                    ),
+                    "generated/panel_nodes_edges_types": wandb.Image(str(panel_png)),
+                    "generated/hist_nodes": wandb.Image(str(nodes_png)),
+                    "generated/hist_edges": wandb.Image(str(edges_png)),
+                    "generated/node_types_overlay": wandb.Image(str(types_png)),
                 }
             )
-            # Summary
             wandb.summary.update({f"generated/{k}": v for k, v in summary.items()})
+            wandb.summary["generated/novel_node_types_count"] = len(novel_node_types)
+            wandb.summary["generated/missing_node_types_count"] = len(missing_node_types)
         except Exception as e:
             print(f"[generated_node_edge_dist] W&B logging skipped: {e}")
 
-    # ---------- return rich summary ----------
     return {
         **summary,
         "paths": {
             "csv": str(csv_path),
             "summary_json": str(json_path),
+            "panel": str(panel_png),
             "hist_nodes": str(nodes_png),
             "hist_edges": str(edges_png),
-            "scatter_nodes_edges": str(scatter_png),
+            "node_types": str(types_png),
+            "node_types_overlay": str(types_png),
         },
         "per_graph": per_graph,
+        "novel_node_types": novel_node_types,
+        "missing_node_types": missing_node_types,
     }
 
 
