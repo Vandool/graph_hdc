@@ -167,7 +167,7 @@ submit_one() {
   local partition="$1" time="$2" mem="$3"
 
   local cmd=( sbatch
-    --job-name="$JOB_NAME"
+    --job-name="$EXP_NAME"
     --partition="$partition"
     --time="$time"
     --gres="gpu:${GPUS}"
