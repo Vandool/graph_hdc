@@ -37,13 +37,13 @@ fi
 # ---------- Presets ----------
 # name|num_flows|num_hidden|lr|use_act_norm
 PRESETS="$(cat <<'EOF'
-small_actnorm_qm9|4|256|1e-3|1
-baseline_qm9|8|512|1e-3|1
-baseline_lr5e4_qm9|8|512|5e-4|1
-deeper_qm9|12|384|1e-3|1
-wider_qm9|6|1024|1e-3|1
-no_actnorm_qm9|8|512|1e-3|0
-large_qm9|12|768|1e-3|1
+small_actnorm|4|256|1e-3|1
+baseline|8|512|1e-3|1
+baseline_lr5e4|8|512|5e-4|1
+deeper|12|384|1e-3|1
+wider|6|1024|1e-3|1
+no_actnorm|8|512|1e-3|0
+large|12|768|1e-3|1
 EOF
 )"
 
