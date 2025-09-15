@@ -9,7 +9,7 @@ import networkx as nx
 import rdkit.Chem
 import torch
 from torch_geometric.data import Data
-from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.oracles import Oracle, MLPClassifier
 from src.encoding.the_types import VSAModel
@@ -66,19 +66,15 @@ def read_json(path: Path) -> dict:
 if __name__ == '__main__':
     device = torch.device('cpu')
     for gen_model_path in [
-        Path(
-            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_02-45-49_qahf/models/last.ckpt"),
-        Path(
-            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_06-43-25_qahf/models/last.ckpt"),
-        Path(
-            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_16-34-49_qahf/models/last.ckpt"),
-        Path(
-            "/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-02_02-22-22_qahf/models/last.ckpt"),
+        Path("/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_02-45-49_qahf/models/last.ckpt"),
+        Path("/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_06-43-25_qahf/models/last.ckpt"),
+        Path("/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-01_16-34-49_qahf/models/last.ckpt"),
+        Path("/Users/akaveh/projects/kit/graph_hdc/_models/results/0_real_nvp/2025-09-02_02-22-22_qahf/models/last.ckpt"),
     ]:
         print("----")
         print(gen_model_path)
 
-        gen_model = RealNVPLightning.load_from_checkpoint(gen_model_path, map_location="cpu", strict=True).to(
+        gen_model = resolve_model(name="NVP").load_from_checkpoint(gen_model_path, map_location="cpu", strict=True).to(
             device).eval()
 
         ## Classifier
@@ -86,17 +82,20 @@ if __name__ == '__main__':
             Path("/Users/akaveh/projects/kit/graph_hdc/_models/classifier_mlp_baseline.pt"),
             Path("/Users/akaveh/projects/kit/graph_hdc/_models/classifier_mlp_baseline_laynorm.pt"),
         ]:
-            chkpt = torch.load(model_path, map_location="cpu", weights_only=False)
-            cfg = chkpt["config"]
-            print(f"Classifier's best metric (AUC): {chkpt['best_metric']}")
-            print(f"Classifier's cfg")
-            pprint(cfg, indent=4)
+            classifier = None
+            if "mlp" in model_path.as_posix():
+                classifier = resolve_model(name="MLP")
+            if "bah" in model_path.as_posix():
+                classifier = resolve_model(name="BAH")
 
-            classifier = MLPClassifier(hv_dim=cfg.get("hv_dim"), hidden_dims=cfg.get("hidden_dims"), use_layer_norm=cfg.get("use_layer_norm")).to(device).eval()
-            classifier.load_state_dict(chkpt["model_state"], strict=True)
-            oracle = Oracle(model=classifier)
+            classifier.load_from_checkpoint(model_path, map_location="cpu", strict=True).to(device).eval()
+            oracle = Oracle(model=classifier, model_type="mlp")
 
-            generator = Generator(gen_model=gen_model, oracle=oracle, ds_config=ZINC_SMILES_HRR_7744_CONFIG)
+            ds_config = ZINC_SMILES_HRR_7744_CONFIG
+            if "qm9" in model_path.as_posix():
+                ds_config = QM9_SMILES_HRR_1600_CONFIG
+
+            generator = Generator(gen_model=gen_model, oracle=oracle, ds_config=ds_config)
             Gs = generator.generate(n_samples=16)
             print(len(Gs))
             print(Gs)

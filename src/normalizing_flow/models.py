@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytorch_lightning as pl
 import torch
 
 from src.encoding.the_types import VSAModel
+from src.utils.registery import register_model
 
 
 class AbstractNFModel(pl.LightningModule):
@@ -39,7 +41,7 @@ class AbstractNFModel(pl.LightningModule):
         """
         z, _logs = self.sample(num_samples)  # [num_samples, 2D]
         node_terms = z[:, : self.D].contiguous()
-        graph_terms = z[:, self.D:].contiguous()
+        graph_terms = z[:, self.D :].contiguous()
         return node_terms, graph_terms, _logs
 
     def configure_optimizers(self):
@@ -93,7 +95,7 @@ class BoundedMLP(torch.nn.Module):
         self.last_pre = pre
         return torch.tanh(pre) * self.smax  # bound log-scale in [-smax, smax]
 
-
+@register_model("NVP")
 class RealNVPLightning(AbstractNFModel):
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -122,14 +124,16 @@ class RealNVPLightning(AbstractNFModel):
     def configure_optimizers(self):
         opt = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
         # 5% warmup then cosine
-        steps_per_epoch = max(1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1,
-                                                                                                  self.trainer.max_epochs))
+        steps_per_epoch = max(
+            1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1, self.trainer.max_epochs)
+        )
         warmup = int(0.05 * self.trainer.max_epochs) * steps_per_epoch
         total = self.trainer.max_epochs * steps_per_epoch
         sched = torch.optim.lr_scheduler.LambdaLR(
             opt,
-            lambda step: min(1.0, step / max(1, warmup)) * 0.5 * (
-                    1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup)))
+            lambda step: min(1.0, step / max(1, warmup))
+            * 0.5
+            * (1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup))),
         )
         return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
 
@@ -207,6 +211,7 @@ class RealNVPLightning(AbstractNFModel):
 
 
 ## Neural Spline Flow
+
 
 class NeuralSplineLightning(AbstractNFModel):
     def __init__(self, cfg: FlowConfig):

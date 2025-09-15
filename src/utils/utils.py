@@ -46,6 +46,15 @@ TEST_ASSETS_PATH = ROOT / "tests_new/assets"
 FORMAL_CHARGE_IDX_TO_VAL: dict[int, int] = {0: 0, 1: +1, 2: -1}
 
 
+
+# ========= Path utils =========
+def find_files(start_dir: str, prefixes: tuple[str, ...], skip_substring: str):
+    for p in Path(start_dir).rglob("*"):
+        if p.is_file() and p.name.startswith(prefixes) and skip_substring not in str(p):
+            yield p
+
+
+# ========= Argparse =========
 def str2bool(v: str) -> bool:
     if isinstance(v, bool):
         return v
@@ -54,7 +63,8 @@ def str2bool(v: str) -> bool:
         return True
     if v in ("0", "false", "f", "no", "n"):
         return False
-    raise argparse.ArgumentTypeError("boolean value expected")
+    msg = "boolean value expected"
+    raise argparse.ArgumentTypeError(msg)
 
 
 # ========= Utils =========

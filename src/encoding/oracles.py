@@ -1,21 +1,23 @@
+import math
 from datetime import datetime
-from typing import Literal
 
 import networkx as nx
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn import Module
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn.aggr import SumAggregation
 
+# === BEGIN NEW ===
+from torchmetrics import AUROC, AveragePrecision
+
 from src.encoding.graph_encoders import AbstractGraphEncoder
 from src.exp.classification_v2.classification_utils import Config
-from src.utils.registery import register_model
+from src.utils.registery import ModelType, register_model
 from src.utils.utils import DataTransformer
-
-ModelKind = Literal["gin", "mlp"]
 
 
 class Oracle:
@@ -36,7 +38,7 @@ class Oracle:
     def __init__(
         self,
         model: nn.Module | pl.LightningModule,
-        model_type: ModelKind,
+        model_type: ModelType,
         encoder: AbstractGraphEncoder | None = None,
     ):
         self.model = model.eval()
@@ -65,7 +67,7 @@ class Oracle:
         pyg_list = [self._ensure_graph_fields(DataTransformer.nx_to_pyg(g)) for g in small_gs]
         g1_b = Batch.from_data_list(pyg_list).to(device)
 
-        if self.model_type == "gin":
+        if self.model_type == "GIN":
             # Prepare condition: [B, D]
             cond = final_h.detach().to(device=device, dtype=dtype)
             if cond.dim() == 1:
@@ -77,7 +79,7 @@ class Oracle:
             logits = out["graph_prediction"].squeeze(-1)  # [B]
             return torch.sigmoid(logits)
 
-        if self.model_type == "mlp":
+        if self.model_type == "MLP":
             assert self.encoder is not None, "encoder is required for MLP oracle"
             h1 = self.encoder.forward(g1_b)["graph_embedding"].to(device=device, dtype=dtype)  # [B, D]
             h2 = final_h.detach().to(device=device, dtype=dtype)
@@ -88,7 +90,8 @@ class Oracle:
             logits = logits.squeeze(-1)
             return torch.sigmoid(logits)
 
-        raise ValueError(f"Unknown model_type: {self.model_type!r}")
+        msg = f"Unknown model_type: {self.model_type!r}"
+        raise ValueError(msg)
 
 
 # ---------- tiny logger ----------
@@ -98,12 +101,16 @@ def log(msg: str) -> None:
 
 
 ## -------- MLP Classifier -------
-@register_model("MLPClassifier")
+# ---------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------
+# MLP classifier on concatenated (h1, h2) – no normalization, GELU, no dropout
 class MLPClassifier(nn.Module):
     def __init__(
         self,
         hv_dim: int = 88 * 88,
         hidden_dims: list[int] | None = None,
+        *,
         use_layer_norm: bool = False,
         use_batch_norm: bool = False,
     ) -> None:
@@ -132,6 +139,339 @@ class MLPClassifier(nn.Module):
         # h1,h2: [B, hv_dim]
         x = torch.cat([h1, h2], dim=-1)  # [B, 2*D]
         return self.net(x).squeeze(-1)  # [B]
+
+
+# ---------------------------------------------------------------------
+# Lightning wrapper
+# ---------------------------------------------------------------------
+@register_model("MLP")
+class LitMLPClassifier(pl.LightningModule):
+    """
+    Expect batches as (h1, h2, y) or {"h1":..., "h2":..., "y":...}, with h1/h2 ~ [B, D].
+    If collate yields [B, 1, D], we squeeze the middle dim.
+    """
+
+    def __init__(
+        self,
+        *,
+        hv_dim: int,
+        hidden_dims: list[int] | None = None,
+        use_layer_norm: bool = False,
+        use_batch_norm: bool = False,
+        lr: float = 1e-3,
+        weight_decay: float = 0.0,
+        pos_weight: float | None = None,  # None -> unweighted BCE
+    ) -> None:
+        super().__init__()
+        # Save EVERYTHING for checkpoint load
+        self.save_hyperparameters()
+        self.lr = lr
+        self.weight_decay = weight_decay
+
+        self.model = MLPClassifier(
+            hv_dim=hv_dim,
+            hidden_dims=hidden_dims,
+            use_layer_norm=use_layer_norm,
+            use_batch_norm=use_batch_norm,
+        )
+
+        # Register pos_weight as a buffer so device moves are handled automatically
+        if pos_weight is not None:
+            self.register_buffer("pos_weight", torch.tensor([float(pos_weight)], dtype=torch.float32))
+        else:
+            self.pos_weight = None  # type: ignore[assignment]
+
+        # Metrics
+        self.val_auc = AUROC(task="binary")
+        self.val_ap = AveragePrecision(task="binary")
+
+    # --------- helpers ---------
+    @staticmethod
+    def _fix_shapes(h1: torch.Tensor, h2: torch.Tensor, y: torch.Tensor):
+        # squeeze [B,1,D] -> [B,D] emitted by your dataset/loader
+        if h1.ndim == 3 and h1.size(1) == 1:
+            h1 = h1.squeeze(1)
+        if h2.ndim == 3 and h2.size(1) == 1:
+            h2 = h2.squeeze(1)
+        # y -> [B], float
+        if y.ndim > 1:
+            y = y.squeeze(-1)
+        return h1, h2, y.float()
+
+    # --------- Lightning API ---------
+    def forward(self, h1: torch.Tensor, h2: torch.Tensor) -> torch.Tensor:
+        return self.model(h1, h2)
+
+    def training_step(self, batch, batch_idx: int):
+        h1, h2, y = batch  # tuple from Dataset
+        h1, h2, y = self._fix_shapes(h1, h2, y)
+        logits = self(h1, h2)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=y.size(0), logger=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx: int):
+        h1, h2, y = batch  # keep the same structure as training
+        h1, h2, y = self._fix_shapes(h1, h2, y)
+
+        logits = self(h1, h2)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+
+        # epoch-level val_loss for EarlyStopping
+        sync = getattr(self.trainer, "world_size", 1) > 1
+        self.log(
+            "val_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=y.size(0),
+            sync_dist=sync,
+        )
+
+        # metrics expect probabilities and int/bool targets
+        probs = logits.sigmoid()
+        self.val_auc.update(probs, y.int())
+        self.val_ap.update(probs, y.int())
+
+    def on_validation_epoch_end(self):
+        # make sure these get logged too (optional)
+        auc = self.val_auc.compute()
+        ap = self.val_ap.compute()
+        self.log("val_auc", auc, prog_bar=True)
+        self.log("val_ap", ap, prog_bar=True)
+        self.val_auc.reset()
+        self.val_ap.reset()
+
+    def test_step(self, batch, batch_idx: int):
+        # mirror validation for later testing
+        return self.validation_step(batch, batch_idx)
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+
+
+# ---------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------
+class BiaffineHead(nn.Module):
+    def __init__(
+        self,
+        hv_dim: int,
+        proj_dim: int = 1024,
+        n_heads: int = 8,
+        proj_hidden: int | None = None,
+        dropout: float = 0.0,
+        tau_init: float = 8.0,  # large τ to tame early logits
+        *,
+        share_proj: bool = False,
+        norm: bool = True,
+        use_layernorm: bool = True,
+        use_temperature: bool = True,
+    ):
+        super().__init__()
+        self.norm = norm
+        self.use_layernorm = use_layernorm
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.n_heads = n_heads
+        P = proj_dim
+
+        def proj_mlp() -> Module:
+            if proj_hidden is None:
+                return nn.Linear(hv_dim, P, bias=False)
+            return nn.Sequential(
+                nn.Linear(hv_dim, proj_hidden, bias=True),
+                nn.GELU(),
+                nn.Linear(proj_hidden, P, bias=False),
+            )
+
+        self.p1 = proj_mlp()
+        self.p2 = self.p1 if share_proj else proj_mlp()
+
+        self.ln1 = nn.LayerNorm(P) if use_layernorm else nn.Identity()
+        self.ln2 = nn.LayerNorm(P) if use_layernorm else nn.Identity()
+
+        self.W = nn.Parameter(torch.empty(n_heads, P, P))
+        nn.init.xavier_uniform_(self.W)
+
+        self.gate = nn.Linear(3, n_heads, bias=True)
+        nn.init.xavier_uniform_(self.gate.weight)
+        nn.init.zeros_(self.gate.bias)
+
+        self.diag_w = nn.Parameter(torch.zeros(P))
+        self.alpha = nn.Parameter(torch.tensor(0.0))
+        self.bias = nn.Parameter(torch.zeros(()))
+
+        self.use_temperature = use_temperature
+        if use_temperature:
+            # τ = softplus(log_tau)  with τ≈tau_init at start
+            self.log_tau = nn.Parameter(torch.tensor(math.log(math.exp(tau_init) - 1.0)))
+
+        # init: orthogonal for any Linear with bias=False (covers final layers)
+        for m in self.modules():
+            if isinstance(m, nn.Linear) and m.bias is None:
+                nn.init.orthogonal_(m.weight)
+
+    def forward(self, h1, h2):
+        # accept [B,1,D]
+        if h1.ndim == 3 and h1.size(1) == 1:
+            h1 = h1.squeeze(1)
+        if h2.ndim == 3 and h2.size(1) == 1:
+            h2 = h2.squeeze(1)
+
+        if self.norm:
+            h1 = F.normalize(h1, dim=-1)
+            h2 = F.normalize(h2, dim=-1)
+
+        u = self.ln1(self.p1(h1))
+        v = self.ln2(self.p2(h2))
+        u = self.dropout(u)
+        v = self.dropout(v)
+
+        # biaffine heads
+        s_heads = torch.einsum("bp,hpq,bq->bh", u, self.W, v)  # [B,H]
+
+        # tiny feature gate per head
+        uv = u * v
+        cos = (u * v).sum(-1) / (u.norm(dim=-1) * v.norm(dim=-1) + 1e-12)
+        feat = torch.stack([uv.mean(-1), (u - v).abs().mean(-1), cos], dim=-1)  # [B,3]
+        gates = torch.softmax(self.gate(feat), dim=-1)  # [B,H]
+
+        s_biaff = (gates * s_heads).sum(-1)  # [B]
+        s_diag = (uv * self.diag_w).sum(-1)  # [B]
+        s_dot = self.alpha * (u * v).sum(-1)  # [B]
+        logits = s_biaff + s_diag + s_dot + self.bias
+
+        if self.use_temperature:
+            tau = F.softplus(self.log_tau) + 1e-6
+            logits = logits / tau
+        return logits
+
+
+# ---------------------------------------------------------------------
+# Lightning wrapper
+# ---------------------------------------------------------------------
+@register_model("BAH")
+class LitBAHClassifier(pl.LightningModule):
+    """
+    Expect batches as (h1, h2, y) or {"h1":..., "h2":..., "y":...}, with h1/h2 ~ [B, D].
+    If collate yields [B, 1, D], we squeeze the middle dim.
+    """
+
+    def __init__(
+        self,
+        *,
+        hv_dim: int,
+        proj_dim: int = 1024,  # 1024–1536 are good starting points
+        n_heads: int = 8,  # 4–16; more heads => more expressiveness
+        norm: bool = True,
+        proj_hidden: int | None = None,
+        dropout: float = 0.0,
+        lr: float = 1e-3,
+        weight_decay: float = 0.0,
+        pos_weight: float | None = None,  # None -> unweighted BCE
+        share_proj: bool = False,  # or e.g. 2048 for 2-layer projections if you want even more capacity_
+        use_layernorm: bool = True,
+        use_temperature: bool = True,
+    ) -> None:
+        super().__init__()
+        # Save EVERYTHING for checkpoint load
+        self.save_hyperparameters()
+        self.lr = lr
+        self.weight_decay = weight_decay
+
+        self.model = BiaffineHead(
+            hv_dim=hv_dim,
+            proj_dim=proj_dim,
+            n_heads=n_heads,
+            share_proj=share_proj,
+            norm=norm,
+            use_layernorm=use_layernorm,
+            proj_hidden=proj_hidden,
+            dropout=dropout,
+            use_temperature=use_temperature,
+        )
+
+        # Register pos_weight as a buffer so device moves are handled automatically
+        if pos_weight is not None:
+            self.register_buffer("pos_weight", torch.tensor([float(pos_weight)], dtype=torch.float32))
+        else:
+            self.pos_weight = None  # type: ignore[assignment]
+
+        # Metrics
+        self.val_auc = AUROC(task="binary")
+        self.val_ap = AveragePrecision(task="binary")
+
+    # --------- helpers ---------
+    @staticmethod
+    def _fix_shapes(h1: torch.Tensor, h2: torch.Tensor, y: torch.Tensor):
+        # squeeze [B,1,D] -> [B,D] emitted by your dataset/loader
+        if h1.ndim == 3 and h1.size(1) == 1:
+            h1 = h1.squeeze(1)
+        if h2.ndim == 3 and h2.size(1) == 1:
+            h2 = h2.squeeze(1)
+        # y -> [B], float
+        if y.ndim > 1:
+            y = y.squeeze(-1)
+        return h1, h2, y.float()
+
+    # --------- Lightning API ---------
+    def forward(self, h1: torch.Tensor, h2: torch.Tensor) -> torch.Tensor:
+        return self.model(h1, h2)
+
+    def training_step(self, batch, batch_idx: int):
+        h1, h2, y = batch  # tuple from Dataset
+        h1, h2, y = self._fix_shapes(h1, h2, y)
+        logits = self(h1, h2)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=y.size(0), logger=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx: int):
+        h1, h2, y = batch  # keep the same structure as training
+        h1, h2, y = self._fix_shapes(h1, h2, y)
+
+        logits = self(h1, h2)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+
+        # epoch-level val_loss for EarlyStopping
+        sync = getattr(self.trainer, "world_size", 1) > 1
+        self.log(
+            "val_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=y.size(0),
+            sync_dist=sync,
+        )
+
+        # metrics expect probabilities and int/bool targets
+        probs = logits.sigmoid()
+        self.val_auc.update(probs, y.int())
+        self.val_ap.update(probs, y.int())
+
+    def on_validation_epoch_end(self):
+        # make sure these get logged too (optional)
+        self.log("val_auc", self.val_auc.compute(), prog_bar=True)
+        self.log("val_ap", self.val_ap.compute(), prog_bar=True)
+        self.val_auc.reset()
+        self.val_ap.reset()
+
+    def test_step(self, batch, batch_idx: int):
+        h1, h2, y = batch
+        h1, h2, y = self._fix_shapes(h1, h2, y)
+        logits = self(h1, h2)
+        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
+        probs = logits.sigmoid()
+        self.log("test_loss", loss, prog_bar=True)
+        self.log("test_auc", self.val_auc(probs, y.int()), prog_bar=True)
+        self.log("test_ap", self.val_ap(probs, y.int()), prog_bar=True)
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
 
 ## GNN Classifiers
@@ -475,7 +815,7 @@ class ConditionalGraphAttention(MessagePassing):
         return node_embedding, self._attention_logits
 
 
-@register_model("ConditionalGIN")
+@register_model("GIN")
 class ConditionalGIN(pl.LightningModule):
     """
     A conditional Graph Isomorphism Network (GIN) implemented using PyTorch Lightning.
