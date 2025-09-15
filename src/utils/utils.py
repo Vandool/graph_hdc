@@ -861,10 +861,8 @@ class DataTransformer:
             try:
                 Chem.SanitizeMol(mol)
                 if kekulize:
-                    try:
+                    with contextlib.suppress(Exception):
                         Chem.Kekulize(mol, clearAromaticFlags=True)
-                    except Exception:
-                        pass
             except Exception:
                 # fallback: rebuild with single bonds if sanitize fails
                 rw2 = Chem.RWMol()
@@ -900,7 +898,7 @@ def generated_node_edge_dist(
     wandb=None,
     *,
     title: str = "Generated graphs",
-    dataset_val: str = "",
+    dataset_val: str = "zinc",
     dataset: InMemoryDataset | None = None,
 ) -> dict[str, Any]:
     """
@@ -1003,6 +1001,12 @@ def generated_node_edge_dist(
     ax_types = fig.add_subplot(gs[1, :])
     plt.subplots_adjust(bottom=0.25)
 
+    # Constant settings
+
+    d_label = f"real ({dataset_val.split('_')[0].lower()})"
+    g_label = f"generated ({len(generated_node_types):,} samples)"
+    g_rwidth = 0.5
+
     # Nodes: REAL (grey, full width), GENERATED (narrower), both density=True
     if real_nodes:
         ax_nodes.hist(
@@ -1013,7 +1017,7 @@ def generated_node_edge_dist(
             color="lightgrey",
             edgecolor="grey",
             alpha=0.8,
-            label="real (dataset)",
+            label=d_label,
             histtype="bar",
             rwidth=1.0,
         )
@@ -1026,11 +1030,11 @@ def generated_node_edge_dist(
             color="steelblue",
             edgecolor="black",
             alpha=0.9,
-            label="generated",
+            label=g_label,
             histtype="bar",
-            rwidth=0.75,
+            rwidth=g_rwidth,
         )
-    ax_nodes.set_title(f"{title} – Node count (density)")
+    ax_nodes.set_title(f"{title} - Node count (density)")
     ax_nodes.set_xlabel("num_nodes")
     ax_nodes.set_ylabel("density")
     ax_nodes.set_xlim(*nodes_xlim)
@@ -1046,7 +1050,7 @@ def generated_node_edge_dist(
             color="lightgrey",
             edgecolor="grey",
             alpha=0.8,
-            label="real (dataset)",
+            label=d_label,
             histtype="bar",
             rwidth=1.0,
         )
@@ -1059,11 +1063,11 @@ def generated_node_edge_dist(
             color="darkorange",
             edgecolor="black",
             alpha=0.9,
-            label="generated",
+            label=g_label,
             histtype="bar",
-            rwidth=0.75,
+            rwidth=g_rwidth,
         )
-    ax_edges.set_title(f"{title} – Edge count (density)")
+    ax_edges.set_title(f"{title} - Edge count (density)")
     ax_edges.set_xlabel("num_edges")
     ax_edges.set_ylabel("density")
     ax_edges.set_xlim(*edges_xlim)
@@ -1081,9 +1085,9 @@ def generated_node_edge_dist(
 
         x = np.arange(len(union_labels))
         # background (real) full width
-        ax_types.bar(x, real_vals, color="lightgrey", edgecolor="grey", label="real (dataset)", width=1.0)
+        ax_types.bar(x, real_vals, color="lightgrey", edgecolor="grey", label=d_label, width=1.0)
         # overlay (generated) narrower
-        ax_types.bar(x, gen_vals, color="seagreen", edgecolor="black", alpha=0.9, label="generated", width=0.6)
+        ax_types.bar(x, gen_vals, color="seagreen", edgecolor="black", alpha=0.9, label=g_label, width=0.6)
         ax_types.set_xticks(x)
         ax_types.set_xticklabels([str(l) for l in union_labels], rotation=90, fontsize=8)
     ax_types.set_title(f"{title} – Node type distribution (proportion)")
@@ -1122,9 +1126,9 @@ def generated_node_edge_dist(
             color="steelblue",
             edgecolor="black",
             alpha=0.9,
-            label="generated",
+            label=g_label,
             histtype="bar",
-            rwidth=0.75,
+            rwidth=g_rwidth,
         )
     ax1.set_title(f"{title} – Node count (density)")
     ax1.set_xlabel("num_nodes")
@@ -1161,9 +1165,9 @@ def generated_node_edge_dist(
             color="darkorange",
             edgecolor="black",
             alpha=0.9,
-            label="generated",
+            label=g_label,
             histtype="bar",
-            rwidth=0.75,
+            rwidth=g_rwidth,
         )
     ax2.set_title(f"{title} – Edge count (density)")
     ax2.set_xlabel("num_edges")
@@ -1183,8 +1187,8 @@ def generated_node_edge_dist(
         x = np.arange(len(union_labels))
         real_vals = [real_type_ctr.get(k, 0) / max(1, sum(real_type_ctr.values())) for k in union_labels]
         gen_vals = [gen_type_ctr.get(k, 0) / max(1, sum(gen_type_ctr.values())) for k in union_labels]
-        axt.bar(x, real_vals, color="lightgrey", edgecolor="grey", label="real (dataset)", width=1.0)
-        axt.bar(x, gen_vals, color="seagreen", edgecolor="black", alpha=0.9, label="generated", width=0.6)
+        axt.bar(x, real_vals, color="lightgrey", edgecolor="grey", label=d_label, width=1.0)
+        axt.bar(x, gen_vals, color="seagreen", edgecolor="black", alpha=0.9, label=g_label, width=g_rwidth)
         axt.set_xticks(x)
         axt.set_xticklabels([str(l) for l in union_labels], rotation=90, fontsize=8)
     axt.set_title(f"{title} – Node type distribution (proportion)")

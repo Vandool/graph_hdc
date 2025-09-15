@@ -47,6 +47,7 @@ EPOCHS="${EPOCHS:-500}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 VSA="${VSA:-HRR}"                 # optional; your parser uses Enum type=VSAModel
 DATASET="${DATASET:-}"            # optional (SUPPRESS by default)
+DS_TAG="${DS_TAG:-}"            # optional (SUPPRESS by default)
 HV_DIM="${HV_DIM:-7744}"          # default 88*88
 LR="${LR:-1e-3}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
@@ -73,7 +74,8 @@ if [[ -z "$EXP_NAME" ]]; then
   LR_TOK=$(to_token "$LR")
   WD_TOK=$(to_token "$WEIGHT_DECAY")
   AN_TOK=$([ "${USE_ACT_NORM}" = "1" ] && echo "an" || echo "noan")
-  EXP_NAME="h${HV_DIM}_f${NUM_FLOWS}_hid${NUM_HIDDEN_CHANNELS}_s${SEED}_lr${LR_TOK}_wd${WD_TOK}_${AN_TOK}"
+  VSA_TAG=$(echo "${VSA:0:1}" | tr '[:upper:]' '[:lower:]')
+  EXP_NAME="nvp_${DS_TAG}_${VSA_TAG}${HV_DIM}_f${NUM_FLOWS}_hid${NUM_HIDDEN_CHANNELS}_s${SEED}_lr${LR_TOK}_wd${WD_TOK}_${AN_TOK}"
 fi
 
 # -----------------------------
