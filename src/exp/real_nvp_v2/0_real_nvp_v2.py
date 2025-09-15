@@ -975,8 +975,7 @@ def run_experiment(cfg: FlowConfig):
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
-        num_sanity_val_steps=1,
-        limit_val_batches=1,
+        num_sanity_val_steps=0,
     )
 
     # ----- train -----
