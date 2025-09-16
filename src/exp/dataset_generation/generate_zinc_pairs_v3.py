@@ -211,33 +211,33 @@ def build_zinc_pairs_for_split(
 
 
 def main():
-    p = argparse.ArgumentParser(description="Generate ZincPairsV3 for a single split.")
-    p.add_argument("--split", required=True, choices=["train", "valid", "test"])
-    p.add_argument("--dev", action="store_true", help="Use small dev sizes (train=200, valid=20, test=20).")
-    p.add_argument("--n", type=int, default=None, help="Number of base molecules (overrides --dev default).")
-    p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
-    args = p.parse_args()
+    # p = argparse.ArgumentParser(description="Generate ZincPairsV3 for a single split.")
+    # p.add_argument("--split", required=True, choices=["train", "valid", "test"])
+    # p.add_argument("--dev", action="store_true", help="Use small dev sizes (train=200, valid=20, test=20).")
+    # p.add_argument("--n", type=int, default=None, help="Number of base molecules (overrides --dev default).")
+    # p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
+    # args = p.parse_args()
 
     cfg = ZincPairV3Config()
-    seed_everything(cfg.seed)
+    seed_everything(42)
 
     _, stats = build_zinc_pairs_for_split(
-        split=args.split,
+        split="test",
         cfg=cfg,
         force_reprocess=False,
         is_dev=True,
-        n=args.n,
-        sanity_limit=args.sanity_limit,
+        n=None,
+        sanity_limit=20,
     )
 
-    _, stats = build_zinc_pairs_for_split(
-        split=args.split,
-        cfg=cfg,
-        force_reprocess=False,
-        is_dev=False,
-        n=args.n,
-        sanity_limit=args.sanity_limit,
-    )
+    # _, stats = build_zinc_pairs_for_split(
+    #     split=args.split,
+    #     cfg=cfg,
+    #     force_reprocess=False,
+    #     is_dev=False,
+    #     n=args.n,
+    #     sanity_limit=args.sanity_limit,
+    # )
 
 
 if __name__ == "__main__":

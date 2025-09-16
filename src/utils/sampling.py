@@ -15,15 +15,15 @@ with contextlib.suppress(RuntimeError):
 
 
 def stratified_per_parent_indices_with_type_mix(
-        ds,
-        *,
-        pos_per_parent: int,
-        neg_per_parent: int,
-        type_mix: dict[int | PairType, float] | None = None,
-        balance_k2: bool = True,
-        exclude_neg_types: set[int] = frozenset(),
-        seed: int = 42,
-        log_every_shards: int = 50,
+    ds,
+    *,
+    pos_per_parent: int,
+    neg_per_parent: int,
+    type_mix: dict[int | PairType, float] | None = None,
+    balance_k2: bool = True,
+    exclude_neg_types: set[int] = frozenset(),
+    seed: int = 42,
+    log_every_shards: int = 50,
 ) -> list[int]:
     """
     Uniform random sampling *per parent*, with fine-grained negative type control and k==2 balancing.
@@ -60,9 +60,6 @@ def stratified_per_parent_indices_with_type_mix(
     list[int]
         Sorted global indices to use with `Subset(ds, indices)`.
     """
-    import math
-    import random
-    from collections import Counter, defaultdict
 
     rng = random.Random(seed)
 
@@ -89,12 +86,12 @@ def stratified_per_parent_indices_with_type_mix(
         return int(math.floor(budget * type_mix.get(t, 0.0)))
 
     # --------- reservoirs (per parent) ----------
-    pos_edge_res = defaultdict(list)       # POSITIVE_EDGE only
+    pos_edge_res = defaultdict(list)  # POSITIVE_EDGE only
     pos_edge_seen = defaultdict(int)
-    pos_other_res = defaultdict(list)      # POSITIVE (k>2)
+    pos_other_res = defaultdict(list)  # POSITIVE (k>2)
     pos_other_seen = defaultdict(int)
 
-    neg_edge_res = defaultdict(list)       # NEGATIVE_EDGE only
+    neg_edge_res = defaultdict(list)  # NEGATIVE_EDGE only
     neg_edge_seen = defaultdict(int)
     neg_by_type_res = defaultdict(lambda: defaultdict(list))  # pid -> {neg_type -> [idx]}
     neg_by_type_seen = defaultdict(lambda: defaultdict(int))
@@ -157,10 +154,7 @@ def stratified_per_parent_indices_with_type_mix(
     # ---------- assemble per parent ----------
     selected = []
     parents = (
-            set(pos_edge_res.keys())
-            | set(pos_other_res.keys())
-            | set(neg_edge_res.keys())
-            | set(neg_by_type_res.keys())
+        set(pos_edge_res.keys()) | set(pos_other_res.keys()) | set(neg_edge_res.keys()) | set(neg_by_type_res.keys())
     )
 
     diag = {
@@ -173,9 +167,9 @@ def stratified_per_parent_indices_with_type_mix(
     }
 
     for pid in sorted(parents):
-        pos_edge_pool  = list(pos_edge_res.get(pid, ()))
+        pos_edge_pool = list(pos_edge_res.get(pid, ()))
         pos_other_pool = list(pos_other_res.get(pid, ()))
-        neg_edge_pool  = list(neg_edge_res.get(pid, ()))
+        neg_edge_pool = list(neg_edge_res.get(pid, ()))
 
         pe_avail = len(pos_edge_pool)
         po_avail = len(pos_other_pool)

@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import enum
 import itertools
 import json
 import os
@@ -34,28 +35,27 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
-from torch import nn
 from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import MessagePassing
 
 # === BEGIN NEW ===
-from torch_geometric.nn.aggr import SumAggregation
 from torchhd import HRRTensor
 
+from src.datasets.qm9_pairs import QM9Pairs
+from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_pairs_v2 import ZincPairsV2
+from src.datasets.zinc_pairs_v3 import ZincPairsV3
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG, Features
+from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.decoder import greedy_oracle_decoder, is_induced_subgraph_by_features
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.encoding.the_types import VSAModel
-from src.exp.classification_v3_gnn.classification_utils_gnn import (
-    exact_representative_validation_indices,
-    stratified_per_parent_indices_with_caps,
-)
+from src.utils.registery import ModelType, resolve_model
+from src.utils.sampling import balanced_indices_for_validation, stratified_per_parent_indices_with_type_mix
 from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, pick_device, str2bool
+from src.utils.visualisations import draw_nx_with_atom_colorings
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -103,6 +103,7 @@ class Config:
     is_dev: bool = False
 
     # Model (shared knobs)
+    model_name: ModelType = "GIN-F"  # or GIN-C
     cond_units: list[int] = field(default_factory=lambda: [256, 128])
     cond_emb_dim: int = 128
     film_units: list[int] = field(default_factory=lambda: [128])
@@ -116,6 +117,7 @@ class Config:
     # HDC / encoder
     hv_dim: int = 88 * 88  # 7744
     vsa: VSAModel = VSAModel.HRR
+    dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
 
     # Optim
     lr: float = 1e-4
@@ -123,7 +125,7 @@ class Config:
 
     # Loader
     num_workers: int = 4
-    prefetch_factor: int = 1
+    prefetch_factor: int | None = 1
     pin_memory: bool = False
 
     # Checkpointing
@@ -181,593 +183,6 @@ def setup_exp(dir_name: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------
-"""
-Conditional Graph Neural Network Implementation for Graph Binary Classification
-
-This module implements a conditional graph neural network architecture based on the message passing
-paradigm, specifically designed for graph binary classification tasks. The implementation uses PyTorch
-Geometric and PyTorch Lightning frameworks.
-
-The key components of this implementation are:
-
-1. FilmConditionalLinear: A conditional linear layer using Feature-wise Linear Modulation (FiLM)
-   that allows neural network behavior to be conditioned on external inputs.
-
-2. ConditionalGraphAttention: A graph attention layer that extends PyTorch Geometric's MessagePassing
-   class, incorporating attention mechanisms and conditional processing via FiLM.
-
-3. ConditionalGIN: A Graph Isomorphism Network that uses the conditional graph attention mechanism
-   for message passing and is trained to perform binary classification on entire graphs.
-
-The module demonstrates how to:
-- Create conditional neural network layers with FiLM
-- Implement custom message passing mechanisms with attention
-- Apply graph neural networks to graph binary classification tasks
-- Generate and visualize mock graph data for testing
-"""
-
-
-class FilmConditionalLinear(nn.Module):
-    """
-    This is a conditional variant of the default ``Linear`` layer using the FiLM conditioning mechanism.
-
-    As a conditional layer, this layer requires 2 different input tensors. The first is the actual input
-    tensor to be transformed into the output tensor and the second is the condition vector that should
-    modify the behavior of the linear layer. The implementation follows the Feature-wise Linear Modulation
-    (FiLM) approach, which applies an affine transformation (scale and shift) to the output of a linear
-    layer based on the conditioning vector.
-
-    :param in_features: Number of input features
-    :param out_features: Number of output features
-    :param condition_features: Number of features in the conditioning vector
-    :param film_units: List of hidden unit sizes for the FiLM network
-    :param film_use_norm: Whether to use batch normalization in the FiLM network
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        condition_features: int,
-        film_units: list[int] = [128],
-        film_use_norm: bool = True,
-        **kwargs,
-    ):
-        """
-        Initialize the FiLM conditional linear layer.
-
-        :param in_features: Number of input features
-        :param out_features: Number of output features
-        :param condition_features: Number of features in the conditioning vector
-        :param film_units: List of hidden unit sizes for the FiLM network
-        :param film_use_norm: Whether to use batch normalization in the FiLM network
-        :param kwargs: Additional keyword arguments to pass to the parent class
-        """
-        nn.Module.__init__(self, **kwargs)
-        self.in_features = in_features
-        self.out_features = out_features
-        self.condition_features = condition_features
-        self.film_units = film_units
-        self.film_use_norm = film_use_norm
-        # The final activation we actually want to be Tanh because the output values should
-        # be in the range of [-1, 1], both for the bias as well as the multiplicative factor.
-        self.lay_final_activation = nn.Tanh()
-
-        ## -- Main Linear Layer --
-        # Ultimately, the FiLM layer is just a variation of a linear layer where the output
-        # is additionally modified by the activation. So what we define here is the core
-        # linear layer itself.
-        self.lay_linear = nn.Linear(
-            in_features=in_features,
-            out_features=out_features,
-        )
-        self.dim = out_features
-
-        ## -- FiLM Layers --
-        # These are the layers that will be used to create the FiLM activation modifier tensors.
-        # They take as the input the condition vector and transform that into the additive and
-        # multiplicative modifiers which than perform the affine transformation on the output
-        # of the actual linear layer.
-        # This can even be a multi-layer perceptron by itself, depending on how difficult the
-        # condition function is to learn.
-        self.film_layers = nn.ModuleList()
-        prev_features = condition_features
-        for num_features in film_units:
-            if self.film_use_norm:
-                lay = nn.Sequential(
-                    nn.Linear(in_features=prev_features, out_features=num_features),
-                    nn.BatchNorm1d(num_features),
-                    nn.ReLU(),
-                )
-            else:
-                lay = nn.Sequential(
-                    nn.Linear(in_features=prev_features, out_features=num_features),
-                    nn.ReLU(),
-                )
-
-            self.film_layers.append(lay)
-            prev_features = num_features
-
-        # Finally, at the end of this MLP we need the final layer to be one that outputs a
-        # vector of the size that is twice the size of the output of the core linear layer.
-        # From this output we need to derive the additive and the multiplicative modifier
-        # and we do this by using the first half of the output as the multiplicative
-        # modifier and the second half as the additive modifier.
-        self.film_layers.append(
-            nn.Linear(
-                in_features=prev_features,
-                out_features=self.dim * 2,
-            )
-        )
-
-    def forward(self, input: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the FiLM conditional linear layer.
-
-        The forward method applies the core linear transformation to the input tensor,
-        then modifies the result based on the condition tensor through a FiLM (Feature-wise
-        Linear Modulation) mechanism, which performs an affine transformation with parameters
-        derived from the condition.
-
-        :param input: Input tensor of shape (batch_size, in_features)
-        :param condition: Condition tensor of shape (batch_size, condition_features)
-
-        :returns: Output tensor of shape (batch_size, out_features)
-        """
-
-        ## -- getting the modifier from the condition --
-        # We need the film layers to create the activation modifier tensor.
-        # This actually may or may not be a multi layer perceptron.
-        modifier = condition
-        for lay in self.film_layers:
-            modifier = lay(modifier)
-
-        modifier = 2 * self.lay_final_activation(modifier)
-
-        # -- getting the output from the linear layer --
-        output = self.lay_linear(input)
-
-        # -- applying the modifier to the output --
-        # And then finally we split the modifier vector into the two equally sized distinct vectors where one of them
-        # is the multiplicative modification and the other is the additive modification to the output activation.
-        factor = modifier[:, : self.dim]
-        bias = modifier[:, self.dim :]
-        output = (factor * output) + bias
-
-        return output
-
-
-class ConditionalGraphAttention(MessagePassing):
-    """
-    A conditional graph attention layer that extends PyTorch Geometric's MessagePassing base class.
-
-    This layer implements a message passing mechanism where attention coefficients are computed
-    for each edge based on the features of the connected nodes and edge attributes, modified by
-    a condition vector. The attention mechanism helps the network focus on the most relevant
-    parts of the graph structure for the given task and condition.
-
-    :param in_dim: Dimension of input node features
-    :param out_dim: Dimension of output node features
-    :param edge_dim: Dimension of edge features
-    :param cond_dim: Dimension of the condition vector
-    :param hidden_dim: Dimension of hidden layers
-    :param eps: Epsilon value for residual connections
-    :param film_units: List of hidden unit sizes for the FiLM networks
-    """
-
-    def __init__(
-        self,
-        in_dim: int,
-        out_dim: int,
-        edge_dim: int,
-        cond_dim: int,
-        hidden_dim: int = 64,
-        eps: float = 0.1,
-        film_units: list[int] = [],
-        **kwargs,
-    ):
-        """
-        Initialize the conditional graph attention layer.
-
-        :param in_dim: Dimension of input node features
-        :param out_dim: Dimension of output node features
-        :param edge_dim: Dimension of edge features
-        :param cond_dim: Dimension of the condition vector
-        :param hidden_dim: Dimension of hidden layers
-        :param eps: Epsilon value for residual connections
-        :param film_units: List of hidden unit sizes for the FiLM networks
-        :param kwargs: Additional keyword arguments to pass to the parent class
-        """
-        kwargs.setdefault("aggr", "add")
-        MessagePassing.__init__(self, **kwargs)
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.edge_dim = edge_dim
-        self.cond_dim = cond_dim
-        self.hidden_dim = hidden_dim
-        self.eps = eps
-        self.film_units = film_units
-
-        self._attention_logits = None
-        self._attention = None
-
-        ## -- Initial Embedding Layer --
-        self.message_dim = in_dim * 2 + edge_dim
-        self.lay_message_lin_1 = FilmConditionalLinear(
-            in_features=self.message_dim,
-            out_features=self.hidden_dim,
-            condition_features=self.cond_dim,
-            film_units=self.film_units,
-        )
-        self.lay_message_bn = nn.BatchNorm1d(self.hidden_dim)
-        self.lay_message_act = nn.LeakyReLU()
-        self.lay_message_lin_2 = FilmConditionalLinear(
-            in_features=self.hidden_dim,
-            out_features=self.hidden_dim,
-            condition_features=self.cond_dim,
-            film_units=self.film_units,
-        )
-
-        # -- Attention Layer --
-        # This layer will produce the attention coefficients which will then be used in the
-        # attention-weighted message accumulation step.
-        self.lay_attention_lin_1 = FilmConditionalLinear(
-            in_features=self.message_dim,
-            out_features=self.hidden_dim,
-            condition_features=self.cond_dim,
-            film_units=self.film_units,
-        )
-        self.lay_attention_bn = nn.BatchNorm1d(self.hidden_dim)
-        self.lay_attention_act = nn.LeakyReLU()
-        self.lay_attention_lin_2 = FilmConditionalLinear(
-            in_features=self.hidden_dim,
-            out_features=1,  # attention logits
-            condition_features=self.cond_dim,
-            film_units=self.film_units,
-        )
-
-        # -- Final Transform Layer --
-        # In the end we add an additional transformation on the attention weighted aggregation
-        # of the message to determine the update to the node features.
-        self.lay_transform_lin_1 = FilmConditionalLinear(
-            in_features=self.hidden_dim + self.in_dim,
-            out_features=self.hidden_dim,
-            condition_features=self.cond_dim,
-            film_units=self.film_units,
-        )
-        self.lay_transform_bn = nn.BatchNorm1d(self.hidden_dim)
-        self.lay_transform_act = nn.LeakyReLU()
-        self.lay_transform_lin_2 = FilmConditionalLinear(
-            in_features=self.hidden_dim,
-            out_features=self.out_dim,
-            condition_features=self.cond_dim,
-            film_units=self.film_units,
-        )
-
-    def message(
-        self,
-        x_i,
-        x_j,
-        condition_i,
-        condition_j,
-        edge_attr,
-        edge_weights,
-    ) -> torch.Tensor:
-        """
-        Compute the message for each edge in the message passing step.
-
-        This method is called for each edge during the propagation step of message passing.
-        It computes attention coefficients based on the features of connected nodes and the edge,
-        then uses these coefficients to weight the message being passed.
-
-        :param x_i: Features of the target node
-        :param x_j: Features of the source node
-        :param condition_i: Condition vector for the target node
-        :param condition_j: Condition vector for the source node
-        :param edge_attr: Edge attributes
-        :param edge_weights: Optional edge weights to further modulate the messages
-
-        :returns: The weighted message to be passed along the edge
-        """
-
-        message = torch.cat([x_i, x_j, edge_attr], dim=-1)
-
-        attention_logits = self.lay_attention_lin_1(message, condition_i)
-        attention_logits = self.lay_attention_bn(attention_logits)
-        attention_logits = self.lay_attention_act(attention_logits)
-        attention_logits = self.lay_attention_lin_2(attention_logits, condition_i)
-        self._attention_logits = attention_logits
-        self._attention = torch.sigmoid(self._attention_logits)
-
-        message_transformed = self.lay_message_lin_1(message, condition_i)
-        message_transformed = self.lay_message_bn(message_transformed)
-        message_transformed = self.lay_message_act(message_transformed)
-        message_transformed = self.lay_message_lin_2(message_transformed, condition_i)
-
-        result = self._attention * message_transformed
-
-        if edge_weights is not None:
-            if edge_weights.dim() == 1:
-                edge_weights = torch.unsqueeze(edge_weights, dim=-1)
-
-            result *= edge_weights
-
-        return result
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        condition: torch.Tensor,
-        edge_attr: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_weights: torch.Tensor = None,
-        **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass of the conditional graph attention layer.
-
-        This method implements the full message passing operation, including propagation of messages
-        along edges and aggregation of these messages at each node. The final node embeddings are
-        computed by transforming the aggregated messages together with the original node features.
-
-        :param x: Input node features
-        :param condition: Condition vector for all nodes
-        :param edge_attr: Edge attributes
-        :param edge_index: Graph connectivity
-        :param edge_weights: Optional edge weights
-        :param kwargs: Additional keyword arguments
-
-        :returns: A tuple containing the updated node embeddings and attention logits
-        """
-
-        self._attention = None
-        self._attention_logits = None
-
-        # node_embedding: (B * V, out)
-        node_embedding = self.propagate(
-            edge_index,
-            x=x,
-            condition=condition,
-            edge_attr=edge_attr,
-            edge_weights=edge_weights,
-        )
-
-        # node_embedding = self.lay_act(node_embedding)
-        x = self.lay_transform_lin_1(torch.cat([node_embedding, x], dim=1), condition)
-        x = self.lay_transform_bn(x)
-        x = self.lay_transform_act(x)
-        x = self.lay_transform_lin_2(x, condition)
-
-        # Residual connection to make the gradient flow more stable.
-        # node_embedding += self.eps * x
-        node_embedding = x
-
-        return node_embedding, self._attention_logits
-
-
-class ConditionalGIN(pl.LightningModule):
-    """
-    A conditional Graph Isomorphism Network (GIN) implemented using PyTorch Lightning.
-
-    This model performs message passing on graph structured data conditioned on an external
-    vector. It uses the conditional graph attention mechanism to propagate information through
-    the graph. The model is designed for graph binary classification tasks, predicting a binary
-    label for the entire graph based on the learned node representations and the condition vector.
-
-    :param input_dim: Dimension of input node features
-    :param edge_dim: Dimension of edge features
-    :param condition_dim: Dimension of the condition vector
-    :param cond_units: List of hidden unit sizes for the condition embedding network
-    :param conv_units: List of hidden unit sizes for the graph convolution layers
-    :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
-    :param pred_units: List of hidden unit sizes for the graph prediction network
-    :param learning_rate: Learning rate for the optimizer
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        edge_dim: int,
-        condition_dim: int,
-        cond_units: list[int] = [256, 128],
-        conv_units: list[int] = [64, 64, 64],
-        film_units: list[int] = [128],
-        pred_units: list[int] = [256, 64, 1],
-        learning_rate: float = 0.0001,
-        cfg: Config | None = None,
-    ):
-        """
-        Initialize the conditional GIN model.
-
-        :param input_dim: Dimension of input node features
-        :param edge_dim: Dimension of edge features
-        :param condition_dim: Dimension of the condition vector
-        :param cond_units: List of hidden unit sizes for the condition embedding network
-        :param conv_units: List of hidden unit sizes for the graph convolution layers
-        :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
-        :param pred_units: List of hidden unit sizes for the graph prediction network
-        :param learning_rate: Learning rate for the optimizer
-        """
-
-        super().__init__()
-
-        self.cfg = cfg or Config()
-        num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
-        den = float(self.cfg.p_per_parent) if self.cfg.p_per_parent else 1.0
-        ratio = num / max(1.0, den)
-        self.register_buffer("pos_weight", torch.tensor([ratio], dtype=torch.float32))
-
-        self.input_dim = input_dim
-        self.condition_dim = condition_dim
-        self.conv_units = conv_units
-        self.learning_rate = learning_rate
-
-        ## == LAYER DEFINITIONS ==
-
-        ## -- Condition Layers --
-
-        # These will be the layers (the mlp) which will be used to create an overall lower-dimensional
-        # embedding representation of the (very high-dimensional) condition vector. It is then this
-        # embedding that will be used in the individual FiLM conditioning layers.
-        self.cond_layers = nn.ModuleList()
-        prev_units = condition_dim
-        for units in cond_units:
-            self.cond_layers.append(
-                nn.Linear(prev_units, units),
-            )
-            prev_units = units
-
-        self.cond_embedding_dim = prev_units
-
-        ## -- Graph Convolutional Layers --
-
-        # These will be the actual convolutional layers that will be used as the message passing
-        # operations on the given graph.
-        self.conv_layers = nn.ModuleList()
-        prev_units = input_dim
-        for units in conv_units:
-            lay = ConditionalGraphAttention(
-                in_dim=prev_units,
-                out_dim=units,
-                edge_dim=edge_dim,
-                cond_dim=self.cond_embedding_dim,
-                film_units=film_units,
-            )
-            self.conv_layers.append(lay)
-            prev_units = units
-
-        # --- Binary Classifier ---
-
-        # Finally, after the message passing and so on, we firstly need to reduce the node
-        # representations of each individual graph object into a single graph vector and then
-        # perform a binary classification based on that graph vector.
-
-        # Aggregates the node representations into
-        self.lay_pool = SumAggregation()
-
-        # A multi layer perceptron made up of linear layers with batch norm and
-        # relu activation up until the very last layer transition, which outputs the
-        # single classification logit.
-        self.pred_units = pred_units
-        self.pred_layers = nn.ModuleList()
-        for units in pred_units[:-1]:
-            lay = nn.Sequential(
-                nn.Linear(
-                    in_features=prev_units,
-                    out_features=units,
-                ),
-                nn.BatchNorm1d(units),
-                nn.ReLU(),
-            )
-            self.pred_layers.append(lay)
-            prev_units = units
-
-        # Final layer outputs single logit for binary classification
-        lay = nn.Linear(
-            in_features=prev_units,
-            out_features=pred_units[-1],
-        )
-        self.pred_layers.append(lay)
-
-    def forward(self, data: Data):
-        """
-        Forward pass of the conditional GIN model.
-
-        This method processes the input graph data through the condition embedding network,
-        the graph convolutional layers, and finally the graph prediction network to predict
-        a binary classification label for the entire graph.
-
-        :param data: PyTorch Geometric Data object containing the graph
-
-        :returns: Dictionary containing the graph prediction logit
-        """
-
-        # -- Embedding the condition --
-        # 1) cond_graph: [num_graphs_in_batch, condition_dim]
-        cond_graph: torch.Tensor = data.cond  # e.g. shape [B, 7744]
-        for lay in self.cond_layers:
-            cond_graph = lay(cond_graph)  # -> [B, cond_emb_dim]
-
-        # 2) Broadcast to nodes via batch vector
-        cond_nodes = cond_graph[data.batch]  # -> [N_total_nodes, cond_emb_dim]
-
-        # -- Message passing
-        # 3) Use node-wise condition in conv layers
-        node_embedding = data.x
-        for lay_conv in self.conv_layers:
-            node_embedding, _ = lay_conv(
-                x=node_embedding,
-                condition=cond_nodes,  # <= crucial
-                edge_attr=data.edge_attr,
-                edge_index=data.edge_index,
-                edge_weights=data.edge_weights,
-            )
-
-        graph_embedding = self.lay_pool(node_embedding, data.batch)
-
-        output = graph_embedding
-        for lay in self.pred_layers:
-            output = lay(output)
-
-        return {
-            "graph_prediction": output,
-        }
-
-    def training_step(self, batch: Data, batch_idx):
-        """
-        Perform a single training step.
-
-        This method is called by PyTorch Lightning during training. It computes the forward pass
-        and calculates the binary cross-entropy loss between the predicted graph probabilities
-        and the target graph labels.
-
-        :param batch: PyTorch Geometric Data object containing a batch of graphs
-        :param batch_idx: Index of the current batch
-
-        :returns: Loss value for the current training step
-        """
-        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
-        target = batch.y.float()  # [B]
-        loss = F.binary_cross_entropy_with_logits(
-            logits, target, pos_weight=self.pos_weight.to(logits.dtype), reduction="mean"
-        )
-        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
-        self.log(
-            "loss",
-            loss.detach().as_subclass(torch.Tensor),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            batch_size=batch_size,
-        )
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
-        target = batch.y.float()  # [B]
-        val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
-        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
-        self.log(
-            "val_loss", val_loss.detach().as_subclass(torch.Tensor), prog_bar=True, logger=True, batch_size=batch_size
-        )
-        return val_loss
-
-    def configure_optimizers(self):
-        """
-        Configure optimizers for the model.
-
-        This method is called by PyTorch Lightning to set up the optimizer
-        for training the model.
-
-        :returns: The configured optimizer
-        """
-        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-
-
-# ---------------------------------------------------------------------
 # Dataset and loaders
 # ---------------------------------------------------------------------
 
@@ -784,7 +199,7 @@ class EpochResamplingSampler(Sampler[int]):
 
     def __iter__(self):
         seed = self.base_seed + self._epoch
-        idxs = stratified_per_parent_indices_with_caps(
+        idxs = stratified_per_parent_indices_with_type_mix(
             ds=self.ds,
             pos_per_parent=self.p,
             neg_per_parent=self.n,
@@ -854,6 +269,7 @@ class PairsGraphsEncodedDataset(Dataset):
         batch_g2 = Batch.from_data_list([g2]).to(self.device)
         h2 = self.encoder.forward(batch_g2)["graph_embedding"]  # [1, D] on device
         cond = h2.detach().cpu()  # let PL move the whole Batch later
+        cond = cond.as_subclass(torch.Tensor)
 
         # target/meta
         y = float(item.y.view(-1)[0].item())
@@ -889,20 +305,20 @@ class PairsDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         log("Loading pair datasets …")
-        self.train_full = ZincPairsV2(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
-        self.valid_full = ZincPairsV2(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
-        log(f"Pairs loaded. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}")
+        if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
+            self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)
+            self.valid_full = QM9Pairs(split="valid", base_dataset=QM9Smiles(split="valid"), dev=self.is_dev)
+        elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
+            self.train_full = ZincPairsV3(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
+            self.valid_full = ZincPairsV3(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
+        log(
+            f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}"
+        )
 
         # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
         self._valid_indices = None
 
-        self._valid_indices = exact_representative_validation_indices(
-            ds=self.valid_full,
-            target_total=2_000_000 if not self.is_dev else 500,
-            exclude_neg_types=self.cfg.exclude_negs,
-            by_neg_type=True,
-            seed=self.cfg.seed,
-        )
+        self._valid_indices = balanced_indices_for_validation(ds=self.valid_full, seed=cfg.seed)
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
     def train_dataloader(self):
@@ -971,7 +387,14 @@ def _sanitize_for_parquet(d: dict) -> dict:
 
 @torch.no_grad()
 def evaluate_as_oracle(
-    model, encoder, oracle_num_evals: int = 8, oracle_beam_size: int = 8, oracle_threshold: float = 0.5
+    model,
+    encoder,
+    epoch: int,
+    artifact_dir: Path,
+    oracle_num_evals: int = 8,
+    oracle_beam_size: int = 8,
+    oracle_threshold: float = 0.5,
+    dataset: SupportedDataset = SupportedDataset.ZINC_SMILES_HRR_7744,
 ):
     log(f"Evaluation classifier as oracle for {oracle_num_evals} examples @threshold:{oracle_threshold}...")
 
@@ -982,8 +405,10 @@ def evaluate_as_oracle(
     encoder.eval()
     ys = []
 
-    zinc_smiles = ZincSmiles(split="valid")[:oracle_num_evals]
-    dataloader = DataLoader(dataset=zinc_smiles, batch_size=oracle_num_evals, shuffle=False)
+    ds = ZincSmiles(split="valid")[:oracle_num_evals]
+    if dataset == SupportedDataset.QM9_SMILES_HRR_1600:
+        ds = QM9Smiles(split="valid")[:oracle_num_evals]
+    dataloader = DataLoader(dataset=ds, batch_size=oracle_num_evals, shuffle=False)
     batch = next(iter(dataloader))
 
     # Encode the whole graph in one HV
@@ -991,7 +416,7 @@ def evaluate_as_oracle(
     graph_terms_hd = graph_term.as_subclass(HRRTensor)
 
     # Create Oracle
-    oracle = Oracle(model=model, encoder=encoder, model_type="gin")
+    oracle = Oracle(model=model, encoder=encoder, model_type="GIN-F")
 
     ground_truth_counters = {}
     datas = batch.to_data_list()
@@ -1003,17 +428,27 @@ def evaluate_as_oracle(
             node_multiset=node_multiset,
             oracle=oracle,
             full_g_h=graph_terms_hd[i],
+            full_g_nx=full_graph_nx,
             beam_size=oracle_beam_size,
+            expand_on_n_anchors=4,
             oracle_threshold=oracle_threshold,
             strict=False,
         )
         nx_GS = list(filter(None, nx_GS))
         if len(nx_GS) == 0:
+            print("Nothing decoded!")
             ys.append(0)
             continue
         ps = []
         for j, g in enumerate(nx_GS):
             is_final = is_induced_subgraph_by_features(g1=g, g2=full_graph_nx, node_keys=["feat"])
+            if is_final:
+                ax = draw_nx_with_atom_colorings(H=g, label="DECODED")
+                fig = ax.figure
+                fig_path = artifact_dir / f"Decoded e{epoch}-{i}-{j}"
+                fig.savefig(fig_path, dpi=300, bbox_inches="tight", pad_inches=0.02)
+                print(f"Decoded Graph detected saved in: {fig_path}")
+                plt.close(fig)  # important in loops
             ps.append(int(is_final))
         correct_p = int(sum(ps) >= 1)
         if correct_p:
@@ -1171,10 +606,10 @@ class MetricsPlotsAndOracleCallback(Callback):
             "val_bal_acc@0.5": bal05,
             "val_mcc@0.5": mcc05,
             # Confusion matrix counts (scalars => safe for Lightning/CSVLogger)
-            "val_tn@0.5": tn05,
-            "val_fp@0.5": fp05,
-            "val_fn@0.5": fn05,
-            "val_tp@0.5": tp05,
+            # "val_tn@0.5": tn05,
+            # "val_fp@0.5": fp05,
+            # "val_fn@0.5": fn05,
+            # "val_tp@0.5": tp05,
             "val_best_f1": f1_best,
             "val_best_thr": best_thr,
             # confusion matrix at best threshold
@@ -1192,7 +627,7 @@ class MetricsPlotsAndOracleCallback(Callback):
         self._save_parquet_or_csv(df_epoch, self.evals_dir / "epoch_metrics.parquet")
 
         # optional: Oracle eval with best_thr
-        if self.oracle_on_val_end and np.isfinite(best_thr):
+        if self.oracle_on_val_end and np.isfinite(best_thr) and epoch > 0:
             with torch.no_grad():
                 oracle_acc = evaluate_as_oracle(
                     model=pl_module,
@@ -1200,6 +635,9 @@ class MetricsPlotsAndOracleCallback(Callback):
                     oracle_num_evals=self.cfg.oracle_num_evals,
                     oracle_beam_size=self.cfg.oracle_beam_size,
                     oracle_threshold=best_thr,
+                    dataset=self.cfg.dataset,
+                    artifact_dir=self.artefacts_dir,
+                    epoch=epoch
                 )
             pl_module.log("val_oracle_acc", float(oracle_acc), prog_bar=False, logger=True)
             # also store it
@@ -1345,7 +783,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     def _json_sanitize(obj):
         if isinstance(obj, Path):
             return str(obj)
-        if isinstance(obj, VSAModel):
+        if isinstance(obj, enum.Enum):
             return obj.value
         return obj
 
@@ -1355,23 +793,24 @@ def run_experiment(cfg: Config, is_dev: bool = False):
 
     seed_everything(cfg.seed)
 
-    # Dataset & Encoder (HRR @ 7744)
-    ds_cfg = ZINC_SMILES_HRR_7744_CONFIG
     device = pick_device()
     log(f"Using device: {device!s}")
 
     log("Loading/creating hypernet …")
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=cfg.dataset.default_cfg).to(device=device).eval()
     log("Hypernet ready.")
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     encoder = hypernet.to(device).eval()
 
-    cpu_encoder = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=torch.device("cpu")).eval()
+    cpu_encoder = (
+        load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=cfg.dataset.default_cfg)
+        .to(device=torch.device("cpu"))
+        .eval()
+    )
     # datamodule with per-epoch resampling
     dm = PairsDataModule(cfg, encoder=cpu_encoder, device=torch.device("cpu"), is_dev=is_dev)
-
-    # ----- model + optim -----
-    model = ConditionalGIN(
+    model = resolve_model(
+        name=cfg.model_name,
         input_dim=4,
         edge_dim=1,
         condition_dim=cfg.hv_dim,
@@ -1403,10 +842,11 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=2,
+        patience=4,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         verbose=True,
+        check_on_train_epoch_end=False,
     )
 
     val_metrics_cb = MetricsPlotsAndOracleCallback(
@@ -1423,12 +863,11 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         devices="auto",
         strategy="auto",
         # gradient_clip_val=1.0,  # Do we need this?
-        log_every_n_steps=100 if not is_dev else 1,
+        log_every_n_steps=500 if not is_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
-        num_sanity_val_steps=2,
-        limit_val_batches=100,
+        num_sanity_val_steps=0,
     )
 
     # --- Train
@@ -1446,10 +885,10 @@ if __name__ == "__main__":
         return [int(tok) for tok in s.replace(" ", "").split(",") if tok]
 
     def _parse_vsa(s: str) -> VSAModel:
-        # Accepts e.g. "HRR", not VSAModel.HRR
-        if isinstance(s, VSAModel):
-            return s
-        return VSAModel(s)
+        return s if isinstance(s, VSAModel) else VSAModel(s)
+
+    def _parse_supported_dataset(s: str) -> SupportedDataset:
+        return s if isinstance(s, SupportedDataset) else SupportedDataset(s)
 
     def get_args(argv: list[str] | None = None) -> Config:
         """
@@ -1481,6 +920,7 @@ if __name__ == "__main__":
         p.add_argument("--oracle_beam_size", type=int, default=argparse.SUPPRESS)
 
         # Model knobs
+        p.add_argument("--model_name", "-model", type=str, default=argparse.SUPPRESS)
         p.add_argument(
             "--film_units",
             type=_parse_int_list,
@@ -1509,6 +949,7 @@ if __name__ == "__main__":
         # HDC
         p.add_argument("--hv_dim", "-hd", type=int, default=argparse.SUPPRESS)
         p.add_argument("--vsa", "-v", type=_parse_vsa, default=argparse.SUPPRESS)
+        p.add_argument("--dataset", "-ds", type=_parse_supported_dataset, default=argparse.SUPPRESS)
 
         # Optim
         p.add_argument("--lr", type=float, default=argparse.SUPPRESS)
@@ -1544,7 +985,7 @@ if __name__ == "__main__":
         return cfg
 
     log(f"Running {Path(__file__).resolve()}")
-    is_dev = os.getenv("LOCAL_HDC", False)
+    is_dev = os.getenv("LOCAL_HDC_", False)
 
     if is_dev:
         log("Running in local HDC (DEV) ...")
@@ -1553,12 +994,14 @@ if __name__ == "__main__":
             seed=42,
             epochs=1,
             batch_size=4,
+            model_name="GIN-F",
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
+            dataset=SupportedDataset.ZINC_SMILES_HRR_7744,
             lr=1e-4,
             weight_decay=0.0,
             num_workers=0,
-            prefetch_factor=1,
+            prefetch_factor=None,
             pin_memory=False,
             continue_from=None,
             resume_retrain_last_epoch=False,

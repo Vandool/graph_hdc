@@ -4,7 +4,7 @@ from typing import Literal
 
 import pytorch_lightning as pl
 
-ModelType = Literal["MLP", "BAH", "GIN", "NVP"]
+ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "NVP"]
 
 _MODEL_REGISTRY: dict[ModelType, Callable[..., pl.LightningModule]] = {}
 

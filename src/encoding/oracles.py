@@ -10,6 +10,7 @@ from torch.nn import Module
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn.aggr import SumAggregation
+from torch_geometric.nn.conv import GATv2Conv
 
 # === BEGIN NEW ===
 from torchmetrics import AUROC, AveragePrecision
@@ -67,7 +68,7 @@ class Oracle:
         pyg_list = [self._ensure_graph_fields(DataTransformer.nx_to_pyg(g)) for g in small_gs]
         g1_b = Batch.from_data_list(pyg_list).to(device)
 
-        if self.model_type == "GIN":
+        if "gin" in self.model_type.lower():
             # Prepare condition: [B, D]
             cond = final_h.detach().to(device=device, dtype=dtype)
             if cond.dim() == 1:
@@ -815,7 +816,7 @@ class ConditionalGraphAttention(MessagePassing):
         return node_embedding, self._attention_logits
 
 
-@register_model("GIN")
+@register_model("GIN-F")
 class ConditionalGIN(pl.LightningModule):
     """
     A conditional Graph Isomorphism Network (GIN) implemented using PyTorch Lightning.
@@ -1016,7 +1017,7 @@ class ConditionalGIN(pl.LightningModule):
         batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
         self.log(
             "loss",
-            loss.detach().as_subclass(torch.Tensor),
+            loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -1030,9 +1031,236 @@ class ConditionalGIN(pl.LightningModule):
         target = batch.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
         batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
-        self.log(
-            "val_loss", val_loss.detach().as_subclass(torch.Tensor), prog_bar=True, logger=True, batch_size=batch_size
+        self.log("val_loss", val_loss, prog_bar=True, logger=True, batch_size=batch_size, on_epoch=True)
+        return val_loss
+
+    def configure_optimizers(self):
+        """
+        Configure optimizers for the model.
+
+        This method is called by PyTorch Lightning to set up the optimizer
+        for training the model.
+
+        :returns: The configured optimizer
+        """
+        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+
+
+@register_model("GIN-C")
+class ConditionalGINConcat(pl.LightningModule):
+    """
+    A conditional Graph Isomorphism Network (GIN) implemented using PyTorch Lightning.
+
+    This model performs message passing on graph structured data conditioned on an external
+    vector. It uses the conditional graph attention mechanism to propagate information through
+    the graph. The model is designed for graph binary classification tasks, predicting a binary
+    label for the entire graph based on the learned node representations and the condition vector.
+
+    :param input_dim: Dimension of input node features
+    :param edge_dim: Dimension of edge features
+    :param condition_dim: Dimension of the condition vector
+    :param cond_units: List of hidden unit sizes for the condition embedding network
+    :param conv_units: List of hidden unit sizes for the graph convolution layers
+    :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
+    :param pred_units: List of hidden unit sizes for the graph prediction network
+    :param learning_rate: Learning rate for the optimizer
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        edge_dim: int,
+        condition_dim: int,
+        cond_units: list[int] = [256, 64],
+        conv_units: list[int] = [128, 128, 128],
+        pred_units: list[int] = [256, 64],
+        film_units: list[int] | None = None,
+        num_heads: int = 10,
+        learning_rate: float = 0.0001,
+        cfg: "Config" = None,
+    ):
+        """
+        Initialize the conditional GIN model.
+
+        :param input_dim: Dimension of input node features
+        :param edge_dim: Dimension of edge features
+        :param condition_dim: Dimension of the condition vector
+        :param cond_units: List of hidden unit sizes for the condition embedding network
+        :param conv_units: List of hidden unit sizes for the graph convolution layers
+        :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
+        :param pred_units: List of hidden unit sizes for the graph prediction network
+        :param learning_rate: Learning rate for the optimizer
+        """
+
+        super().__init__()
+
+        self.cfg = cfg
+        num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
+        den = float(self.cfg.p_per_parent) if self.cfg.p_per_parent else 1.0
+        ratio = num / max(1.0, den)
+        self.register_buffer("pos_weight", torch.tensor([ratio], dtype=torch.float32))
+
+        self.input_dim = input_dim
+        self.condition_dim = condition_dim
+        self.conv_units = conv_units
+        self.learning_rate = learning_rate
+
+        ## == LAYER DEFINITIONS ==
+
+        ## -- Condition Layers --
+
+        # These will be the layers (the mlp) which will be used to create an overall lower-dimensional
+        # embedding representation of the (very high-dimensional) condition vector. It is then this
+        # embedding that will be used in the individual FiLM conditioning layers.
+        self.cond_layers = nn.ModuleList()
+        prev_units = condition_dim
+        for units in cond_units:
+            self.cond_layers.append(
+                nn.Sequential(
+                    nn.Linear(prev_units, units),
+                    nn.BatchNorm1d(units),
+                    nn.ReLU(),
+                )
+            )
+            prev_units = units
+
+        self.cond_embedding_dim = prev_units
+
+        ## -- Graph Convolutional Layers --
+
+        # These will be the actual convolutional layers that will be used as the message passing
+        # operations on the given graph.
+        self.conv_layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
+        prev_units = input_dim
+        for units in conv_units:
+            lay = GATv2Conv(
+                in_channels=prev_units + self.cond_embedding_dim,
+                out_channels=units,
+                edge_dim=edge_dim,
+                heads=num_heads,
+                concat=False,
+                add_self_loops=True,
+                dropout=0.0,
+            )
+            self.conv_layers.append(lay)
+
+            self.bn_layers.append(nn.BatchNorm1d(units))
+
+            prev_units = units
+
+        # --- Binary Classifier ---
+
+        # Finally, after the message passing and so on, we firstly need to reduce the node
+        # representations of each individual graph object into a single graph vector and then
+        # perform a binary classification based on that graph vector.
+
+        # Aggregates the node representations into
+        self.lay_pool = SumAggregation()
+
+        # A multi layer perceptron made up of linear layers with batch norm and
+        # relu activation up until the very last layer transition, which outputs the
+        # single classification logit.
+        self.pred_units = pred_units
+        self.pred_layers = nn.ModuleList()
+        for units in pred_units:
+            lay = nn.Sequential(
+                nn.Linear(
+                    in_features=prev_units,
+                    out_features=units,
+                ),
+                nn.BatchNorm1d(units),
+                nn.ReLU(),
+            )
+            self.pred_layers.append(lay)
+            prev_units = units
+
+        # Final layer outputs single logit for binary classification
+        lay = nn.Linear(
+            in_features=prev_units,
+            out_features=1,
         )
+        self.pred_layers.append(lay)
+
+    def forward(self, data: Data):
+        """
+        Forward pass of the conditional GIN model.
+
+        This method processes the input graph data through the condition embedding network,
+        the graph convolutional layers, and finally the graph prediction network to predict
+        a binary classification label for the entire graph.
+
+        :param data: PyTorch Geometric Data object containing the graph
+
+        :returns: Dictionary containing the graph prediction logit
+        """
+
+        # -- Embedding the condition --
+        # 1) cond_graph: [num_graphs_in_batch, condition_dim]
+        cond_graph: torch.Tensor = data.cond  # e.g. shape [B, 7744]
+        for lay in self.cond_layers:
+            cond_graph = lay(cond_graph)  # -> [B, cond_emb_dim]
+
+        # 2) Broadcast to nodes via batch vector
+        cond_nodes = cond_graph[data.batch]  # -> [N_total_nodes, cond_emb_dim]
+
+        # -- Message passing
+        # 3) Use node-wise condition in conv layers
+        node_embedding = data.x
+        for lay_conv in self.conv_layers:
+            node_embedding = lay_conv(
+                x=torch.cat([node_embedding, cond_nodes], dim=-1),
+                edge_attr=data.edge_attr,
+                edge_index=data.edge_index,
+            )
+            node_embedding = F.leaky_relu(node_embedding)
+
+        graph_embedding = self.lay_pool(node_embedding, data.batch)
+
+        output = graph_embedding
+        for lay in self.pred_layers:
+            output = lay(output)
+
+        return {
+            "graph_prediction": output,
+        }
+
+    def training_step(self, batch: Data, batch_idx):
+        """
+        Perform a single training step.
+
+        This method is called by PyTorch Lightning during training. It computes the forward pass
+        and calculates the binary cross-entropy loss between the predicted graph probabilities
+        and the target graph labels.
+
+        :param batch: PyTorch Geometric Data object containing a batch of graphs
+        :param batch_idx: Index of the current batch
+
+        :returns: Loss value for the current training step
+        """
+        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
+        target = batch.y.float()  # [B]
+        loss = F.binary_cross_entropy_with_logits(
+            logits, target, pos_weight=self.pos_weight.to(logits.dtype), reduction="mean"
+        )
+        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
+        self.log(
+            "loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=batch_size,
+        )
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
+        target = batch.y.float()  # [B]
+        val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
+        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
+        self.log("val_loss", val_loss, prog_bar=True, logger=True, batch_size=batch_size, on_epoch=True)
         return val_loss
 
     def configure_optimizers(self):

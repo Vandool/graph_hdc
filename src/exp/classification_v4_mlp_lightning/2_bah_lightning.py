@@ -55,7 +55,7 @@ from src.encoding.decoder import greedy_oracle_decoder, is_induced_subgraph_by_f
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.encoding.the_types import VSAModel
-from src.exp.classification_v4_mlp_lightning.dataset_sampling_utils import (
+from src.utils.sampling import (
     balanced_indices_for_validation,
     stratified_per_parent_indices_with_type_mix,
 )
@@ -120,8 +120,8 @@ class Config:
     pos_weight: float | None = None  # BCE pos_weight
 
     # Oracle Evals
-    oracle_num_evals: int = 1
-    oracle_beam_size: int = 8
+    oracle_num_evals: int = 100
+    oracle_beam_size: int = 16
 
     # HDC / encoder
     hv_dim: int = 40 * 40  # 1600
@@ -1103,8 +1103,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
-        num_sanity_val_steps=100,
-        limit_val_batches=100,
+        num_sanity_val_steps=0,
     )
 
     # --- Train
