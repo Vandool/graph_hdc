@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import rdkit.Chem
 import torch
+from networkx import Graph
+from rdkit.Chem import Mol
 from torch_geometric.data import Data
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.graph_encoders import load_or_create_hypernet
@@ -33,7 +35,7 @@ class Generator:
         self.oracle.encoder = self.encoder
         self.vsa: VSAModel = ds_config.vsa
 
-    def generate(self, n_samples: int = 16) -> list[nx.Graph]:
+    def generate(self, n_samples: int = 16) -> list[list[Graph]]:
         node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
 
         node_terms_hd = node_terms.as_subclass(self.vsa.tensor_class)
@@ -49,7 +51,7 @@ class Generator:
                                   oracle_threshold=0)
             for i, full_ctr in enumerate(full_ctrs.values())]
 
-    def generate_mols(self, n_samples: int = 16, validate: bool = True) -> list[rdkit.Chem.Mol]:
+    def generate_mols(self, n_samples: int = 16, validate: bool = True) -> list[tuple[Mol, dict[int, int]]]:
         Gs: list[nx.Graph] = self.generate(n_samples=n_samples)
         return [DataTransformer.nx_to_mol(g, sanitize=validate, kekulize=validate) for g in Gs]
 

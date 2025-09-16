@@ -80,19 +80,16 @@ class Oracle:
             logits = out["graph_prediction"].squeeze(-1)  # [B]
             return torch.sigmoid(logits)
 
-        if self.model_type == "MLP":
-            assert self.encoder is not None, "encoder is required for MLP oracle"
-            h1 = self.encoder.forward(g1_b)["graph_embedding"].to(device=device, dtype=dtype)  # [B, D]
-            h2 = final_h.detach().to(device=device, dtype=dtype)
-            if h2.dim() == 1:
-                h2 = h2.unsqueeze(0)
-            h2 = h2.expand(h1.size(0), -1)  # [B, D]
-            logits = self.model(h1, h2)  # [B] or [B,1]
-            logits = logits.squeeze(-1)
-            return torch.sigmoid(logits)
-
-        msg = f"Unknown model_type: {self.model_type!r}"
-        raise ValueError(msg)
+        # Otherwise MLP, BAH
+        assert self.encoder is not None, "encoder is required for MLP oracle"
+        h1 = self.encoder.forward(g1_b)["graph_embedding"].to(device=device, dtype=dtype)  # [B, D]
+        h2 = final_h.detach().to(device=device, dtype=dtype)
+        if h2.dim() == 1:
+            h2 = h2.unsqueeze(0)
+        h2 = h2.expand(h1.size(0), -1)  # [B, D]
+        logits = self.model(h1, h2)  # [B] or [B,1]
+        logits = logits.squeeze(-1)
+        return torch.sigmoid(logits)
 
 
 # ---------- tiny logger ----------

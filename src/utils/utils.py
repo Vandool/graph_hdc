@@ -48,9 +48,9 @@ FORMAL_CHARGE_IDX_TO_VAL: dict[int, int] = {0: 0, 1: +1, 2: -1}
 
 
 # ========= Path utils =========
-def find_files(start_dir: str, prefixes: tuple[str, ...], skip_substring: str):
+def find_files(start_dir: str, prefixes: tuple[str, ...], skip_substring: str, desired_ending: str = ".ckpt"):
     for p in Path(start_dir).rglob("*"):
-        if p.is_file() and p.name.startswith(prefixes) and skip_substring not in str(p):
+        if p.is_file() and p.name.startswith(prefixes) and skip_substring not in str(p) and p.name.endswith(desired_ending):
             yield p
 
 

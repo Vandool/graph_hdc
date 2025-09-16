@@ -21,3 +21,8 @@ def resolve_model(name: ModelType, **kwargs) -> pl.LightningModule:
     if name not in _MODEL_REGISTRY:
         raise KeyError(f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}")
     return _MODEL_REGISTRY[name](**kwargs)
+
+def retrieve_model(name: ModelType) -> pl.LightningModule:
+    if name not in _MODEL_REGISTRY:
+        raise KeyError(f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}")
+    return _MODEL_REGISTRY[name]
