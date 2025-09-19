@@ -37,17 +37,17 @@ fi
 # ---------- Already trained---
 #baseline|8|512|1e-3|1|0.0
 #baseline_lr5e4|8|512|5e-4|1|0.0
+#baseline_wd|8|512|1e-3|1|1e-4
 #no_actnorm|8|512|1e-3|0|0.0
 
 # ---------- Presets ----------
 # name|num_flows|num_hidden|lr|use_act_norm|wd
 PRESETS="$(cat <<'EOF'
-baseline_wd|8|512|1e-3|1|1e-4
-small_actnorm|4|256|1e-3|1|0.0
-deeper|12|384|1e-3|1|0.0
-wider|6|1024|1e-3|1|0.0
-large|12|768|1e-3|1|0.0
-larger|12|1024|5e-4|1|0.0
+small_actnorm|4|256|1e-3|1|1e-4
+deeper|12|384|1e-3|1|1e-4
+wider|6|1024|1e-3|1|1e-4
+large|12|768|1e-3|1|1e-4
+larger|12|1024|5e-4|1|1e-4
 EOF
 )"
 
