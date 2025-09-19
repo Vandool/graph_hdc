@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from random import random
-from typing import Any, Literal, Union
+from typing import Any, Iterator, Literal, Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -49,10 +49,29 @@ FORMAL_CHARGE_IDX_TO_VAL: dict[int, int] = {0: 0, 1: +1, 2: -1}
 
 
 # ========= Path utils =========
-def find_files(start_dir: str, prefixes: tuple[str, ...], skip_substring: str, desired_ending: str = ".ckpt"):
+def find_files(
+    start_dir: str,
+    prefixes: tuple[str, ...] = (),
+    skip_substring: str | None = None,
+    desired_ending: str | None = ".ckpt",
+) -> Iterator[Path]:
+    """Yield files from `start_dir` matching given conditions.
+
+    :param start_dir: Root directory to search.
+    :param prefixes: Filenames must start with one of these prefixes (empty = no filter).
+    :param skip_substring: Exclude files whose path contains this substring (None = no filter).
+    :param desired_ending: Filenames must end with this suffix (None = no filter).
+    """
     for p in Path(start_dir).rglob("*"):
-        if p.is_file() and p.name.startswith(prefixes) and skip_substring not in str(p) and p.name.endswith(desired_ending):
-            yield p
+        if not p.is_file():
+            continue
+        if prefixes and not p.name.startswith(prefixes):
+            continue
+        if skip_substring and skip_substring in str(p):
+            continue
+        if desired_ending and not p.name.endswith(desired_ending):
+            continue
+        yield p
 
 
 # ========= Argparse =========

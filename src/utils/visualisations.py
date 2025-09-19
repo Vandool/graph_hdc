@@ -4,6 +4,7 @@ from typing import Literal
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import contextlib
 
 # ──────────────────────────────────────────────────────────────────────────────
 ATOM_TYPES = ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"]
@@ -189,31 +190,23 @@ def draw_nx_with_atom_colorings(
         try:
             # Try as iterable of artists
             for c in obj:
-                try:
+                with contextlib.suppress(Exception):
                     c.set_zorder(z)
-                except Exception:
-                    pass
         except TypeError:
             # Single collection
-            try:
+            with contextlib.suppress(Exception):
                 obj.set_zorder(z)
-            except Exception:
-                pass
 
     def _set_capstyle(obj, style: str) -> None:
         if obj is None:
             return
         try:
             for c in obj:
-                try:
+                with contextlib.suppress(Exception):
                     c.set_capstyle(style)
-                except Exception:
-                    pass
         except TypeError:
-            try:
+            with contextlib.suppress(Exception):
                 obj.set_capstyle(style)
-            except Exception:
-                pass
 
     created_fig = False
     if ax is None:

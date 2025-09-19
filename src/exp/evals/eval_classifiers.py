@@ -10,7 +10,7 @@ from torchhd import HRRTensor
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import SupportedDataset
-from src.encoding.decoder import greedy_oracle_decoder_faster
+from src.encoding.decoder import greedy_oracle_decoder_faster, is_induced_subgraph_by_features
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.utils import registery
@@ -56,9 +56,7 @@ Results
 def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
     """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
     if G_small.number_of_nodes() == G_big.number_of_nodes() and G_small.number_of_edges() == G_big.number_of_edges():
-        nm = lambda a, b: a["feat"] == b["feat"]
-        GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
-        return GM.subgraph_is_isomorphic()
+        return is_induced_subgraph_by_features(G_small, G_big)
     return False
 
 
@@ -67,7 +65,7 @@ end = 100
 batch_size = end - start
 seed = 42
 seed_everything(seed)
-device = torch.device("cuda")
+device = torch.device("cpu")
 use_best_threshold = True
 
 results: dict[str, str] = {}
@@ -89,14 +87,16 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
         "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
         "use_pair_feasibility": True,
-        "expand_on_n_anchors": 8,
+        "expand_on_n_anchors": 4,
     }
 
     ## Determine model type
     model_type: registery.ModelType = "MLP"
     if "bah" in str(ckpt_path):
+        continue
         model_type = "BAH"
     elif "gin-c" in str(ckpt_path):
+        continue
         model_type = "GIN-C"
     elif "gin-f" in str(ckpt_path):  # Case gin-f
         model_type = "GIN-F"
@@ -104,10 +104,10 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     split = "valid"
     ## Determine Dataset
     if "zinc" in str(ckpt_path):
-        continue
         ds = SupportedDataset.ZINC_SMILES_HRR_7744
         dataset = ZincSmiles(split=split)
     else:  # Case qm9
+        continue
         ds = SupportedDataset.QM9_SMILES_HRR_1600
         dataset = QM9Smiles(split=split)
 
@@ -189,6 +189,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
 
                 sub_g_ys.append(int(is_final))
             is_final_graph_ = int(sum(sub_g_ys) >= 1)
+            print(is_final_graph_)
             y.append(is_final_graph_)
             if is_final_graph_:
                 correct_decoded.append(j)

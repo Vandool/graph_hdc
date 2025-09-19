@@ -284,6 +284,7 @@ def powerset(iterable):
     s = list(iterable)
     return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
 
+
 def wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
     """WL hash that respects `feat`."""
     H = G.copy()
@@ -292,14 +293,17 @@ def wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
         H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
     return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
 
+
 def hash(G: nx.Graph) -> tuple[str, int, int]:
     return wl_hash(G), G.number_of_nodes(), G.number_of_edges()
+
 
 def order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
     """Unique feature tuples, sorted by final degree (asc), then lexicographically."""
     uniq = list(ctr.keys())
     uniq.sort(key=lambda t: (t[1] + 1, t))
     return uniq
+
 
 def greedy_oracle_decoder(
     node_multiset: Counter,
@@ -565,11 +569,16 @@ def greedy_oracle_decoder_faster(
     oracle_threshold: float = 0.5,
     strict: bool = True,
     use_pair_feasibility: bool = False,
+    activate_guard: bool = True,
 ) -> list[nx.Graph]:
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
     print(f"Decoding a graph with {total_nodes} nodes and {total_edges} edges.")
+    ## Guard the decoder
+    if (activate_guard and total_nodes > 50) or total_edges > 60:
+        print(f"Too many nodes ({total_nodes}) to decode.")
+        return [nx.Graph()]
 
     # -- local helpers --
     def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
