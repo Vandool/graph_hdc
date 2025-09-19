@@ -1,3 +1,5 @@
+import time
+
 import networkx as nx
 import pandas as pd
 import torch
@@ -133,6 +135,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     y = []
     correct_decoded = []
     print(f"Starting oracle decoding... for {ckpt_path}\n\tDataset: {ds.value}")
+    start_t = time.perf_counter()
     for i, batch in enumerate(dataloader):
         # Encode the whole graph in one HV
         encoded_data = hypernet.forward(batch)
@@ -199,6 +202,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
         "path": "/".join(ckpt_path.parts[-4:]),
         "model_type": model_type,
         "dataset": ds.value,
+        "time_per_sample": (time.perf_counter() - start_t) / batch_size,
         **oracle_setting,
         "oracle_acc": acc,
         **best.to_dict(),
