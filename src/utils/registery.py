@@ -1,8 +1,8 @@
 # ------------------------- registry -------------------------
-from collections.abc import Callable
-from typing import Literal
+from typing import Callable, Literal
 
 import pytorch_lightning as pl
+from pytorch_lightning import LightningModule
 
 ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "NVP"]
 
@@ -19,10 +19,12 @@ def register_model(name: ModelType):
 
 def resolve_model(name: ModelType, **kwargs) -> pl.LightningModule:
     if name not in _MODEL_REGISTRY:
-        raise KeyError(f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}")
+        msg = f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}"
+        raise KeyError(msg)
     return _MODEL_REGISTRY[name](**kwargs)
 
-def retrieve_model(name: ModelType) -> pl.LightningModule:
+def retrieve_model(name: ModelType) -> Callable[[...], LightningModule]:
     if name not in _MODEL_REGISTRY:
-        raise KeyError(f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}")
+        msg = f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}"
+        raise KeyError(msg)
     return _MODEL_REGISTRY[name]

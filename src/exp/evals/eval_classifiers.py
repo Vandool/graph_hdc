@@ -1,4 +1,5 @@
 import networkx as nx
+import pandas as pd
 import torch
 from pytorch_lightning import seed_everything
 from torch_geometric.loader import DataLoader
@@ -11,7 +12,8 @@ from src.encoding.decoder import greedy_oracle_decoder_faster
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.utils import registery
-from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, find_files
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransformer, find_files
+
 """
 Results
 {'beam_size': 8, 'oracle_threshold': 0.5, 'strict': True, 'use_pair_feasibility': True, 'expand_on_n_anchors': 4}
@@ -47,6 +49,7 @@ Results
 /home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_deep_qm9/models/epoch02-val0.3406.ckpt: Accuracy 0.3 on 100 of validation set.
 """
 
+
 # Real Oracle
 def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
     """NetworkX VF2: is `G_small` an induced, label-preserving subgraph of `G_big`?"""
@@ -58,24 +61,34 @@ def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
 
 
 start = 0
-end = 100
+end = 1
 batch_size = end - start
 seed = 42
 seed_everything(seed)
 device = torch.device("cuda")
-
-oracle_setting = {
-    "beam_size": 32,
-    "oracle_threshold": 0.5,
-    "strict": False,
-    "use_pair_feasibility": True,
-    "expand_on_n_anchors": 16,
-}
+use_best_threshold = False
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
 for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substring="nvp"):
     print(f"File Name: {ckpt_path}")
+
+    # Read the metrics from training
+    evals_dir = ckpt_path.parent.parent / "evaluations"
+    epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
+    print(epoch_metrics.head(5))
+
+    val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
+    best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()].add_suffix("_best")
+    last = epoch_metrics.iloc[-1].add_suffix("_last")
+
+    oracle_setting = {
+        "beam_size": 4,
+        "oracle_threshold": best["val_best_thr"] if use_best_threshold else 0.5,
+        "strict": False,
+        "use_pair_feasibility": True,
+        "expand_on_n_anchors": 2,
+    }
 
     ## Determine model type
     model_type: registery.ModelType = "MLP"
@@ -119,8 +132,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
 
     y = []
     correct_decoded = []
-    # print(f"Starting oracle decoding... for {ckpt_path}")
-
+    print(f"Starting oracle decoding... for {ckpt_path}\n\tDataset: {ds.value}")
     for i, batch in enumerate(dataloader):
         # Encode the whole graph in one HV
         encoded_data = hypernet.forward(batch)
@@ -181,6 +193,36 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     acc = sum(y) / len(y)
     results[ckpt_path.as_posix()] = f"Accuracy {acc} on {batch_size} of validation set."
     # print(f"Accuracy: {acc}")
+
+    ### Save metrics
+    run_metrics = {
+        "path": "/".join(ckpt_path.parts[-4:]),
+        "model_type": model_type,
+        "dataset": ds.value,
+        **oracle_setting,
+        "oracle_acc": acc,
+        **best.to_dict(),
+        **last.to_dict(),
+    }
+
+    # --- new code starts here ---
+    # --- save metrics to disk ---
+    asset_dir = GLOBAL_ARTEFACTS_PATH / "classification"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = asset_dir / "oracle_acc.parquet"
+    csv_path = asset_dir / "oracle_acc.csv"
+
+    metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
+
+    # append current row
+    new_row = pd.DataFrame([run_metrics])
+    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
+
+    # write back out
+    metrics_df.to_parquet(parquet_path, index=False)
+    metrics_df.to_csv(csv_path, index=False)
+
 
 print(oracle_setting)
 for k, v in results.items():
