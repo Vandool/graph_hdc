@@ -1108,6 +1108,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
 
     # --- Train
     resume_path: Path | None = str(cfg.continue_from) if cfg.continue_from else None
+    if resume_path:
+        log(f"Resuming from {resume_path!s}")
     trainer.fit(model, datamodule=dm, ckpt_path=resume_path)
     log("Finished training.")
 
