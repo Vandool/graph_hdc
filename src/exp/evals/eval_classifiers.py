@@ -63,12 +63,12 @@ def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
 
 
 start = 0
-end = 1
+end = 100
 batch_size = end - start
 seed = 42
 seed_everything(seed)
 device = torch.device("cuda")
-use_best_threshold = False
+use_best_threshold = True
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
@@ -85,11 +85,11 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     last = epoch_metrics.iloc[-1].add_suffix("_last")
 
     oracle_setting = {
-        "beam_size": 4,
-        "oracle_threshold": best["val_best_thr"] if use_best_threshold else 0.5,
+        "beam_size": 32,
+        "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
         "use_pair_feasibility": True,
-        "expand_on_n_anchors": 2,
+        "expand_on_n_anchors": 8,
     }
 
     ## Determine model type
@@ -104,6 +104,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     split = "valid"
     ## Determine Dataset
     if "zinc" in str(ckpt_path):
+        continue
         ds = SupportedDataset.ZINC_SMILES_HRR_7744
         dataset = ZincSmiles(split=split)
     else:  # Case qm9
@@ -202,6 +203,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
         "path": "/".join(ckpt_path.parts[-4:]),
         "model_type": model_type,
         "dataset": ds.value,
+        "num_eval_samples": batch_size,
         "time_per_sample": (time.perf_counter() - start_t) / batch_size,
         **oracle_setting,
         "oracle_acc": acc,

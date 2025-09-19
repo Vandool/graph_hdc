@@ -1065,9 +1065,9 @@ class ConditionalGINConcat(pl.LightningModule):
 
     def __init__(
         self,
-        input_dim: int,
-        edge_dim: int,
-        condition_dim: int,
+        input_dim: int = 4,
+        edge_dim: int = 1,
+        condition_dim: int = 1600,
         cond_units: list[int] = [256, 64],
         conv_units: list[int] = [128, 128, 128],
         pred_units: list[int] = [256, 64],
@@ -1090,6 +1090,17 @@ class ConditionalGINConcat(pl.LightningModule):
         """
 
         super().__init__()
+
+        self.save_hyperparameters(
+            "input_dim",
+            "edge_dim",
+            "condition_dim",
+            "cond_units",
+            "conv_units",
+            "film_units",
+            "pred_units",
+            "learning_rate",
+        )
 
         self.cfg = cfg
         num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
@@ -1238,7 +1249,7 @@ class ConditionalGINConcat(pl.LightningModule):
         logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
         target = batch.y.float()  # [B]
         loss = F.binary_cross_entropy_with_logits(
-            logits, target, pos_weight=self.pos_weight.to(logits.dtype), reduction="mean"
+            logits, target, reduction="mean"
         )
         batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
         self.log(
