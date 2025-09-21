@@ -31,6 +31,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
+from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
 
 
@@ -97,10 +98,16 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         src += [i, j]
         dst += [j, i]
 
+    eval_smiles = eval_key_from_data(data=Data(
+        x=torch.tensor(x, dtype=torch.float32),
+        edge_index=torch.tensor([src, dst], dtype=torch.long),
+    ), dataset="zinc")
+
     return Data(
         x=torch.tensor(x, dtype=torch.float32),
         edge_index=torch.tensor([src, dst], dtype=torch.long),
         smiles=Chem.MolToSmiles(mol, canonical=True),
+        eval_smiles=eval_smiles,
     )
 
 
@@ -240,7 +247,7 @@ def precompute_encodings(
 
 
 if __name__ == '__main__':
-    # train_ds = ZincSmiles(split="train")
-    # valid_ds = ZincSmiles(split="valid")
-    # test_ds = ZincSmiles(split="test")
+    train_ds = ZincSmiles(split="train")
+    valid_ds = ZincSmiles(split="valid")
+    test_ds = ZincSmiles(split="test")
     simple_ds = ZincSmiles(split="simple")

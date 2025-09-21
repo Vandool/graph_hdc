@@ -43,7 +43,7 @@ class Oracle:
         encoder: AbstractGraphEncoder | None = None,
     ):
         self.model = model.eval()
-        self.encoder = encoder
+        self.encoder = encoder.eval() if encoder is not None else None
         self.model_type = model_type
 
     @staticmethod

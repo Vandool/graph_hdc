@@ -1017,8 +1017,14 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     )
     enable_ampere_tensor_cores()
     # Training
+    resume_path: Path | None = str(cfg.continue_from) if cfg.continue_from else None
+    last_epoch = 0
+    if resume_path:
+        log(f"Resuming from: {resume_path!s}")
+        last_epoch = torch.load(resume_path)["epoch"]
+        log(f"Checkpoint was at epoch {last_epoch}")
     trainer = Trainer(
-        max_epochs=cfg.epochs,
+        max_epochs=cfg.epochs + last_epoch + 1,
         logger=[csv_logger],
         callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping, val_metrics_cb],
         default_root_dir=str(exp_dir),

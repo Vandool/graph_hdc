@@ -37,7 +37,7 @@ EXP_NAME="${EXP_NAME:-$JOB_NAME}"
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 
 shopt -s nocasematch
-IS_DEV="${IS_DEV:-True}"
+IS_DEV="${IS_DEV:-False}"
 if [[ "$IS_DEV" =~ ^(1|true|yes|on)$ ]]; then
   EXP_NAME="DEBUG_${EXP_NAME}"
   JOB_NAME="DEBUG_${JOB_NAME}"

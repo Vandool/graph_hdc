@@ -2,16 +2,13 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import torch
-import torchhd
 from networkx import Graph
-from rdkit.Chem import Mol
-from torch_geometric.data import Data, Batch
-import torch.nn.functional as F
+from torch_geometric.data import Batch
+
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.decoder import greedy_oracle_decoder_faster
 from src.encoding.graph_encoders import load_or_create_hypernet
@@ -27,65 +24,138 @@ sys.modules["__main__"].FlowConfig = FlowConfig
 
 
 class Generator:
-    def __init__(self, gen_model: AbstractNFModel, oracle: Oracle, ds_config, oracle_settings: dict):
-        device = torch.device("cpu")
+    def __init__(self, gen_model: AbstractNFModel, oracle: Oracle, ds_config, decoder_settings: dict, device=None):
+        device = torch.device("cpu") if device is None else device
         print(f"Using device: {device}")
         self.encoder = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
         self.gen_model: torch.nn.Module = gen_model
         self.oracle = oracle
-        self.oracle.encoder = self.encoder
+        self.oracle.encoder = self.encoder.eval()
         self.vsa: VSAModel = ds_config.vsa
-        self.oracle_settings = oracle_settings
+        self.decoder_settings = decoder_settings
 
-    def generate(self, n_samples: int = 16, most_similar: bool = False) -> list[Union[list[Graph], Graph]]:
+    def generate_all(
+        self,
+        n_samples: int = 16,
+        *,
+        only_final_graphs: bool = True,
+    ) -> tuple[list[list[Graph]], list[bool]]:
+        """
+        Generate candidates for each sample and return *all* graphs.
+
+        :param n_samples: Number of independent samples to draw.
+        :param only_final_graphs: If ``True``, the decoder enforces final/valid outputs.
+        :returns: A pair ``(graphs_per_sample, are_final_flags)`` where
+
+                  - ``graphs_per_sample`` is a list of lists of candidate graphs
+                    (one list per sample, may be empty).
+                  - ``are_final_flags`` is a boolean list (len == ``n_samples``)
+                    indicating whether *that* sample's candidate set was deemed final.
+
+        Notes
+        -----
+        The previous API returned ``list[tuple[list[Graph], bool]]``. This method
+        separates data from flags to avoid shadowing/tuple unpacking pitfalls.
+        """
         node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
+        node_terms_hd = node_terms.as_subclass(self.vsa.tensor_class)
+        graph_terms_hd = graph_terms.as_subclass(self.vsa.tensor_class)
 
+        full_ctrs = self.encoder.decode_order_zero_counter(node_terms_hd)  # dict[int, Counter]
+
+        graphs_per_sample: list[list[Graph]] = []
+        are_final_flags: list[bool] = []
+
+        for i, full_ctr in enumerate(full_ctrs.values()):
+            # decoder returns (candidates, is_final) for a single sample
+            candidates, is_final = greedy_oracle_decoder_faster(
+                node_multiset=full_ctr,
+                oracle=self.oracle,
+                full_g_h=graph_terms_hd[i],
+                strict=only_final_graphs,
+                **self.decoder_settings,
+            )
+            graphs_per_sample.append(candidates)
+            are_final_flags.append(bool(is_final))
+
+        return graphs_per_sample, are_final_flags
+
+    def generate_most_similar(
+        self,
+        n_samples: int = 16,
+        *,
+        only_final_graphs: bool = True,
+    ) -> tuple[list[Graph], list[bool], list[list[float]]]:
+        node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
         node_terms_hd = node_terms.as_subclass(self.vsa.tensor_class)
         graph_terms_hd = graph_terms.as_subclass(self.vsa.tensor_class)
 
         full_ctrs: dict[int, Counter[tuple[int, ...]]] = self.encoder.decode_order_zero_counter(node_terms_hd)
 
-        # for i, c in full_ctrs.items():
-        #     print(f"{i}: {c.total()}")
+        best_graphs: list[Graph] = []
+        are_final_flags: list[bool] = []
+        all_similarities: list[list[float]] = []
 
-        list_of_samples = [
-            greedy_oracle_decoder_faster(
-                node_multiset=full_ctr, oracle=self.oracle, full_g_h=graph_terms_hd[i], **self.oracle_settings
+        def _row_norm(x: torch.Tensor, dim: int, eps: float = 1e-8) -> torch.Tensor:
+            return x / (x.norm(dim=dim, keepdim=True) + eps)
+
+        # --- important: iterate by requested index, not dict.values() ---
+        for i in range(n_samples):
+            full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
+            if full_ctr is None or sum(full_ctr.values()) == 0:
+                print("[WARNING] full ctr is None or empty.")
+                # nothing to decode for this sample → return empty
+                best_graphs.append(nx.Graph())
+                are_final_flags.append(False)
+                all_similarities.append([])
+                continue
+
+            candidates, is_final = greedy_oracle_decoder_faster(
+                node_multiset=full_ctr,
+                oracle=self.oracle,
+                full_g_h=graph_terms_hd[i],
+                strict=only_final_graphs,
+                **self.decoder_settings,
             )
-            for i, full_ctr in enumerate(full_ctrs.values())
-        ]
+            are_final_flags.append(bool(is_final))
 
-        if not most_similar:
-            return list_of_samples
+            if not candidates:
+                best_graphs.append(nx.Graph())
+                all_similarities.append([])
+                continue
 
-        most_similar_samples = []
-        for i, samples in enumerate(list_of_samples):
-            if len(samples) == 0:
-                most_similar_samples.append(nx.Graph()) # empty graph
-            elif len(samples) == 1:
-                most_similar_samples.append(samples[0])
-            else:
-                data_list = [DataTransformer.nx_to_pyg(g) for g in samples]
+            nonempty_idx = [k for k, g in enumerate(candidates) if g.number_of_nodes() > 0]
+            if not nonempty_idx:
+                best_graphs.append(nx.Graph())
+                all_similarities.append([])
+                continue
 
+            data_list = [DataTransformer.nx_to_pyg(candidates[k]) for k in nonempty_idx]
+
+            try:
                 batch = Batch.from_data_list(data_list)
-                g_terms = self.encoder.forward(batch)["graph_embedding"]
-                q = graph_terms_hd[i].to(g_terms.device, g_terms.dtype)
+                enc_out = self.encoder.forward(batch)
+                g_terms = enc_out["graph_embedding"]  # [B, D]
+            except Exception:
+                best_graphs.append(nx.Graph())
+                all_similarities.append([])
+                continue
 
-                sims = g_terms @ q  # shape [B] (dot product)
-                best_idx = sims.argmax().item()
-                most_similar_samples.append(samples[best_idx])
+            q = graph_terms_hd[i].to(g_terms.device, g_terms.dtype)  # [D]
+            g_norm = _row_norm(g_terms, dim=1)  # [B, D]
+            q_norm = q / (q.norm() + 1e-8)  # [D]
+            sims_t = g_norm @ q_norm  # [B]
+            sims = sims_t.tolist()
 
+            full_sims = [-float("inf")] * len(candidates)
+            for pos, k in enumerate(nonempty_idx):
+                full_sims[k] = sims[pos]
 
-        return most_similar_samples
+            all_similarities.append(full_sims)
+            best_idx = int(max(range(len(full_sims)), key=lambda j: full_sims[j]))
+            best_graphs.append(candidates[best_idx])
 
-
-    def generate_mols(self, n_samples: int = 16, validate: bool = True) -> list[tuple[Mol, dict[int, int]]]:
-        Gs: list[nx.Graph] = self.generate(n_samples=n_samples)
-        return [DataTransformer.nx_to_mol(g, sanitize=validate, kekulize=validate) for g in Gs]
-
-    def generate_data(self, n_samples: int = 16) -> list[Data]:
-        Gs: list[nx.Graph] = self.generate(n_samples=n_samples)
-        return [DataTransformer.nx_to_pyg(g) for g in Gs]
+        return best_graphs, are_final_flags, all_similarities
 
 
 def read_json(path: Path) -> dict:

@@ -21,7 +21,7 @@ from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.utils import utils
-from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTIFACTS_PATH, DataTransformer, pick_device
+from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTEFACTS_PATH, DataTransformer, pick_device
 
 
 @pytest.mark.parametrize(
@@ -263,7 +263,7 @@ def test_node_terms_decoding_smiles(seed, ds, hv_dim, vsa, depth, normalise_grap
 
     # --- new code starts here ---
     # --- save metrics to disk ---
-    asset_dir = TEST_ARTIFACTS_PATH / "nodes_and_edges" / "node_terms_qm9"
+    asset_dir = TEST_ARTEFACTS_PATH / "nodes_and_edges" / "node_terms_qm9"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "res_normalizing.parquet"
@@ -479,7 +479,7 @@ def test_edge_terms_decoding_smiles(seed, ds, hv_dim, vsa, normalise_graph_embed
 
 
     # --- save metrics to disk ---
-    asset_dir = TEST_ARTIFACTS_PATH / "nodes_and_edges" / "edge_terms_qm9"
+    asset_dir = TEST_ARTEFACTS_PATH / "nodes_and_edges" / "edge_terms_qm9"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "res_normalizing.parquet"
