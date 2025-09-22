@@ -6,6 +6,6 @@ BATCH_SIZE=256 \
 LR=3e-4 \
 P_PER_PARENT=20 \
 N_PER_PARENT=20 \
-EPOCHS=20 \
+EPOCHS=30 \
 IS_DEV=0 \
 ./_1_gin_submit.sh

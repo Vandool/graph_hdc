@@ -125,7 +125,7 @@ class Config:
     num_workers: int = 4
     prefetch_factor: int | None = 1
     pin_memory: bool = False
-    persistent_workers: bool | None = None
+    persistent_workers: bool | None = True
 
     # Checkpointing
     continue_from: Path | None = None
@@ -290,7 +290,7 @@ class PairsDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         log("Loading pair datasets …")
         if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
-            self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)[:10]
+            self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)
             self.valid_full = QM9Pairs(split="valid", base_dataset=QM9Smiles(split="valid"), dev=self.is_dev)
         elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
             self.train_full = ZincPairsV3(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)

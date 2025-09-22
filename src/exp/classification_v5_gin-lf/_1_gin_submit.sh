@@ -112,7 +112,7 @@ PY_ARGS=(
   --num_workers "$NUM_WORKERS"
   --prefetch_factor "$PREFETCH_FACTOR"
   --pin_memory "$PIN_MEMORY"
-
+  --persistent_workers "$PERSISTENT_WORKERS"
 
   --resume_retrain_last_epoch "$RESUME_RETRAIN_LAST_EPOCH"
   --p_per_parent "$P_PER_PARENT"
