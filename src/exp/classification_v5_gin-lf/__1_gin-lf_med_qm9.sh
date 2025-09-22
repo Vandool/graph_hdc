@@ -1,4 +1,6 @@
-JOB_NAME=gin-lf_baseline_qm9 \
+#!/usr/bin/env bash
+
+JOB_NAME=gin-lf_med_qm9 \
 MODEL_NAME=GIN-LF \
 HV_DIM=1600 \
 DATASET=QM9_SMILES_HRR_1600 \
@@ -8,4 +10,8 @@ P_PER_PARENT=25 \
 N_PER_PARENT=25 \
 EPOCHS=30 \
 IS_DEV=0 \
+COND_UNITS=512,256,128 \
+CONV_UNITS=128,128,128,128 \
+PRED_HEAD_UNITS=512,256,64,1 \
+WEIGHT_DECAY=1e-4 \
 ./_1_gin_submit.sh
