@@ -43,7 +43,7 @@ def get_model_type(path: Path | str) -> registery.ModelType:
 seed = 42
 seed_everything(seed)
 device = torch.device("cpu")
-draw = True
+draw = False
 
 T_canon_zinc = None
 T_canon_qm9 = None
@@ -52,7 +52,7 @@ n_samples = 100
 strict_decoder = False
 beam_size = 48
 expand_on_n_anchors = 12
-generation = "generation7"
+generation = "generation8"
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
@@ -99,21 +99,22 @@ for gen_ckpt_path in gen_paths:
         base_dataset = "zinc"
         dataset = ZincSmiles(split=split)
         if T_canon_zinc is None:
-            T_canon_zinc = {d.eval_smiles for d in dataset}
+            T_canon_zinc = {d.eval_smiles for d in dataset}.union({d.smiles for d in dataset})
         T_canon = T_canon_zinc
     else:  # Case qm9
         ds = SupportedDataset.QM9_SMILES_HRR_1600
         base_dataset = "qm9"
         dataset = QM9Smiles(split=split)
         if T_canon_qm9 is None:
-            T_canon_qm9 = {d.eval_smiles for d in dataset}
+            T_canon_qm9 = {d.eval_smiles for d in dataset}.union({d.smiles for d in dataset})
         T_canon = T_canon_qm9
 
     # Best classifier checkpoint for
     if base_dataset == "zinc":
         ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc/models/epoch06-val0.2718.ckpt"
     else:
-        ckpt_path = GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt"
+        # ckpt_path = GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt"
+        ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt"
         # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_med_qm9/models/epoch19-val0.2648.ckpt"
     print(f"Classifier's checkpoint: {ckpt_path}")
 

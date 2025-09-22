@@ -335,7 +335,7 @@ class PairsDataModule(pl.LightningDataModule):
         return DataLoader(  # this is torch_geometric.loader.DataLoader
             train_ds,
             batch_size=self.cfg.batch_size,
-            # sampler=sampler,
+            sampler=sampler,
             shuffle=False,
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
@@ -850,6 +850,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         deterministic=False,
         precision=pick_precision(),
         num_sanity_val_steps=0,
+        limit_val_batches=0.75
     )
 
     # --- Train
