@@ -4,7 +4,7 @@ import networkx as nx
 import torch
 from IPython.display import display
 from rdkit import Chem
-from rdkit.Chem import SanitizeFlags
+from rdkit.Chem import QED, SanitizeFlags
 from rdkit.Chem.Draw import rdMolDraw2D
 from torch_geometric.data import Data
 
@@ -158,3 +158,10 @@ def eval_key_from_nx(nx_g: nx.Graph, dataset: BaseDataset) -> str:
     mol = reconstruct_for_eval(nx_g, dataset=dataset)  # infer_bonds=True, sanitize=True, kekulize=False
     assert is_valid_molecule(mol), f"mol is invalid: {mol}"
     return canonical_key(mol)  # RemoveHs + canonical, isomeric, aromatic
+
+
+def compute_qed(mol: Chem.Mol) -> float:
+    try:
+        return float(QED.qed(mol))
+    except Exception:
+        return float("nan")

@@ -538,7 +538,7 @@ class FilmConditionalLinear(nn.Module):
         # of the actual linear layer.
         # This can even be a multi-layer perceptron by itself, depending on how difficult the
         # condition function is to learn.
-        self.film_layers = nn.Modulelist()
+        self.film_layers = nn.ModuleList()
         prev_features = condition_features
         for num_features in film_units:
             if self.film_use_norm:
@@ -837,7 +837,7 @@ class ConditionalGIN(pl.LightningModule):
         self,
         input_dim: int,
         edge_dim: int,
-        condition_dim: int,
+        condition_dim: int = 1600,
         cond_units: list[int] = [256, 128],
         conv_units: list[int] = [64, 64, 64],
         film_units: list[int] = [128],
@@ -889,7 +889,7 @@ class ConditionalGIN(pl.LightningModule):
         # These will be the layers (the mlp) which will be used to create an overall lower-dimensional
         # embedding representation of the (very high-dimensional) condition vector. It is then this
         # embedding that will be used in the individual FiLM conditioning layers.
-        self.cond_layers = nn.Modulelist()
+        self.cond_layers = nn.ModuleList()
         prev_units = condition_dim
         for units in cond_units:
             self.cond_layers.append(
@@ -903,7 +903,7 @@ class ConditionalGIN(pl.LightningModule):
 
         # These will be the actual convolutional layers that will be used as the message passing
         # operations on the given graph.
-        self.conv_layers = nn.Modulelist()
+        self.conv_layers = nn.ModuleList()
         prev_units = input_dim
         for units in conv_units:
             lay = ConditionalGraphAttention(
@@ -929,7 +929,7 @@ class ConditionalGIN(pl.LightningModule):
         # relu activation up until the very last layer transition, which outputs the
         # single classification logit.
         self.pred_units = pred_units
-        self.pred_layers = nn.Modulelist()
+        self.pred_layers = nn.ModuleList()
         for units in pred_units[:-1]:
             lay = nn.Sequential(
                 nn.Linear(
@@ -1120,7 +1120,7 @@ class ConditionalGINConcat(pl.LightningModule):
         # These will be the layers (the mlp) which will be used to create an overall lower-dimensional
         # embedding representation of the (very high-dimensional) condition vector. It is then this
         # embedding that will be used in the individual FiLM conditioning layers.
-        self.cond_layers = nn.Modulelist()
+        self.cond_layers = nn.ModuleList()
         prev_units = condition_dim
         for units in cond_units:
             self.cond_layers.append(
@@ -1138,8 +1138,8 @@ class ConditionalGINConcat(pl.LightningModule):
 
         # These will be the actual convolutional layers that will be used as the message passing
         # operations on the given graph.
-        self.conv_layers = nn.Modulelist()
-        self.bn_layers = nn.Modulelist()
+        self.conv_layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
         prev_units = input_dim
         for units in conv_units:
             lay = GATv2Conv(
@@ -1170,7 +1170,7 @@ class ConditionalGINConcat(pl.LightningModule):
         # relu activation up until the very last layer transition, which outputs the
         # single classification logit.
         self.pred_units = pred_units
-        self.pred_layers = nn.Modulelist()
+        self.pred_layers = nn.ModuleList()
         for units in pred_units:
             lay = nn.Sequential(
                 nn.Linear(

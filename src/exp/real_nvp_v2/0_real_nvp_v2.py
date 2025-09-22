@@ -197,7 +197,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         graph_terms = x[:, self.D :].contiguous()
         return node_terms, graph_terms, _logs
 
-    def nf_forward_kld(self, flat):
+    def nf_forward__kld(self, flat):
         """Example: exact NLL with pre-transform correction."""
         z, log_det_corr = self._pretransform(flat)
         # If your nf API returns -log p(z) per-sample, add the correction:

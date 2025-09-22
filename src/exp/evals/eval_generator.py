@@ -16,7 +16,6 @@ from src.utils import registery
 from src.utils.chem import canonical_key, draw_mol, is_valid_molecule, reconstruct_for_eval
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
 
-
 # keep it modest to avoid oversubscription; tune if needed
 num = max(1, min(8, os.cpu_count() or 1))
 torch.set_num_threads(num)
@@ -50,26 +49,44 @@ T_canon_qm9 = None
 
 n_samples = 100
 strict_decoder = False
-beam_size = 48
+beam_size = 64
 expand_on_n_anchors = 12
+USE_PAIR_FEASIBILITY = False
 generation = "generation8"
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
 loop = 0
-gen_paths = list(find_files(
+gen_paths = list(
+    find_files(
         start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2",
         prefixes=("epoch",),
         desired_ending=".ckpt",
         skip_substring="zinc",
-    ))
+    )
+)
 print(f"Found {len(gen_paths)} generator checkpoints")
 for gen_ckpt_path in gen_paths:
     # print(f"loop #{loop}")
     # if loop >= 1:
     #     break
     # loop += 1
-    print(f"Generator Checkpoint: {gen_ckpt_path}")
+    do = {
+        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an/models/epoch42-val-4172.5571.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch26-val-2516.5386.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch50-val-4308.1338.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd1e-4_an/models/epoch12-val-1689.4788.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd0.0_an/models/epoch12-val-2198.1746.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd1e-4_an/models/epoch13-val-2190.4648.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch41-val-3322.6777.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid512_s42_lr1e-3_wd0.0_an/models/epoch19-val-2442.2910.ckpt",
+        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd0.0_an/models/epoch25-val-2071.7695.ckpt",
+    }
+
+    if any(d in str(gen_ckpt_path) for d in do):
+        continue
+
+    print(f"Gene_rator Checkpoint: {gen_ckpt_path}")
     # Read the metrics from training
     evals_dir = gen_ckpt_path.parent.parent / "evaluations"
     epoch_metrics = pd.read_parquet(evals_dir / "metrics.parquet")
@@ -90,7 +107,7 @@ for gen_ckpt_path in gen_paths:
         results[gen_ckpt_path] = f"Error: {e}"
         continue
 
-    # We want evaluations against training set
+    # We want evaluations against the training set
     split = "train"
     ## Determine Dataset
     T_canon = None
@@ -113,9 +130,10 @@ for gen_ckpt_path in gen_paths:
     if base_dataset == "zinc":
         ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc/models/epoch06-val0.2718.ckpt"
     else:
+        ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt"
         # ckpt_path = GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt"
-        ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt"
         # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_med_qm9/models/epoch19-val0.2648.ckpt"
+        # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt"
     print(f"Classifier's checkpoint: {ckpt_path}")
 
     # Read the metrics from training
@@ -148,7 +166,7 @@ for gen_ckpt_path in gen_paths:
         "beam_size": beam_size,
         "oracle_threshold": oracle_threshold,
         # "strict": False,
-        "use_pair_feasibility": True,
+        "use_pair_feasibility": USE_PAIR_FEASIBILITY,
         "expand_on_n_anchors": expand_on_n_anchors,
     }
     generator = Generator(
@@ -206,7 +224,7 @@ for gen_ckpt_path in gen_paths:
         "nuv": nuv,
         "classifier": str(ckpt_path),
         "model_type": model_type,
-        **decoder_settings
+        **decoder_settings,
     }
 
     if draw:

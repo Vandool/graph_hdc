@@ -31,6 +31,7 @@ Notes
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -40,8 +41,8 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
-from src.utils.chem import eval_key_from_data
-from src.utils.utils import GLOBAL_DATASET_PATH
+from src.utils.chem import compute_qed, eval_key_from_data
+from src.utils.utils import GLOBAL_DATASET_PATH, fit_stats, zscore
 
 
 # ─────────────────────────────── SMILES iterator ──────────────────────────────
@@ -108,10 +109,13 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         src += [i, j]
         dst += [j, i]
 
-    eval_smiles = eval_key_from_data(data=Data(
-        x=torch.tensor(x, dtype=torch.float32),
-        edge_index=torch.tensor([src, dst], dtype=torch.long),
-    ), dataset="qm9")
+    eval_smiles = eval_key_from_data(
+        data=Data(
+            x=torch.tensor(x, dtype=torch.float32),
+            edge_index=torch.tensor([src, dst], dtype=torch.long),
+        ),
+        dataset="qm9",
+    )
 
     return Data(
         x=torch.tensor(x, dtype=torch.float32),
@@ -183,6 +187,7 @@ class QM9Smiles(InMemoryDataset):
     # ---------- create `processed/…` -------------------------------------------
     def process(self):
         data_list: list[Data] = []
+        qeds: list[float] = []
 
         src = Path(self.raw_paths[0])
         total = _count_smiles_lines(src)
@@ -197,6 +202,34 @@ class QM9Smiles(InMemoryDataset):
             if mol is None:
                 continue
             data = mol_to_data(mol)
+
+            # --- QED property ---
+            qeds.append(compute_qed(mol))
+            data.qed_raw = qeds[-1]  # keep temp, standardize later
+
+            if self.pre_filter and not self.pre_filter(data):
+                continue
+            if self.pre_transform:
+                data = self.pre_transform(data)
+            data_list.append(data)
+
+            # --- standardize QED ---
+            stats_path = Path(self.processed_dir) / "qed_stats.json"
+            if self.split == "train":
+                stats = fit_stats(qeds)
+                Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
+                with open(stats_path, "w") as f:
+                    json.dump(stats, f)
+            else:
+                with open(stats_path) as f:
+                    stats = json.load(f)
+
+            for d in data_list:
+                q = float(getattr(d, "qed_raw", float("nan")))
+                d.cond = torch.tensor([zscore(q, stats)], dtype=torch.float32)
+                if hasattr(d, "qed_raw"):
+                    delattr(d, "qed_raw")
+
             if self.pre_filter and not self.pre_filter(data):
                 continue
             if self.pre_transform:
@@ -265,4 +298,3 @@ if __name__ == "__main__":
     # valid_ds = QM9Smiles(split="valid")
     # test_ds = QM9Smiles(split="test")
     simple_ds = QM9Smiles(split="test")
-

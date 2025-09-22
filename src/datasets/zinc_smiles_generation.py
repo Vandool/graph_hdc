@@ -22,8 +22,9 @@ Example
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 import torch
 from rdkit import Chem
@@ -32,7 +33,7 @@ from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
 from src.utils.chem import eval_key_from_data
-from src.utils.utils import GLOBAL_DATASET_PATH
+from src.utils.utils import GLOBAL_DATASET_PATH, fit_stats, zscore
 
 
 # ─────────────────────────────── SMILES iterator ──────────────────────────────
@@ -74,14 +75,14 @@ ZINC_SMILE_IDX_TO_ATOM: dict[int, str] = {v: k for k, v in ZINC_SMILE_ATOM_TO_ID
 
 def mol_to_data(mol: Chem.Mol) -> Data:
     """
-        Atom types size: 9
-        Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
-        Degrees size: 5
-        Degrees: {1, 2, 3, 4, 5}
-        Formal Charges size: 3
-        Formal Charges: {0, 1, -1}
-        Explicit Hs size: 4
-        Explicit Hs: {0, 1, 2, 3}
+    Atom types size: 9
+    Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
+    Degrees size: 5
+    Degrees: {1, 2, 3, 4, 5}
+    Formal Charges size: 3
+    Formal Charges: {0, 1, -1}
+    Explicit Hs size: 4
+    Explicit Hs: {0, 1, 2, 3}
     """
     x = [
         [
@@ -98,10 +99,13 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         src += [i, j]
         dst += [j, i]
 
-    eval_smiles = eval_key_from_data(data=Data(
-        x=torch.tensor(x, dtype=torch.float32),
-        edge_index=torch.tensor([src, dst], dtype=torch.long),
-    ), dataset="zinc")
+    eval_smiles = eval_key_from_data(
+        data=Data(
+            x=torch.tensor(x, dtype=torch.float32),
+            edge_index=torch.tensor([src, dst], dtype=torch.long),
+        ),
+        dataset="zinc",
+    )
 
     return Data(
         x=torch.tensor(x, dtype=torch.float32),
@@ -146,13 +150,13 @@ class ZincSmiles(InMemoryDataset):
     """
 
     def __init__(
-            self,
-            root: str | Path = GLOBAL_DATASET_PATH / "ZincSmiles",
-            split: str = "train",
-            transform: Optional[Callable] = None,
-            pre_transform: Optional[Callable] = None,
-            pre_filter: Optional[Callable] = None,
-            enc_suffix: str = ""
+        self,
+        root: str | Path = GLOBAL_DATASET_PATH / "ZincSmiles",
+        split: str = "train",
+        transform: Callable | None = None,
+        pre_transform: Callable | None = None,
+        pre_filter: Callable | None = None,
+        enc_suffix: str = "",
     ):
         self.split = split.lower()
         self.enc_suffix = enc_suffix
@@ -180,19 +184,38 @@ class ZincSmiles(InMemoryDataset):
     # ---------- create `processed/…` -------------------------------------------
     def process(self):
         data_list: list[Data] = []
+        qeds: list[float] = []
 
         src = Path(self.raw_paths[0])
         total = _count_smiles_lines(src)
         for s in tqdm(
-                iter_smiles(src),
-                total=total,
-                desc=f"ZincSmiles[{self.split}]",
-                unit="mol",
-                dynamic_ncols=True,
+            iter_smiles(src),
+            total=total,
+            desc=f"ZincSmiles[{self.split}]",
+            unit="mol",
+            dynamic_ncols=True,
         ):
             if (mol := Chem.MolFromSmiles(s)) is None:
                 continue
             data = mol_to_data(mol)
+
+            # --- standardize QED ---
+            stats_path = Path(self.processed_dir) / "qed_stats.json"
+            if self.split == "train":
+                stats = fit_stats(qeds)
+                Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
+                with open(stats_path, "w") as f:
+                    json.dump(stats, f)
+            else:
+                with open(stats_path) as f:
+                    stats = json.load(f)
+
+            for d in data_list:
+                q = float(getattr(d, "qed_raw", float("nan")))
+                d.cond = torch.tensor([zscore(q, stats)], dtype=torch.float32)
+                if hasattr(d, "qed_raw"):
+                    delattr(d, "qed_raw")
+
             if self.pre_filter and not self.pre_filter(data):
                 continue
             if self.pre_transform:
@@ -206,12 +229,12 @@ class ZincSmiles(InMemoryDataset):
 
 @torch.no_grad()
 def precompute_encodings(
-        base_ds: ZincSmiles,
-        hypernet,
-        *,
-        batch_size: int = 1024,
-        device: Optional[torch.device] = None,
-        out_suffix: str = "enc",  # writes data_<split>_enc.pt
+    base_ds: ZincSmiles,
+    hypernet,
+    *,
+    batch_size: int = 1024,
+    device: torch.device | None = None,
+    out_suffix: str = "enc",  # writes data_<split>_enc.pt
 ) -> Path:
     """Batch-encode all graphs and write an augmented processed file."""
     device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
@@ -245,8 +268,7 @@ def precompute_encodings(
     return out_path
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     train_ds = ZincSmiles(split="train")
     valid_ds = ZincSmiles(split="valid")
     test_ds = ZincSmiles(split="test")

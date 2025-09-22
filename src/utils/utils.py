@@ -85,6 +85,7 @@ def str2bool(v: str) -> bool:
     msg = "boolean value expected"
     raise argparse.ArgumentTypeError(msg)
 
+
 def str2maybebool(v: str) -> bool | None:
     if isinstance(v, bool):
         return v
@@ -94,6 +95,7 @@ def str2maybebool(v: str) -> bool | None:
     if v in ("0", "false", "f", "no", "n"):
         return False
     return None
+
 
 # ========= Utils =========
 def set_seed(seed: int) -> None:
@@ -1588,6 +1590,20 @@ def generated_node_edge_dist(
         "novel_node_types": novel_node_types,
         "missing_node_types": missing_node_types,
     }
+
+
+def fit_stats(vals: list[float]) -> dict:
+    arr = np.asarray(vals, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    mean = float(arr.mean()) if arr.size else 0.0
+    std = float(arr.std(ddof=0)) if arr.size else 1.0
+    return {"mean": mean, "std": (std if std > 0 else 1.0)}
+
+
+def zscore(x: float, stats: dict) -> float:
+    if np.isnan(x):
+        return 0.0
+    return (x - stats["mean"]) / stats["std"]
 
 
 if __name__ == "__main__":
