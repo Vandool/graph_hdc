@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module
 from torch_geometric.data import Batch, Data
-from torch_geometric.nn import MessagePassing
+from torch_geometric.nn import MessagePassing, SumAggregation
 from torch_geometric.nn.aggr import SumAggregation
 from torch_geometric.nn.conv import GATv2Conv
 
@@ -488,7 +488,7 @@ class FilmConditionalLinear(nn.Module):
     :param in_features: Number of input features
     :param out_features: Number of output features
     :param condition_features: Number of features in the conditioning vector
-    :param film_units: List of hidden unit sizes for the FiLM network
+    :param film_units: list of hidden unit sizes for the FiLM network
     :param film_use_norm: Whether to use batch normalization in the FiLM network
     """
 
@@ -507,7 +507,7 @@ class FilmConditionalLinear(nn.Module):
         :param in_features: Number of input features
         :param out_features: Number of output features
         :param condition_features: Number of features in the conditioning vector
-        :param film_units: List of hidden unit sizes for the FiLM network
+        :param film_units: list of hidden unit sizes for the FiLM network
         :param film_use_norm: Whether to use batch normalization in the FiLM network
         :param kwargs: Additional keyword arguments to pass to the parent class
         """
@@ -538,7 +538,7 @@ class FilmConditionalLinear(nn.Module):
         # of the actual linear layer.
         # This can even be a multi-layer perceptron by itself, depending on how difficult the
         # condition function is to learn.
-        self.film_layers = nn.ModuleList()
+        self.film_layers = nn.Modulelist()
         prev_features = condition_features
         for num_features in film_units:
             if self.film_use_norm:
@@ -620,7 +620,7 @@ class ConditionalGraphAttention(MessagePassing):
     :param cond_dim: Dimension of the condition vector
     :param hidden_dim: Dimension of hidden layers
     :param eps: Epsilon value for residual connections
-    :param film_units: List of hidden unit sizes for the FiLM networks
+    :param film_units: list of hidden unit sizes for the FiLM networks
     """
 
     def __init__(
@@ -643,7 +643,7 @@ class ConditionalGraphAttention(MessagePassing):
         :param cond_dim: Dimension of the condition vector
         :param hidden_dim: Dimension of hidden layers
         :param eps: Epsilon value for residual connections
-        :param film_units: List of hidden unit sizes for the FiLM networks
+        :param film_units: list of hidden unit sizes for the FiLM networks
         :param kwargs: Additional keyword arguments to pass to the parent class
         """
         kwargs.setdefault("aggr", "add")
@@ -826,10 +826,10 @@ class ConditionalGIN(pl.LightningModule):
     :param input_dim: Dimension of input node features
     :param edge_dim: Dimension of edge features
     :param condition_dim: Dimension of the condition vector
-    :param cond_units: List of hidden unit sizes for the condition embedding network
-    :param conv_units: List of hidden unit sizes for the graph convolution layers
-    :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
-    :param pred_units: List of hidden unit sizes for the graph prediction network
+    :param cond_units: list of hidden unit sizes for the condition embedding network
+    :param conv_units: list of hidden unit sizes for the graph convolution layers
+    :param film_units: list of hidden unit sizes for the FiLM networks in the graph attention layers
+    :param pred_units: list of hidden unit sizes for the graph prediction network
     :param learning_rate: Learning rate for the optimizer
     """
 
@@ -851,10 +851,10 @@ class ConditionalGIN(pl.LightningModule):
         :param input_dim: Dimension of input node features
         :param edge_dim: Dimension of edge features
         :param condition_dim: Dimension of the condition vector
-        :param cond_units: List of hidden unit sizes for the condition embedding network
-        :param conv_units: List of hidden unit sizes for the graph convolution layers
-        :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
-        :param pred_units: List of hidden unit sizes for the graph prediction network
+        :param cond_units: list of hidden unit sizes for the condition embedding network
+        :param conv_units: list of hidden unit sizes for the graph convolution layers
+        :param film_units: list of hidden unit sizes for the FiLM networks in the graph attention layers
+        :param pred_units: list of hidden unit sizes for the graph prediction network
         :param learning_rate: Learning rate for the optimizer
         """
 
@@ -889,7 +889,7 @@ class ConditionalGIN(pl.LightningModule):
         # These will be the layers (the mlp) which will be used to create an overall lower-dimensional
         # embedding representation of the (very high-dimensional) condition vector. It is then this
         # embedding that will be used in the individual FiLM conditioning layers.
-        self.cond_layers = nn.ModuleList()
+        self.cond_layers = nn.Modulelist()
         prev_units = condition_dim
         for units in cond_units:
             self.cond_layers.append(
@@ -903,7 +903,7 @@ class ConditionalGIN(pl.LightningModule):
 
         # These will be the actual convolutional layers that will be used as the message passing
         # operations on the given graph.
-        self.conv_layers = nn.ModuleList()
+        self.conv_layers = nn.Modulelist()
         prev_units = input_dim
         for units in conv_units:
             lay = ConditionalGraphAttention(
@@ -929,7 +929,7 @@ class ConditionalGIN(pl.LightningModule):
         # relu activation up until the very last layer transition, which outputs the
         # single classification logit.
         self.pred_units = pred_units
-        self.pred_layers = nn.ModuleList()
+        self.pred_layers = nn.Modulelist()
         for units in pred_units[:-1]:
             lay = nn.Sequential(
                 nn.Linear(
@@ -1056,10 +1056,10 @@ class ConditionalGINConcat(pl.LightningModule):
     :param input_dim: Dimension of input node features
     :param edge_dim: Dimension of edge features
     :param condition_dim: Dimension of the condition vector
-    :param cond_units: List of hidden unit sizes for the condition embedding network
-    :param conv_units: List of hidden unit sizes for the graph convolution layers
-    :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
-    :param pred_units: List of hidden unit sizes for the graph prediction network
+    :param cond_units: list of hidden unit sizes for the condition embedding network
+    :param conv_units: list of hidden unit sizes for the graph convolution layers
+    :param film_units: list of hidden unit sizes for the FiLM networks in the graph attention layers
+    :param pred_units: list of hidden unit sizes for the graph prediction network
     :param learning_rate: Learning rate for the optimizer
     """
 
@@ -1082,10 +1082,10 @@ class ConditionalGINConcat(pl.LightningModule):
         :param input_dim: Dimension of input node features
         :param edge_dim: Dimension of edge features
         :param condition_dim: Dimension of the condition vector
-        :param cond_units: List of hidden unit sizes for the condition embedding network
-        :param conv_units: List of hidden unit sizes for the graph convolution layers
-        :param film_units: List of hidden unit sizes for the FiLM networks in the graph attention layers
-        :param pred_units: List of hidden unit sizes for the graph prediction network
+        :param cond_units: list of hidden unit sizes for the condition embedding network
+        :param conv_units: list of hidden unit sizes for the graph convolution layers
+        :param film_units: list of hidden unit sizes for the FiLM networks in the graph attention layers
+        :param pred_units: list of hidden unit sizes for the graph prediction network
         :param learning_rate: Learning rate for the optimizer
         """
 
@@ -1120,7 +1120,7 @@ class ConditionalGINConcat(pl.LightningModule):
         # These will be the layers (the mlp) which will be used to create an overall lower-dimensional
         # embedding representation of the (very high-dimensional) condition vector. It is then this
         # embedding that will be used in the individual FiLM conditioning layers.
-        self.cond_layers = nn.ModuleList()
+        self.cond_layers = nn.Modulelist()
         prev_units = condition_dim
         for units in cond_units:
             self.cond_layers.append(
@@ -1138,8 +1138,8 @@ class ConditionalGINConcat(pl.LightningModule):
 
         # These will be the actual convolutional layers that will be used as the message passing
         # operations on the given graph.
-        self.conv_layers = nn.ModuleList()
-        self.bn_layers = nn.ModuleList()
+        self.conv_layers = nn.Modulelist()
+        self.bn_layers = nn.Modulelist()
         prev_units = input_dim
         for units in conv_units:
             lay = GATv2Conv(
@@ -1170,7 +1170,7 @@ class ConditionalGINConcat(pl.LightningModule):
         # relu activation up until the very last layer transition, which outputs the
         # single classification logit.
         self.pred_units = pred_units
-        self.pred_layers = nn.ModuleList()
+        self.pred_layers = nn.Modulelist()
         for units in pred_units:
             lay = nn.Sequential(
                 nn.Linear(
@@ -1248,9 +1248,7 @@ class ConditionalGINConcat(pl.LightningModule):
         """
         logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
         target = batch.y.float()  # [B]
-        loss = F.binary_cross_entropy_with_logits(
-            logits, target, reduction="mean"
-        )
+        loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
         batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
         self.log(
             "loss",
@@ -1280,4 +1278,334 @@ class ConditionalGINConcat(pl.LightningModule):
 
         :returns: The configured optimizer
         """
+        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+
+
+### GIN-LF (Late Film)
+class UnconditionalGraphAttention(MessagePassing):
+    r"""
+    Unconditional attention-style message passing layer (**no FiLM, no edge attributes**).
+
+    Computes messages as an MLP over concatenated endpoint features ``[x_i, x_j]``,
+    gates them with a learned attention scalar per edge, aggregates, and applies
+    a post-aggregation transform.
+
+    Parameters
+    ----------
+    in_dim : int
+        Input node feature dimension.
+    out_dim : int
+        Output node feature dimension.
+    hidden_dim : int, optional
+        Hidden size for message/attention/update MLPs, by default ``64``.
+    eps : float, optional
+        Residual mixing factor (used only if ``in_dim == out_dim``), by default ``0.0``.
+    aggr : str, optional
+        Aggregation type (``"add"``, ``"mean"``, ``"max"``), by default ``"add"``.
+
+    Shapes
+    ------
+    x: ``[N, in_dim]``
+        Node features.
+    edge_index: ``[2, E]``
+        COO connectivity.
+    returns: ``([N, out_dim], [E, 1] | None)``
+        Updated node embeddings and attention logits (if available).
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        hidden_dim: int = 64,
+        eps: float = 0.0,
+        aggr: str = "add",
+        **kwargs,
+    ) -> None:
+        kwargs.setdefault("aggr", aggr)
+        super().__init__(**kwargs)
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.hidden_dim = hidden_dim
+        self.eps = float(eps)
+
+        # Message MLP: phi_m([x_i, x_j])
+        message_in = 2 * in_dim
+        self.msg_lin1 = nn.Linear(message_in, hidden_dim)
+        self.msg_bn = nn.BatchNorm1d(hidden_dim)
+        self.msg_act = nn.LeakyReLU()
+        self.msg_lin2 = nn.Linear(hidden_dim, hidden_dim)
+
+        # Attention MLP: a([x_i, x_j]) -> logits
+        self.att_lin1 = nn.Linear(message_in, hidden_dim)
+        self.att_bn = nn.BatchNorm1d(hidden_dim)
+        self.att_act = nn.LeakyReLU()
+        self.att_lin2 = nn.Linear(hidden_dim, 1)
+
+        # Post-aggregation transform
+        self.tr_lin1 = nn.Linear(in_dim + hidden_dim, hidden_dim)
+        self.tr_bn = nn.BatchNorm1d(hidden_dim)
+        self.tr_act = nn.LeakyReLU()
+        self.tr_lin2 = nn.Linear(hidden_dim, out_dim)
+
+        # Introspection buffers (set during propagate -> message())
+        self._attention_logits: torch.Tensor | None = None
+        self._attention: torch.Tensor | None = None
+
+    def message(self, x_i: torch.Tensor, x_j: torch.Tensor) -> torch.Tensor:
+        r"""
+        Compute edge-wise messages.
+
+        Parameters
+        ----------
+        x_i : torch.Tensor
+            Target node features per edge, ``[E, in_dim]``.
+        x_j : torch.Tensor
+            Source node features per edge, ``[E, in_dim]``.
+        """
+        message = torch.cat([x_i, x_j], dim=-1)  # [E, 2*in_dim]
+
+        att = self.att_lin1(message)
+        att = self.att_bn(att)
+        att = self.att_act(att)
+        att = self.att_lin2(att)  # [E, 1] logits
+
+        # Store for introspection after propagate() finishes
+        self._attention_logits = att
+        self._attention = torch.sigmoid(att)  # [E, 1]
+
+        m = self.msg_lin1(message)
+        m = self.msg_bn(m)
+        m = self.msg_act(m)
+        m = self.msg_lin2(m)  # [E, hidden_dim]
+
+        return self._attention * m  # [E, hidden_dim]
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        r"""
+        Run message passing and node updates.
+
+        Returns
+        -------
+        (torch.Tensor, torch.Tensor | None)
+            Updated node embeddings ``[N, out_dim]`` and attention logits ``[E, 1]``.
+            The attention logits are populated by the call to :meth:`message`.
+        """
+        # Reset caches; message() will repopulate them during propagate()
+        # Ensure floating dtype expected by Linear/BN (handles int and mismatched AMP dtypes)
+        target_dtype = self.msg_lin1.weight.dtype
+        if x.dtype != target_dtype:
+            x = x.to(target_dtype)
+
+        self._attention_logits = None
+        self._attention = None
+
+        m_agg: torch.Tensor = self.propagate(edge_index=edge_index, x=x)  # [N, hidden_dim]
+
+        z = torch.cat([m_agg, x], dim=-1)  # [N, hidden_dim + in_dim]
+        z = self.tr_lin1(z)
+        z = self.tr_bn(z)
+        z = self.tr_act(z)
+        z = self.tr_lin2(z)  # [N, out_dim]
+
+        # Optional residual (only if dimensions match)
+        if self.eps != 0.0 and x.size(-1) == z.size(-1):
+            z = z + self.eps * x
+
+        return z, self._attention_logits  # attention logits may be None if no edges
+
+
+@register_model("GIN-LF")
+class ConditionalGINLateFiLM(pl.LightningModule):
+    r"""
+    Graph binary classifier with **late FiLM** conditioning (Variant A).
+
+    The graph encoder is an **unconditional** stack of attention-style message
+    passing layers. The external conditioning vector ``data.cond`` is **per-graph**
+    (shape ``[B, condition_dim]``), embedded once, and used to modulate the **prediction
+    MLP** via FiLM applied *after* BatchNorm and *before* the nonlinearity.
+
+    Parameters
+    ----------
+    input_dim : int
+        Node feature dimension.
+    condition_dim : int
+        Conditioning vector dimension (per-graph).
+    cond_units : list[int] | None, optional
+        Hidden sizes for the condition embedding MLP, by default ``[256, 128]``.
+    conv_units : list[int] | None, optional
+        Output sizes of GNN layers, by default ``[64, 64, 64]``.
+    pred_units : list[int] | None, optional
+        Predictor sizes ending with ``1`` logit, by default ``[256, 64, 1]``.
+    learning_rate : float, optional
+        Adam LR, by default ``1e-4``.
+
+    Notes
+    -----
+    * Assumes stratified sampling; **no** ``pos_weight``.
+    * **No** edge attributes used.
+    * Late FiLM is applied to predictor hidden blocks only (not the final logit).
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        condition_dim: int,
+        cond_units: list[int] | None = None,
+        conv_units: list[int] | None = None,
+        pred_units: list[int] | None = None,
+        learning_rate: float = 1e-4,
+        weight_decay: float = 0.0,
+    ) -> None:
+        super().__init__()
+        cond_units = cond_units or [256, 128]
+        conv_units = conv_units or [64, 64, 64]
+        pred_units = pred_units or [256, 64, 1]
+
+        # Save hyperparameters cleanly for checkpoints / .load_from_checkpoint()
+        self.save_hyperparameters(
+            {
+                "input_dim": input_dim,
+                "condition_dim": condition_dim,
+                "cond_units": cond_units,
+                "conv_units": conv_units,
+                "pred_units": pred_units,
+                "learning_rate": learning_rate,
+                "weight_decay": weight_decay,
+            }
+        )
+
+        self.input_dim = input_dim
+        self.condition_dim = condition_dim
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+
+        # --- Condition embedding MLP (per-graph) ---
+        cond_layers: list[nn.Module] = []
+        prev = condition_dim
+        for u in cond_units:
+            cond_layers += [nn.Linear(prev, u), nn.ReLU()]
+            prev = u
+        self.cond_mlp = nn.Sequential(*cond_layers)
+        self.cond_emb_dim = prev  # last u
+
+        # --- Unconditional graph conv stack ---
+        convs: list[nn.Module] = []
+        prev_dim = input_dim
+        for u in conv_units:
+            convs.append(UnconditionalGraphAttention(in_dim=prev_dim, out_dim=u, hidden_dim=u))
+            prev_dim = u
+        self.conv_layers = nn.ModuleList(convs)
+        self.pool = SumAggregation()
+
+        # --- Prediction MLP (hidden blocks + final logit) ---
+        pred_blocks: list[nn.Module] = []
+        pred_hidden_dims: list[int] = []
+        in_dim = prev_dim
+        for u in pred_units[:-1]:
+            # Block: Linear -> BN -> ReLU
+            pred_blocks.append(nn.Sequential(nn.Linear(in_dim, u), nn.BatchNorm1d(u), nn.ReLU()))
+            pred_hidden_dims.append(u)
+            in_dim = u
+        # Final logit
+        pred_blocks.append(nn.Linear(in_dim, pred_units[-1]))
+        self.pred_layers = nn.ModuleList(pred_blocks)
+        self.pred_hidden_dims = pred_hidden_dims
+
+        # Late FiLM head: concatenated (gamma, beta) for all hidden blocks
+        total_hidden = sum(self.pred_hidden_dims)
+        self.pred_film_head = nn.Linear(self.cond_emb_dim, 2 * total_hidden)
+
+    # -------------------------
+    # Lightning API
+    # -------------------------
+    def forward(self, data: Data) -> dict[str, torch.Tensor]:
+        r"""
+        Forward pass.
+
+        Parameters
+        ----------
+        data : class:`torch_geometric.data.Data`
+            Must contain:
+            - ``x``: ``[N, input_dim]``
+            - ``edge_index``: ``[2, E]``
+            - ``batch``: ``[N]``
+            - ``cond``: ``[B, condition_dim]`` (**per-graph** conditioning)
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            ``{"graph_prediction": logits}`` where ``logits`` has shape ``[B, 1]``.
+        """
+        # 1) Encode condition once per graph
+        cond_emb = self.cond_mlp(data.cond)  # [B, cond_emb_dim]
+
+        # 2) Unconditional message passing
+        h = data.x
+        if not torch.is_floating_point(h):
+            h = h.float()
+        for conv in self.conv_layers:
+            h, _ = conv(h, data.edge_index)
+
+        # 3) Pool to graph embeddings
+        g = self.pool(h, data.batch)  # [B, H_g]
+
+        # 4) Late FiLM on predictor hidden blocks
+        film_vec = torch.tanh(self.pred_film_head(cond_emb))  # [B, 2 * sum(hidden)]
+        gammas_all, betas_all = film_vec.chunk(2, dim=-1)
+
+        x = g
+        offset = 0
+        for i, block in enumerate(self.pred_layers[:-1]):  # hidden blocks only
+            lin, bn, relu = block[0], block[1], block[2]
+            x = lin(x)
+            x = bn(x)
+            d = self.pred_hidden_dims[i]
+            gamma_i = gammas_all[:, offset : offset + d]
+            beta_i = betas_all[:, offset : offset + d]
+            offset += d
+            # Keep multiplicative near identity for stability
+            x = (1.0 + 0.5 * gamma_i) * x + beta_i
+            x = relu(x)
+
+        # 5) Final logit (no FiLM)
+        logit = self.pred_layers[-1](x)  # [B, 1]
+        return {"graph_prediction": logit}
+
+    def training_step(self, batch: Data, batch_idx: int) -> torch.Tensor:
+        r"""
+        One training step using BCE with logits.
+        """
+        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
+        target = batch.y.float()  # [B]
+        loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
+        batch_size = int(getattr(batch, "num_graphs", target.size(0)))
+        self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        return loss
+
+    def validation_step(self, batch: Data, batch_idx: int) -> dict:
+        logits = self(batch)["graph_prediction"].squeeze(-1).float()
+        target = batch.y.float()
+        val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
+        batch_size = int(getattr(batch, "num_graphs", target.size(0)))
+        self.log("val_loss", val_loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        # return CPU tensors (small) to be robust across strategies
+        return {"logits": logits.detach().cpu(), "y": target.detach().cpu()}
+
+
+    def configure_optimizers(self):
+        wd = getattr(self, "weight_decay", 0.0)
+        if wd and wd > 0:
+            decay, no_decay = [], []
+            for n, p in self.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if n.endswith(".bias") or "bn" in n or "norm" in n:
+                    no_decay.append(p)
+                else:
+                    decay.append(p)
+            return torch.optim.AdamW(
+                [{"params": decay, "weight_decay": wd}, {"params": no_decay, "weight_decay": 0.0}],
+                lr=self.learning_rate,
+            )
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)

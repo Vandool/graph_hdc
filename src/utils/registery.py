@@ -1,10 +1,11 @@
 # ------------------------- registry -------------------------
-from typing import Callable, Literal
+from collections.abc import Callable
+from typing import Literal
 
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 
-ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "NVP"]
+ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "GIN-LF", "NVP"]
 
 _MODEL_REGISTRY: dict[ModelType, Callable[..., pl.LightningModule]] = {}
 

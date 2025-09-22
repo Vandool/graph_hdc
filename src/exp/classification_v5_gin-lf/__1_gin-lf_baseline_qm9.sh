@@ -1,0 +1,11 @@
+JOB_NAME=gin_film_baseline_qm9 \
+MODEL_NAME=GIN-LF \
+HV_DIM=1600 \
+DATASET=QM9_SMILES_HRR_1600 \
+BATCH_SIZE=256 \
+LR=3e-4 \
+P_PER_PARENT=2 \
+N_PER_PARENT=2 \
+EPOCHS=20 \
+IS_DEV=0 \
+./_1_gin_submit.sh

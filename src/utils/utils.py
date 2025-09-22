@@ -85,6 +85,15 @@ def str2bool(v: str) -> bool:
     msg = "boolean value expected"
     raise argparse.ArgumentTypeError(msg)
 
+def str2maybebool(v: str) -> bool | None:
+    if isinstance(v, bool):
+        return v
+    v = v.lower()
+    if v in ("1", "true", "t", "yes", "y"):
+        return True
+    if v in ("0", "false", "f", "no", "n"):
+        return False
+    return None
 
 # ========= Utils =========
 def set_seed(seed: int) -> None:
