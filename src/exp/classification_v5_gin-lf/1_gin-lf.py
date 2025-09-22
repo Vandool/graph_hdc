@@ -794,6 +794,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         cond_units=cfg.cond_units,
         conv_units=cfg.conv_units,
         pred_units=cfg.pred_head_units,
+        weight_decay=cfg.weight_decay,
     ).to(device)
 
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
