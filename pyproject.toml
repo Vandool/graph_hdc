@@ -47,6 +47,11 @@ jinja2            = ">=3.0.3"
 pytorch-scatter   = ">=2.1.2,<3"
 ruff              = ">=0.12.12,<0.13"
 pytest            = ">=8.4.2,<9"
+optuna             = "*"
+optuna-integration = "*"
+botorch            = "*"
+gpytorch           = "*"
+setuptools         = "*"
 
 [tool.pixi.pypi-dependencies]
 graph_hdc        = { path = ".", editable = true }

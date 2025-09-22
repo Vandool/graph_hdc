@@ -26,3 +26,8 @@ results/
 # Wandb
 /wandb/
 wandb/
+
+# Optuna
+src/exp/*/hpo/*.db
+src/exp/*/hpo/*.db-shm
+src/exp/*/hpo/*.db-wal
