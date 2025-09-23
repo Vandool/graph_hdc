@@ -1572,39 +1572,49 @@ class ConditionalGINLateFiLM(pl.LightningModule):
         logit = self.pred_layers[-1](x)  # [B, 1]
         return {"graph_prediction": logit}
 
-    def training_step(self, batch: Data, batch_idx: int) -> torch.Tensor:
-        r"""
-        One training step using BCE with logits.
+    def training_step(self, batch: Data, batch_idx):
+        """
+        Perform a single training step.
+
+        This method is called by PyTorch Lightning during training. It computes the forward pass
+        and calculates the binary cross-entropy loss between the predicted graph probabilities
+        and the target graph labels.
+
+        :param batch: PyTorch Geometric Data object containing a batch of graphs
+        :param batch_idx: Index of the current batch
+
+        :returns: Loss value for the current training step
         """
         logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
         target = batch.y.float()  # [B]
         loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
-        batch_size = int(getattr(batch, "num_graphs", target.size(0)))
-        self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
+        self.log(
+            "loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            batch_size=batch_size,
+        )
         return loss
 
-    def validation_step(self, batch: Data, batch_idx: int) -> dict:
-        logits = self(batch)["graph_prediction"].squeeze(-1).float()
-        target = batch.y.float()
+    def validation_step(self, batch, batch_idx):
+        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
+        target = batch.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
-        batch_size = int(getattr(batch, "num_graphs", target.size(0)))
-        self.log("val_loss", val_loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
-        # return CPU tensors (small) to be robust across strategies
-        return {"logits": logits.detach().cpu(), "y": target.detach().cpu(), "loss": val_loss.detach().cpu()}
+        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
+        self.log("val_loss", val_loss, prog_bar=True, logger=True, batch_size=batch_size, on_epoch=True)
+        return val_loss
 
     def configure_optimizers(self):
-        wd = getattr(self, "weight_decay", 0.0)
-        if wd and wd > 0:
-            decay, no_decay = [], []
-            for n, p in self.named_parameters():
-                if not p.requires_grad:
-                    continue
-                if n.endswith(".bias") or "bn" in n or "norm" in n:
-                    no_decay.append(p)
-                else:
-                    decay.append(p)
-            return torch.optim.AdamW(
-                [{"params": decay, "weight_decay": wd}, {"params": no_decay, "weight_decay": 0.0}],
-                lr=self.learning_rate,
-            )
+        """
+        Configure optimizers for the model.
+
+        This method is called by PyTorch Lightning to set up the optimizer
+        for training the model.
+
+        :returns: The configured optimizer
+        """
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)

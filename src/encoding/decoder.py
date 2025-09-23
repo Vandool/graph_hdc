@@ -567,18 +567,19 @@ logger = logging.getLogger(__name__)
 
 
 def greedy_oracle_decoder_faster(
-        node_multiset: Counter,
-        full_g_h: torch.Tensor,  # [D] final graph hyper vector
-        oracle: "Oracle",
-        *,
-        beam_size: int = 32,
-        expand_on_n_anchors: int | None = None,
-        oracle_threshold: float = 0.5,
-        strict: bool = True,
-        use_pair_feasibility: bool = False,
-        activate_guard: bool = True,
+    node_multiset: Counter,
+    full_g_h: torch.Tensor,  # [D] final graph hyper vector
+    oracle: "Oracle",
+    *,
+    beam_size: int = 32,
+    expand_on_n_anchors: int | None = None,
+    oracle_threshold: float = 0.5,
+    strict: bool = True,
+    use_pair_feasibility: bool = False,
+    activate_guard: bool = True,
 ) -> tuple[list[nx.Graph], bool]:
     t0 = time.perf_counter()
+
     def _ts() -> str:
         return f"[{time.perf_counter() - t0:8.3f}s]"
 
@@ -670,7 +671,7 @@ def greedy_oracle_decoder_faster(
     # ---------------------------
 
     feat_types = _order_leftovers_by_degree_distinct(full_ctr)
-    print(f"{_ts()} DISTINCT FEATURE TYPES ({len(feat_types)}): {[ _feat_str(t) for t in feat_types ]}")
+    print(f"{_ts()} DISTINCT FEATURE TYPES ({len(feat_types)}): {[_feat_str(t) for t in feat_types]}")
 
     # Trivial case 1
     if total_nodes == 1 and len(feat_types) == 1:
@@ -753,7 +754,7 @@ def greedy_oracle_decoder_faster(
     curr_nodes = 2
 
     while curr_nodes < max_iters:
-        print(f"{_ts()} === GEN {curr_nodes-1}→{curr_nodes}: population={len(population)} ===")
+        print(f"{_ts()} === GEN {curr_nodes - 1}→{curr_nodes}: population={len(population)} ===")
         children: list[nx.Graph] = []
         local_seen: set = set()  # per-iteration dedup to keep branching under control
 
@@ -777,8 +778,10 @@ def greedy_oracle_decoder_faster(
             # how many anchors we’ll actually use (slice semantics preserved)
             ancr_cap = len(ancrs[:expand_on_n_anchors])
             combos = ancr_cap * len(leftover_types)
-            print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]: anchor_cap={ancr_cap}, leftover_types={len(leftover_types)}, "
-                  f"pair_combos={combos}")
+            print(
+                f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]: anchor_cap={ancr_cap}, leftover_types={len(leftover_types)}, "
+                f"pair_combos={combos}"
+            )
 
             inner_iter = 0
             for a, lo_t in list(itertools.product(ancrs[:expand_on_n_anchors], leftover_types)):
@@ -786,18 +789,25 @@ def greedy_oracle_decoder_faster(
                 a_t = G.nodes[a]["feat"].to_tuple()
                 kpair = tuple(sorted((a_t, lo_t)))
                 if use_pair_feasibility and kpair in pair_ok and pair_ok[kpair] is False:
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: PRUNE pair {kpair} (learned infeasible)" % inner_iter)
+                    print(
+                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: PRUNE pair {kpair} (learned infeasible)"
+                        % inner_iter
+                    )
                     continue
 
                 C = G.copy()
                 nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=total_nodes)
                 if nid is None:
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: add_node_and_connect -> None (anchor={a}, lo={_feat_str(lo_t)})"
-                          % inner_iter)
+                    print(
+                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: add_node_and_connect -> None (anchor={a}, lo={_feat_str(lo_t)})"
+                        % inner_iter
+                    )
                     continue
                 if C.number_of_edges() > total_edges:
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: edges overflow after first connect: %d>%d"
-                          % (inner_iter, C.number_of_edges(), total_edges))
+                    print(
+                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: edges overflow after first connect: %d>%d"
+                        % (inner_iter, C.number_of_edges(), total_edges)
+                    )
                     continue
 
                 keyC = _hash(C)
@@ -807,16 +817,20 @@ def greedy_oracle_decoder_faster(
                     global_seen.add(keyC)
                     local_seen.add(keyC)
                     children.append(C)
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: +child C (nodes=%d, edges=%d)"
-                          % (inner_iter, C.number_of_nodes(), C.number_of_edges()))
+                    print(
+                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: +child C (nodes=%d, edges=%d)"
+                        % (inner_iter, C.number_of_nodes(), C.number_of_edges())
+                    )
 
                 # ring closures against remaining anchors
                 ancrs_rest = [a_ for a_ in ancrs if a_ != a]
                 if ancrs_rest:
                     # powerset size (non-empty subsets)
                     psize = (1 << len(ancrs_rest)) - 1
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: ring-closure subsets=%d over anchors_rest=%s"
-                          % (inner_iter, psize, ancrs_rest))
+                    print(
+                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: ring-closure subsets=%d over anchors_rest=%s"
+                        % (inner_iter, psize, ancrs_rest)
+                    )
 
                 sub_counter = 0
                 for subset in powerset(ancrs_rest):
@@ -827,12 +841,16 @@ def greedy_oracle_decoder_faster(
                     H = C.copy()
                     new_nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=total_nodes)
                     if new_nid is None:
-                        print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: connect_all_if_possible -> None (subset=%s)"
-                              % (inner_iter, sub_counter, list(subset)))
+                        print(
+                            f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: connect_all_if_possible -> None (subset=%s)"
+                            % (inner_iter, sub_counter, list(subset))
+                        )
                         continue
                     if H.number_of_edges() > total_edges:
-                        print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: edges overflow after ring close: %d>%d"
-                              % (inner_iter, sub_counter, H.number_of_edges(), total_edges))
+                        print(
+                            f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: edges overflow after ring close: %d>%d"
+                            % (inner_iter, sub_counter, H.number_of_edges(), total_edges)
+                        )
                         continue
 
                     keyH = _hash(H)
@@ -843,8 +861,10 @@ def greedy_oracle_decoder_faster(
                     global_seen.add(keyH)
                     local_seen.add(keyH)
                     children.append(H)
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: +child H (subset=%s, nodes=%d, edges=%d)"
-                          % (inner_iter, sub_counter, list(subset), H.number_of_nodes(), H.number_of_edges()))
+                    print(
+                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: +child H (subset=%s, nodes=%d, edges=%d)"
+                        % (inner_iter, sub_counter, list(subset), H.number_of_nodes(), H.number_of_edges())
+                    )
 
         if not children:
             print(f"{_ts()} NO-CHILDREN: stopping; returning current population.")

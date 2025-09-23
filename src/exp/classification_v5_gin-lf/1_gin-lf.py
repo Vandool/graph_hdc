@@ -434,13 +434,13 @@ def evaluate_as_oracle(
 
 class MetricsPlotsAndOracleCallback(Callback):
     def __init__(
-        self,
-        *,
-        encoder: AbstractGraphEncoder,
-        cfg: Config,
-        evals_dir: Path,
-        artefacts_dir: Path,
-        oracle_on_val_end: bool = True,
+            self,
+            *,
+            encoder: AbstractGraphEncoder,
+            cfg: Config,
+            evals_dir: Path,
+            artefacts_dir: Path,
+            oracle_on_val_end: bool = True,
     ):
         super().__init__()
         self.encoder = encoder
@@ -453,7 +453,6 @@ class MetricsPlotsAndOracleCallback(Callback):
         self._logits = []
         self._train_losses = []
         self._val_losses = []
-        self._val_batch_losses = []
         self._epoch_rows = []
         self._pr_rows = []  # list of dicts: epoch, thr, prec, rec
         self._roc_rows = []  # list of dicts: epoch, thr, tpr, fpr
@@ -465,74 +464,48 @@ class MetricsPlotsAndOracleCallback(Callback):
             df.with_columns = None  # just to silence static analyzers
             df.to_csv(path.with_suffix(".csv"), index=False)
 
-    def on_train_epoch_end(self, trainer, _):
+    def on_train_epoch_end(self, trainer, pl_module):
+        # Lightning names can vary; try common keys
         cm = trainer.callback_metrics
-        # check in order of preference
-        key = next((k for k in ("loss_epoch", "loss") if k in cm), None)
-        if key is not None and torch.is_tensor(cm[key]):
-            self._train_losses.append(float(cm[key].detach().cpu()))
+        tr = None
+        for k in ("loss_epoch", "train_loss_epoch", "loss"):
+            if k in cm and torch.is_tensor(cm[k]):
+                tr = float(cm[k].detach().cpu().item())
+                break
+        if tr is not None:
+            self._train_losses.append(tr)
 
-    def on_validation_epoch_start(self, _, __):
+    def on_validation_epoch_start(self, trainer, pl_module):
         self._ys.clear()
         self._logits.clear()
-        self._val_batch_losses = []
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        # No extra forward — use outputs from validation_step
-        if outputs is None:
-            return
-        # If multiple loaders, Lightning can hand a list/tuple
-        if isinstance(outputs, (list, tuple)):
-            if not outputs:
-                return
-            outputs = outputs[0]
-
-        y = outputs.get("y")
-        logits = outputs.get("logits")
-        loss = outputs.get("loss")
-
-        if y is None or logits is None:
-            return
-
-        # keep a consistent contract: detached, float, CPU, 1D
-        self._ys.append(y.detach().float().cpu().view(-1))
-        self._logits.append(logits.detach().float().cpu().view(-1))
-
-        if torch.is_tensor(loss):
-            self._val_batch_losses.append(loss.detach().float().cpu())
+        with torch.no_grad():
+            out = pl_module(batch)
+            logits = out["graph_prediction"].squeeze(-1).detach().float().cpu()
+            y = batch.y.detach().float().cpu()
+        self._logits.append(logits)
+        self._ys.append(y)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if not self._ys:
             return
 
-        epoch = int(trainer.current_epoch)
+        # concat
+        y = torch.cat(self._ys).numpy().astype(int)
+        z = torch.cat(self._logits).numpy().astype(np.float32)
+        p = 1.0 / (1.0 + np.exp(-z))  # sigmoid
 
-        # concat on CPU
-        y_t = torch.cat(self._ys).view(-1).to(dtype=torch.float32)  # for loss
-        z_t = torch.cat(self._logits).view(-1).to(dtype=torch.float32)
-
-        # (optional) sanity check that we truly have logits
-        with torch.no_grad():
-            zmin, zmax = z_t.min().item(), z_t.max().item()
-            if zmin >= 0.0 and zmax <= 1.0:
-                print("[warn] collected 'logits' look like probabilities; check validation_step.")
-
-        # prefer averaging per-batch losses (matches training reduction)
-        if getattr(self, "_val_batch_losses", None):
-            val_loss = float(torch.stack(self._val_batch_losses).mean().item())
-        else:
-            val_loss = float(F.binary_cross_entropy_with_logits(z_t, y_t).item())
-
+        # unweighted val loss for comparability
+        val_loss = float(
+            F.binary_cross_entropy_with_logits(torch.from_numpy(z), torch.from_numpy(y.astype(np.float32)))
+        )
         self._val_losses.append(val_loss)
-
-        # probabilities for metrics
-        p = torch.sigmoid(z_t).cpu().numpy()
-        y = y_t.cpu().numpy().astype(int)
 
         # prevalence
         pi = float(y.mean())
 
-        # robust metrics
+        # robust metrics (handle single-class batches)
         if np.unique(y).size < 2:
             auc = ap = float("nan")
             prec = rec = thr_pr = None
@@ -543,8 +516,10 @@ class MetricsPlotsAndOracleCallback(Callback):
             prec, rec, thr_pr = precision_recall_curve(y, p)
             fpr, tpr, thr_roc = roc_curve(y, p)
 
+        # Brier
         brier = float(brier_score_loss(y, p)) if np.unique(y).size == 2 else float("nan")
 
+        # @0.5 metrics
         yhat05 = (p >= 0.5).astype(int)
         acc05 = float((yhat05 == y).mean())
         f105 = float(f1_score(y, yhat05, zero_division=0))
@@ -554,29 +529,45 @@ class MetricsPlotsAndOracleCallback(Callback):
         except Exception:
             mcc05 = 0.0
 
+        # --- Confusion matrix @0.5 ---
         cm05 = confusion_matrix(y, yhat05, labels=[0, 1])
         tn05, fp05, fn05, tp05 = [int(v) for v in cm05.ravel()]
 
+        # best-F1 from PR thresholds
         if prec is not None and len(prec) > 1:
             f1s = 2 * prec[1:] * rec[1:] / (prec[1:] + rec[1:] + 1e-12)
             best_i = int(np.nanargmax(f1s))
             best_thr = float(thr_pr[best_i])
             f1_best = float(f1s[best_i])
-
+            # stash PR/ROC rows for parquet
+            epoch = int(trainer.current_epoch)
             self._pr_rows.extend(
-                {"epoch": epoch, "threshold": float(t), "precision": float(pr), "recall": float(rc)}
-                for pr, rc, t in zip(prec[1:], rec[1:], thr_pr, strict=False)
+                [
+                    {"epoch": epoch, "threshold": float(t), "precision": float(pr), "recall": float(rc)}
+                    for pr, rc, t in zip(prec[1:], rec[1:], thr_pr, strict=False)
+                ]
             )
             if fpr is not None:
                 self._roc_rows.extend(
-                    {"epoch": epoch, "threshold": float(t), "tpr": float(tp), "fpr": float(fp)}
-                    for fp, tp, t in zip(fpr, tpr, thr_roc, strict=False)
+                    [
+                        {"epoch": epoch, "threshold": float(t), "tpr": float(tp), "fpr": float(fp)}
+                        for fp, tp, t in zip(fpr, tpr, thr_roc, strict=False)
+                    ]
                 )
         else:
             best_thr = float("nan")
             f1_best = float("nan")
+            epoch = int(trainer.current_epoch)
 
-        # log to Lightning (will coexist with module's val_loss)
+        # --- Confusion matrix @best F1 threshold (if available) ---
+        if np.isfinite(best_thr):
+            yhat_best = (p >= best_thr).astype(int)
+            cmb = confusion_matrix(y, yhat_best, labels=[0, 1])
+            tnb, fpb, fnb, tpb = [int(v) for v in cmb.ravel()]
+        else:
+            tnb = fpb = fnb = tpb = np.nan
+
+        # log to Lightning
         metrics = {
             "val_loss": val_loss,
             "val_auc": auc,
@@ -587,36 +578,28 @@ class MetricsPlotsAndOracleCallback(Callback):
             "val_f1@0.5": f105,
             "val_bal_acc@0.5": bal05,
             "val_mcc@0.5": mcc05,
+            # Confusion matrix counts (scalars => safe for Lightning/CSVLogger)
+            # "val_tn@0.5": tn05,
+            # "val_fp@0.5": fp05,
+            # "val_fn@0.5": fn05,
+            # "val_tp@0.5": tp05,
             "val_best_f1": f1_best,
             "val_best_thr": best_thr,
-            "val_tn@0.5": tn05,
-            "val_fp@0.5": fp05,
-            "val_fn@0.5": fn05,
-            "val_tp@0.5": tp05,
+            # confusion matrix at best threshold
+            "val_tn@best": tnb,
+            "val_fp@best": fpb,
+            "val_fn@best": fnb,
+            "val_tp@best": tpb,
         }
         pl_module.log_dict(metrics, prog_bar=True, logger=True)
 
-        # persist epoch summary row now
+        # persist epoch summary row now (so crashes don’t lose it)
         row = {"epoch": epoch, **metrics}
         self._epoch_rows.append(row)
-        self._save_parquet_or_csv(pd.DataFrame([row]), self.evals_dir / "epoch_metrics.parquet")
+        df_epoch = pd.DataFrame([row])
+        self._save_parquet_or_csv(df_epoch, self.evals_dir / "epoch_metrics.parquet")
 
-        # plots (unchanged), but note: you now have exactly one val loss per epoch
-        with contextlib.suppress(Exception):
-            self.artefacts_dir.mkdir(parents=True, exist_ok=True)
-            epochs = np.arange(len(self._val_losses))
-            plt.figure()
-            if self._train_losses:
-                plt.plot(np.arange(len(self._train_losses)), self._train_losses, label="train_loss")
-            plt.plot(epochs, self._val_losses, label="val_loss")
-            plt.xlabel("epoch")
-            plt.ylabel("loss")
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(self.artefacts_dir / "loss_curves.png")
-            plt.close()
-
-        # optional oracle eval...
+        # optional: Oracle eval with best_thr
         if self.oracle_on_val_end and np.isfinite(best_thr) and epoch > 0:
             with torch.no_grad():
                 oracle_acc = evaluate_as_oracle(
@@ -626,10 +609,14 @@ class MetricsPlotsAndOracleCallback(Callback):
                     oracle_beam_size=self.cfg.oracle_beam_size,
                     oracle_threshold=best_thr,
                     dataset=self.cfg.dataset,
+                    artifact_dir=self.artefacts_dir,
+                    epoch=epoch
                 )
             pl_module.log("val_oracle_acc", float(oracle_acc), prog_bar=False, logger=True)
+            # also store it
             self._epoch_rows[-1]["val_oracle_acc"] = float(oracle_acc)
-            self._save_parquet_or_csv(pd.DataFrame([self._epoch_rows[-1]]), self.evals_dir / "epoch_metrics.parquet")
+            df_epoch = pd.DataFrame([self._epoch_rows[-1]])
+            self._save_parquet_or_csv(df_epoch, self.evals_dir / "epoch_metrics.parquet")
 
         # store last-epoch arrays for plotting
         self._last_y = y
@@ -637,7 +624,7 @@ class MetricsPlotsAndOracleCallback(Callback):
         self._last_pr = (prec, rec, thr_pr) if prec is not None else None
         self._last_roc = (fpr, tpr, thr_roc) if fpr is not None else None
 
-    def on_fit_end(self, _, __):
+    def on_fit_end(self, trainer, pl_module):
         # Write full PR/ROC tables (all epochs) once
         if self._pr_rows:
             self._save_parquet_or_csv(pd.DataFrame(self._pr_rows), self.evals_dir / "pr_curve.parquet")
@@ -806,6 +793,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         learning_rate=cfg.lr,
     ).to(device)
 
+    log(f"Model: {model!s}")
+    log(f"Model hparams: {model.hparams!s}")
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
     log(f"Model on: {next(model.parameters()).device}")
 
@@ -982,7 +971,7 @@ if __name__ == "__main__":
             exp_dir_name="overfitting_batch_norm",
             seed=42,
             epochs=5,
-            batch_size=16,
+            batch_size=32,
             model_name="GIN-LF",
             hv_dim=40 * 40,
             vsa=VSAModel.HRR,
@@ -991,12 +980,12 @@ if __name__ == "__main__":
             weight_decay=0.0,
             num_workers=0,
             prefetch_factor=None,
-            pin_memory=False,
+            pin_memory=True,
             persistent_workers=None,
             continue_from=None,
             resume_retrain_last_epoch=False,
-            p_per_parent=2,
-            n_per_parent=2,
+            p_per_parent=20,
+            n_per_parent=20,
             oracle_beam_size=8,
             oracle_num_evals=8,
         )
