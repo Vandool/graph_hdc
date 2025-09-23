@@ -93,7 +93,7 @@ def setup_exp(dir_name: str | None = None) -> dict:
 class FlowConfig:
     exp_dir_name: str | None = None
     seed: int = 42
-    epochs: int = 50
+    epochs: int = 700
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 0.0
@@ -702,7 +702,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        # prefetch_factor=6,
+        prefetch_factor=6,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -712,7 +712,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        # prefetch_factor=6,
+        prefetch_factor=6,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
