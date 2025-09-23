@@ -1590,8 +1590,7 @@ class ConditionalGINLateFiLM(pl.LightningModule):
         batch_size = int(getattr(batch, "num_graphs", target.size(0)))
         self.log("val_loss", val_loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
         # return CPU tensors (small) to be robust across strategies
-        return {"logits": logits.detach().cpu(), "y": target.detach().cpu()}
-
+        return {"logits": logits.detach().cpu(), "y": target.detach().cpu(), "loss": val_loss.detach().cpu()}
 
     def configure_optimizers(self):
         wd = getattr(self, "weight_decay", 0.0)

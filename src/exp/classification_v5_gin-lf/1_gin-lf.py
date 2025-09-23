@@ -305,12 +305,12 @@ class PairsDataModule(pl.LightningDataModule):
         self.validation_dataloader = self._prepare_val_dataloader()
 
     def _prepare_val_dataloader(self) -> DataLoader:
-        # valid_base = (
-        #     torch.utils.data.Subset(self.valid_full, self._valid_indices)
-        #     if self._valid_indices is not None
-        #     else self.valid_full
-        # )
-        valid_ds = PairsGraphsEncodedDataset(self.valid_full, encoder=self.encoder, device=self.device)
+        valid_base = (
+            torch.utils.data.Subset(self.valid_full, self._valid_indices)
+            if self._valid_indices is not None
+            else self.valid_full
+        )
+        valid_ds = PairsGraphsEncodedDataset(valid_base, encoder=self.encoder, device=self.device)
         return DataLoader(
             valid_ds,
             batch_size=self.cfg.batch_size,
@@ -453,6 +453,7 @@ class MetricsPlotsAndOracleCallback(Callback):
         self._logits = []
         self._train_losses = []
         self._val_losses = []
+        self._val_batch_losses = []
         self._epoch_rows = []
         self._pr_rows = []  # list of dicts: epoch, thr, prec, rec
         self._roc_rows = []  # list of dicts: epoch, thr, tpr, fpr
@@ -474,32 +475,120 @@ class MetricsPlotsAndOracleCallback(Callback):
     def on_validation_epoch_start(self, _, __):
         self._ys.clear()
         self._logits.clear()
+        self._val_batch_losses = []
 
     def on_validation_batch_end(self, _, __, outputs, ___, _____, dataloader_idx=0):  # noqa: ARG002
         # No extra forward — use outputs from validation_step
         if outputs is None:
             return
         # Lightning can give list/tuple when multiple loaders; normalize
-        self._logits.append(outputs["logits"])
         self._ys.append(outputs["y"])
+        self._logits.append(outputs["logits"].float())
+        self._ys.append(outputs["y"].float())
+        if "loss" in outputs and torch.is_tensor(outputs["loss"]):
+            self._val_batch_losses.append(outputs["loss"].float())
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if not self._ys:
             return
 
-        # concat
-        y = torch.cat(self._ys).numpy().astype(int)
-        z = torch.cat(self._logits).numpy().astype(np.float32)
-        p = 1.0 / (1.0 + np.exp(-z))  # sigmoid
+        epoch = int(trainer.current_epoch)
 
-        # unweighted val loss for comparability
-        val_loss = float(
-            F.binary_cross_entropy_with_logits(torch.from_numpy(z), torch.from_numpy(y.astype(np.float32)))
-        )
+        # concat on CPU
+        y_t = torch.cat(self._ys).view(-1).to(dtype=torch.float32)  # for loss
+        z_t = torch.cat(self._logits).view(-1).to(dtype=torch.float32)
+
+        # (optional) sanity check that we truly have logits
+        with torch.no_grad():
+            zmin, zmax = z_t.min().item(), z_t.max().item()
+            if zmin >= 0.0 and zmax <= 1.0:
+                print("[warn] collected 'logits' look like probabilities; check validation_step.")
+
+        # prefer averaging per-batch losses (matches training reduction)
+        if getattr(self, "_val_batch_losses", None):
+            val_loss = float(torch.stack(self._val_batch_losses).mean().item())
+        else:
+            val_loss = float(F.binary_cross_entropy_with_logits(z_t, y_t).item())
+
         self._val_losses.append(val_loss)
 
-        # ---- Save loss curves on each epoch end ----
-        # Safe if called repeatedly; overwrites the same file.
+        # probabilities for metrics
+        p = torch.sigmoid(z_t).cpu().numpy()
+        y = y_t.cpu().numpy().astype(int)
+
+        # prevalence
+        pi = float(y.mean())
+
+        # robust metrics
+        if np.unique(y).size < 2:
+            auc = ap = float("nan")
+            prec = rec = thr_pr = None
+            fpr = tpr = thr_roc = None
+        else:
+            auc = float(roc_auc_score(y, p))
+            ap = float(average_precision_score(y, p))
+            prec, rec, thr_pr = precision_recall_curve(y, p)
+            fpr, tpr, thr_roc = roc_curve(y, p)
+
+        brier = float(brier_score_loss(y, p)) if np.unique(y).size == 2 else float("nan")
+
+        yhat05 = (p >= 0.5).astype(int)
+        acc05 = float((yhat05 == y).mean())
+        f105 = float(f1_score(y, yhat05, zero_division=0))
+        bal05 = float(balanced_accuracy_score(y, yhat05))
+        try:
+            mcc05 = float(matthews_corrcoef(y, yhat05))
+        except Exception:
+            mcc05 = 0.0
+
+        cm05 = confusion_matrix(y, yhat05, labels=[0, 1])
+        tn05, fp05, fn05, tp05 = [int(v) for v in cm05.ravel()]
+
+        if prec is not None and len(prec) > 1:
+            f1s = 2 * prec[1:] * rec[1:] / (prec[1:] + rec[1:] + 1e-12)
+            best_i = int(np.nanargmax(f1s))
+            best_thr = float(thr_pr[best_i])
+            f1_best = float(f1s[best_i])
+
+            self._pr_rows.extend(
+                {"epoch": epoch, "threshold": float(t), "precision": float(pr), "recall": float(rc)}
+                for pr, rc, t in zip(prec[1:], rec[1:], thr_pr, strict=False)
+            )
+            if fpr is not None:
+                self._roc_rows.extend(
+                    {"epoch": epoch, "threshold": float(t), "tpr": float(tp), "fpr": float(fp)}
+                    for fp, tp, t in zip(fpr, tpr, thr_roc, strict=False)
+                )
+        else:
+            best_thr = float("nan")
+            f1_best = float("nan")
+
+        # log to Lightning (will coexist with module's val_loss)
+        metrics = {
+            "val_loss": val_loss,
+            "val_auc": auc,
+            "val_ap": ap,
+            "val_brier": brier,
+            "val_prevalence": pi,
+            "val_acc@0.5": acc05,
+            "val_f1@0.5": f105,
+            "val_bal_acc@0.5": bal05,
+            "val_mcc@0.5": mcc05,
+            "val_best_f1": f1_best,
+            "val_best_thr": best_thr,
+            "val_tn@0.5": tn05,
+            "val_fp@0.5": fp05,
+            "val_fn@0.5": fn05,
+            "val_tp@0.5": tp05,
+        }
+        pl_module.log_dict(metrics, prog_bar=True, logger=True)
+
+        # persist epoch summary row now
+        row = {"epoch": epoch, **metrics}
+        self._epoch_rows.append(row)
+        self._save_parquet_or_csv(pd.DataFrame([row]), self.evals_dir / "epoch_metrics.parquet")
+
+        # plots (unchanged), but note: you now have exactly one val loss per epoch
         with contextlib.suppress(Exception):
             self.artefacts_dir.mkdir(parents=True, exist_ok=True)
             epochs = np.arange(len(self._val_losses))
@@ -514,99 +603,7 @@ class MetricsPlotsAndOracleCallback(Callback):
             plt.savefig(self.artefacts_dir / "loss_curves.png")
             plt.close()
 
-        # prevalence
-        pi = float(y.mean())
-
-        # robust metrics (handle single-class batches)
-        if np.unique(y).size < 2:
-            auc = ap = float("nan")
-            prec = rec = thr_pr = None
-            fpr = tpr = thr_roc = None
-        else:
-            auc = float(roc_auc_score(y, p))
-            ap = float(average_precision_score(y, p))
-            prec, rec, thr_pr = precision_recall_curve(y, p)
-            fpr, tpr, thr_roc = roc_curve(y, p)
-
-        # Brier
-        brier = float(brier_score_loss(y, p)) if np.unique(y).size == 2 else float("nan")
-
-        # @0.5 metrics
-        yhat05 = (p >= 0.5).astype(int)
-        acc05 = float((yhat05 == y).mean())
-        f105 = float(f1_score(y, yhat05, zero_division=0))
-        bal05 = float(balanced_accuracy_score(y, yhat05))
-        try:
-            mcc05 = float(matthews_corrcoef(y, yhat05))
-        except Exception:
-            mcc05 = 0.0
-
-        # --- Confusion matrix @0.5 ---
-        cm05 = confusion_matrix(y, yhat05, labels=[0, 1])
-        tn05, fp05, fn05, tp05 = [int(v) for v in cm05.ravel()]
-
-        # best-F1 from PR thresholds
-        if prec is not None and len(prec) > 1:
-            f1s = 2 * prec[1:] * rec[1:] / (prec[1:] + rec[1:] + 1e-12)
-            best_i = int(np.nanargmax(f1s))
-            best_thr = float(thr_pr[best_i])
-            f1_best = float(f1s[best_i])
-            # stash PR/ROC rows for parquet
-            epoch = int(trainer.current_epoch)
-            self._pr_rows.extend(
-                [
-                    {"epoch": epoch, "threshold": float(t), "precision": float(pr), "recall": float(rc)}
-                    for pr, rc, t in zip(prec[1:], rec[1:], thr_pr, strict=False)
-                ]
-            )
-            if fpr is not None:
-                self._roc_rows.extend(
-                    [
-                        {"epoch": epoch, "threshold": float(t), "tpr": float(tp), "fpr": float(fp)}
-                        for fp, tp, t in zip(fpr, tpr, thr_roc, strict=False)
-                    ]
-                )
-        else:
-            best_thr = float("nan")
-            f1_best = float("nan")
-            epoch = int(trainer.current_epoch)
-
-        # --- Confusion matrix @best F1 threshold (if available) ---
-        if np.isfinite(best_thr):
-            yhat_best = (p >= best_thr).astype(int)
-            cmb = confusion_matrix(y, yhat_best, labels=[0, 1])
-            tnb, fpb, fnb, tpb = [int(v) for v in cmb.ravel()]
-        else:
-            tnb = fpb = fnb = tpb = np.nan
-
-        # log to Lightning
-        metrics = {
-            "val_loss": val_loss,
-            "val_auc": auc,
-            "val_ap": ap,
-            "val_brier": brier,
-            "val_prevalence": pi,
-            "val_acc@0.5": acc05,
-            "val_f1@0.5": f105,
-            "val_bal_acc@0.5": bal05,
-            "val_mcc@0.5": mcc05,
-            "val_best_f1": f1_best,
-            "val_best_thr": best_thr,
-            # confusion matrix at best threshold
-            "val_tn@best": tnb,
-            "val_fp@best": fpb,
-            "val_fn@best": fnb,
-            "val_tp@best": tpb,
-        }
-        pl_module.log_dict(metrics, prog_bar=True, logger=True)
-
-        # persist epoch summary row now (so crashes don’t lose it)
-        row = {"epoch": epoch, **metrics}
-        self._epoch_rows.append(row)
-        df_epoch = pd.DataFrame([row])
-        self._save_parquet_or_csv(df_epoch, self.evals_dir / "epoch_metrics.parquet")
-
-        # optional: Oracle eval with best_thr
+        # optional oracle eval...
         if self.oracle_on_val_end and np.isfinite(best_thr) and epoch > 0:
             with torch.no_grad():
                 oracle_acc = evaluate_as_oracle(
@@ -618,10 +615,8 @@ class MetricsPlotsAndOracleCallback(Callback):
                     dataset=self.cfg.dataset,
                 )
             pl_module.log("val_oracle_acc", float(oracle_acc), prog_bar=False, logger=True)
-            # also store it
             self._epoch_rows[-1]["val_oracle_acc"] = float(oracle_acc)
-            df_epoch = pd.DataFrame([self._epoch_rows[-1]])
-            self._save_parquet_or_csv(df_epoch, self.evals_dir / "epoch_metrics.parquet")
+            self._save_parquet_or_csv(pd.DataFrame([self._epoch_rows[-1]]), self.evals_dir / "epoch_metrics.parquet")
 
         # store last-epoch arrays for plotting
         self._last_y = y
@@ -795,6 +790,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         conv_units=cfg.conv_units,
         pred_units=cfg.pred_head_units,
         weight_decay=cfg.weight_decay,
+        learning_rate=cfg.lr,
     ).to(device)
 
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
@@ -851,7 +847,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         deterministic=False,
         precision=pick_precision(),
         num_sanity_val_steps=0,
-        limit_val_batches=0.75
+        limit_val_batches=0.75,
     )
 
     # --- Train
@@ -1003,4 +999,4 @@ if __name__ == "__main__":
         cfg.num_workers = 0
     print(f"is_dev: {is_dev}")
     pprint(asdict(cfg), indent=2)
-    experiment = run_experiment(cfg, is_dev=is_dev)
+    run_experiment(cfg, is_dev=is_dev)
