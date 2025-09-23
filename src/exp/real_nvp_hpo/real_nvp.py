@@ -937,7 +937,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
 def run_zinc_trial(trial: optuna.Trial):
     flow_cfg = get_cfg(trial, dataset="zinc")
     flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_7744
-    flow_cfg.hv_dim = 80 * 80
+    flow_cfg.hv_dim = 88 * 88
     return run_experiment(flow_cfg)
 
 

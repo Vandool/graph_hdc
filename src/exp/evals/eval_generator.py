@@ -47,12 +47,12 @@ draw = False
 T_canon_zinc = None
 T_canon_qm9 = None
 
-n_samples = 100
+n_samples = 10
 strict_decoder = False
-beam_size = 64
-expand_on_n_anchors = 12
-USE_PAIR_FEASIBILITY = False
-generation = "generation8"
+beam_size = 4
+expand_on_n_anchors = 8
+USE_PAIR_FEASIBILITY = True
+generation = "generation6"
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
@@ -62,7 +62,7 @@ gen_paths = list(
         start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2",
         prefixes=("epoch",),
         desired_ending=".ckpt",
-        skip_substrings=("zinc",),
+        skip_substrings=("qm9",),
     )
 )
 print(f"Found {len(gen_paths)} generator checkpoints")
@@ -72,6 +72,7 @@ for gen_ckpt_path in gen_paths:
     #     break
     # loop += 1
     do = {
+        # QM9 TOP
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an/models/epoch42-val-4172.5571.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch26-val-2516.5386.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch50-val-4308.1338.ckpt",
@@ -81,12 +82,23 @@ for gen_ckpt_path in gen_paths:
         "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch41-val-3322.6777.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid512_s42_lr1e-3_wd0.0_an/models/epoch19-val-2442.2910.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd0.0_an/models/epoch25-val-2071.7695.ckpt",
+
+        # ZINC TOP
+        "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd1e-4_an/models/epoch16-val-2940.8835.ckpt",
+        "0_real_nvp_v2/nvp_zinc_h7744_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch13-val-14633.5537.ckpt",
+        "0_real_nvp_v2/nvp_zinc_h7744_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch21-val-15153.5127.ckpt",
+        "0_real_nvp_v2/nvp_zinc_h7744_f8_hid512_s42_lr1e-3_wd0.0_noan/models/epoch10-val-10562.5449.ckpt",
+        "0_real_nvp_v2/nvp_zinc_h7744_f6_hid512_s42_lr1e-3_wd0.0_an/models/epoch12-val-9837.6328.ckpt",
+        "0_real_nvp_v2/nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch13-val-18494.6348.ckpt",
+        "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd0.0_an/models/epoch16-val-2688.6597.ckpt",
+
     }
 
     if any(d in str(gen_ckpt_path) for d in do):
+        print(f"Skipping {gen_ckpt_path}")
         continue
 
-    print(f"Gene_rator Checkpoint: {gen_ckpt_path}")
+    print(f"Generator Checkpoint: {gen_ckpt_path}")
     # Read the metrics from training
     evals_dir = gen_ckpt_path.parent.parent / "evaluations"
     epoch_metrics = pd.read_parquet(evals_dir / "metrics.parquet")
@@ -128,7 +140,8 @@ for gen_ckpt_path in gen_paths:
 
     # Best classifier checkpoint for
     if base_dataset == "zinc":
-        ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc/models/epoch06-val0.2718.ckpt"
+        # ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc/models/epoch06-val0.2718.ckpt"
+        ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc_resume/models/epoch10-val0.2387.ckpt"
     else:
         ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt"
         # ckpt_path = GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt"

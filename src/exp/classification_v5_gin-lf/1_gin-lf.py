@@ -285,7 +285,6 @@ class PairsDataModule(pl.LightningDataModule):
         # set in setup()
         self.train_full = None
         self.valid_full = None
-        self.validation_dataloader = None
 
     def setup(self, stage=None):
         log("Loading pair datasets …")
@@ -302,24 +301,6 @@ class PairsDataModule(pl.LightningDataModule):
         # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
         self._valid_indices = balanced_indices_for_validation(ds=self.valid_full, seed=cfg.seed)
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
-        self.validation_dataloader = self._prepare_val_dataloader()
-
-    def _prepare_val_dataloader(self) -> DataLoader:
-        valid_base = (
-            torch.utils.data.Subset(self.valid_full, self._valid_indices)
-            if self._valid_indices is not None
-            else self.valid_full
-        )
-        valid_ds = PairsGraphsEncodedDataset(valid_base, encoder=self.encoder, device=self.device)
-        return DataLoader(
-            valid_ds,
-            batch_size=self.cfg.batch_size,
-            shuffle=False,
-            num_workers=cfg.num_workers,
-            pin_memory=cfg.pin_memory,
-            persistent_workers=cfg.persistent_workers,
-            prefetch_factor=cfg.prefetch_factor,
-        )
 
     def train_dataloader(self):
         train_ds = PairsGraphsEncodedDataset(self.train_full, encoder=self.encoder, device=self.device)
@@ -344,7 +325,21 @@ class PairsDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        return self.validation_dataloader
+        valid_base = (
+            torch.utils.data.Subset(self.valid_full, self._valid_indices)
+            if self._valid_indices is not None
+            else self.valid_full
+        )
+        valid_ds = PairsGraphsEncodedDataset(valid_base, encoder=self.encoder, device=self.device)
+        return DataLoader(
+            valid_ds,
+            batch_size=self.cfg.batch_size,
+            shuffle=False,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
+            persistent_workers=cfg.persistent_workers,
+            prefetch_factor=cfg.prefetch_factor,
+        )
 
 
 # ---------------------------------------------------------------------
@@ -434,13 +429,13 @@ def evaluate_as_oracle(
 
 class MetricsPlotsAndOracleCallback(Callback):
     def __init__(
-            self,
-            *,
-            encoder: AbstractGraphEncoder,
-            cfg: Config,
-            evals_dir: Path,
-            artefacts_dir: Path,
-            oracle_on_val_end: bool = True,
+        self,
+        *,
+        encoder: AbstractGraphEncoder,
+        cfg: Config,
+        evals_dir: Path,
+        artefacts_dir: Path,
+        oracle_on_val_end: bool = True,
     ):
         super().__init__()
         self.encoder = encoder
@@ -501,6 +496,19 @@ class MetricsPlotsAndOracleCallback(Callback):
             F.binary_cross_entropy_with_logits(torch.from_numpy(z), torch.from_numpy(y.astype(np.float32)))
         )
         self._val_losses.append(val_loss)
+
+        with contextlib.suppress(Exception):
+            epochs = np.arange(len(self._val_losses))
+            plt.figure()
+            if self._train_losses:
+                plt.plot(np.arange(len(self._train_losses)), self._train_losses, label="train_loss")
+            plt.plot(epochs, self._val_losses, label="val_loss")
+            plt.xlabel("epoch")
+            plt.ylabel("loss")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(self.artefacts_dir / "loss_curves.png")
+            plt.close()
 
         # prevalence
         pi = float(y.mean())
@@ -575,10 +583,6 @@ class MetricsPlotsAndOracleCallback(Callback):
             "val_bal_acc@0.5": bal05,
             "val_mcc@0.5": mcc05,
             # Confusion matrix counts (scalars => safe for Lightning/CSVLogger)
-            # "val_tn@0.5": tn05,
-            # "val_fp@0.5": fp05,
-            # "val_fn@0.5": fn05,
-            # "val_tp@0.5": tp05,
             "val_best_f1": f1_best,
             "val_best_thr": best_thr,
             # confusion matrix at best threshold
@@ -606,7 +610,7 @@ class MetricsPlotsAndOracleCallback(Callback):
                     oracle_threshold=best_thr,
                     dataset=self.cfg.dataset,
                     artifact_dir=self.artefacts_dir,
-                    epoch=epoch
+                    epoch=epoch,
                 )
             pl_module.log("val_oracle_acc", float(oracle_acc), prog_bar=False, logger=True)
             # also store it
@@ -839,13 +843,12 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         accelerator="auto",
         devices="auto",
         strategy="auto",
-        # gradient_clip_val=1.0,  # Do we need this?
+        gradient_clip_val=1.0,
         log_every_n_steps=500 if not is_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
         num_sanity_val_steps=0,
-        limit_val_batches=0.75,
     )
 
     # --- Train
