@@ -29,7 +29,7 @@ from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
-from src.utils.registery import resolve_model
+from src.utils.registery import resolve_model, retrieve_model
 from src.utils.utils import GLOBAL_MODEL_PATH, generated_node_edge_dist, pick_device
 
 LOCAL_DEV = "LOCAL_HDC_miss"
@@ -808,7 +808,7 @@ def run_experiment(cfg: FlowConfig):
         return 0.0
 
     log(f"Loading best checkpoint: {best_path}")
-    best_model = resolve_model("NVP").load_from_checkpoint(best_path)
+    best_model = retrieve_model("NVP").load_from_checkpoint(best_path)
     best_model.to(device).eval()
 
     # ---- per-sample NLL (really the KL objective) on validation ----

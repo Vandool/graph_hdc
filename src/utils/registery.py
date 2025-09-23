@@ -24,7 +24,7 @@ def resolve_model(name: ModelType, **kwargs) -> pl.LightningModule:
         raise KeyError(msg)
     return _MODEL_REGISTRY[name](**kwargs)
 
-def retrieve_model(name: ModelType) -> Callable[[...], LightningModule]:
+def retrieve_model(name: ModelType) -> Callable[LightningModule]:
     if name not in _MODEL_REGISTRY:
         msg = f"Unknown model '{name}'. Registered: {list(_MODEL_REGISTRY)}"
         raise KeyError(msg)
