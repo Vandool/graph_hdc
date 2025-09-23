@@ -668,7 +668,6 @@ def run_experiment(cfg: FlowConfig):
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
     log("Hypernet ready.")
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    encoder = hypernet.to(device).eval()
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
 
@@ -702,7 +701,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=6,
+        prefetch_factor=None if local_dev else 6,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -712,7 +711,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        prefetch_factor=6,
+        prefetch_factor=None if local_dev else 6,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -780,8 +779,12 @@ def run_experiment(cfg: FlowConfig):
 
     # ----- curves to parquet / png -----
     metrics_path = Path(csv_logger.log_dir) / "metrics.csv"
+    min_val_loss = float("inf")
     if metrics_path.exists():
         df = pd.read_csv(metrics_path)
+        ## Determine best val loos
+        idx = df["val_loss"].idxmin()
+        min_val_loss = df.loc[idx, "val_loss"]
         df.to_parquet(evals_dir / "metrics.parquet", index=False)
         plot_train_val_loss(df, artefacts_dir)
         # Optional: print final numbers for quick scan
@@ -896,7 +899,9 @@ def run_experiment(cfg: FlowConfig):
     ).to_parquet(evals_dir / "sample_head.parquet", index=False)
 
     log("Experiment completed.")
-    return val_stats["nll_model"]
+    log(f"Best val loss: {min_val_loss:.4f}")
+    log(f"Best checkpoint: {best_path}")
+    return min_val_loss
 
 
 def get_cfg(trial: optuna.Trial, dataset: str):
