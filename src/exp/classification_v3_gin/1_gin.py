@@ -442,13 +442,6 @@ def evaluate_as_oracle(
         ps = []
         for j, g in enumerate(nx_GS):
             is_final = is_induced_subgraph_by_features(g1=g, g2=full_graph_nx, node_keys=["feat"])
-            if is_final:
-                ax = draw_nx_with_atom_colorings(H=g, label="DECODED")
-                fig = ax.figure
-                fig_path = artifact_dir / f"Decoded e{epoch}-{i}-{j}"
-                fig.savefig(fig_path, dpi=300, bbox_inches="tight", pad_inches=0.02)
-                print(f"Decoded Graph detected saved in: {fig_path}")
-                plt.close(fig)  # important in loops
             ps.append(int(is_final))
         correct_p = int(sum(ps) >= 1)
         if correct_p:
