@@ -77,7 +77,7 @@ use_best_threshold = True
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
-files = list(find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "zinc")))
+files = list(find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "qm9")))
 print(f"Found {len(files)} checkpoints.")
 for ckpt_path in files:
     print(f"File Name: {ckpt_path}")
@@ -92,11 +92,11 @@ for ckpt_path in files:
     last = epoch_metrics.iloc[-1].add_suffix("_last")
 
     oracle_setting = {
-        "beam_size": 128,
+        "beam_size": 16,
         "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
-        "use_pair_feasibility": False,
-        "expand_on_n_anchors": 12,
+        "use_pair_feasibility": True,
+        "expand_on_n_anchors": 8,
     }
 
     ## Determine model type
@@ -115,9 +115,11 @@ for ckpt_path in files:
     if "zinc" in str(ckpt_path):
         ds = SupportedDataset.ZINC_SMILES_HRR_7744
         dataset = ZincSmiles(split=split)
+        dataset_base = "zinc"
     else:  # Case qm9
         ds = SupportedDataset.QM9_SMILES_HRR_1600
         dataset = QM9Smiles(split=split)
+        dataset_base = "qm9"
 
     ## Hyper net
     hypernet: HyperNet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds.default_cfg).to(device=device)
@@ -207,8 +209,8 @@ for ckpt_path in files:
     asset_dir = GLOBAL_ARTEFACTS_PATH / "classification"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
-    parquet_path = asset_dir / "oracle_acc_2.parquet"
-    csv_path = asset_dir / "oracle_acc_2.csv"
+    parquet_path = asset_dir / f"oracle_acc_{dataset_base}.parquet"
+    csv_path = asset_dir / f"oracle_acc_{dataset_base}.csv"
 
     metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 

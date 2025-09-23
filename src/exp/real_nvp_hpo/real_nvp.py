@@ -156,96 +156,105 @@ def plot_train_val_loss(
     df: pd.DataFrame,
     artefacts_dir: Path,
     *,
-    skip_first: float = 0.1,  # int: num epochs to skip; float in (0,1): fraction of epochs to skip
+    skip_first: float = 0.1,  # int = epochs to skip; float in (0,1) = fraction to skip
     min_epoch: int | None = None,  # overrides skip_first if set
-    clip_top_q: float | None = None,  # e.g. 0.98 to clip outliers on y-axis
-    smooth_window: int | None = None,  # rolling mean window (in points)
+    smooth_window: int | None = None,  # rolling mean window (points)
+    clip_q: tuple[float, float] = (0.02, 0.98),  # robust y-limits from quantiles
     logy: bool = False,
-):
-    # possible names across PL versions / logging configs
-    train_epoch_keys = ["train_loss_epoch", "train_loss", "epoch_train_loss"]
-    val_epoch_keys = ["val_loss", "val/loss", "validation_loss"]
+) -> None:
+    """Plot train/val loss robustly (drops non-finite, clips outliers, averages per epoch)."""
 
-    train_col = _first_existing(df, train_epoch_keys)
-    val_col = _first_existing(df, val_epoch_keys)
-    epoch_col = _first_existing(df, ["epoch", "step"])
+    def _first_existing(cols: list[str]) -> str | None:
+        for c in cols:
+            if c in df.columns:
+                return c
+        return None
+
+    epoch_col = _first_existing(["epoch", "step"])
+    train_col = _first_existing(["train_loss_epoch", "train_loss", "epoch_train_loss"])
+    val_col = _first_existing(["val_loss", "val/loss", "validation_loss"])
 
     if epoch_col is None or (train_col is None and val_col is None):
-        log("Skip plot: no epoch/metric columns in metrics.csv for this run.")
+        print("No epoch/metric columns; skipping plot.")
         return
 
-    # ---- decide the cutoff epoch ----
-    uniq_epochs = pd.unique(df[epoch_col].dropna())
+    # --- define cutoff ---
+    uniq = pd.unique(df[epoch_col].dropna())
     try:
-        uniq_epochs = np.sort(uniq_epochs.astype(int))
+        uniq = np.sort(uniq.astype(int))
     except Exception:
-        uniq_epochs = np.sort(uniq_epochs)
-
+        uniq = np.sort(uniq)
     if min_epoch is not None:
         cutoff = min_epoch
     else:
         if isinstance(skip_first, float) and 0 < skip_first < 1:
-            k = int(round(skip_first * len(uniq_epochs)))
+            k = int(round(skip_first * len(uniq)))
         else:
             k = int(skip_first)
-        k = max(0, min(k, max(len(uniq_epochs) - 1, 0)))
-        cutoff = uniq_epochs[k] if len(uniq_epochs) else 0
+        k = max(0, min(k, max(len(uniq) - 1, 0)))
+        cutoff = uniq[k] if len(uniq) else 0
 
-    # filter out burn-in
-    df_f = df[df[epoch_col] >= cutoff]
+    df_f = df[df[epoch_col] >= cutoff].copy()
 
-    # helper: get a clean series, optionally smoothed
-    def _series(col):
-        s = df_f[[epoch_col, col]].dropna()
+    def _series(col: str | None):
+        if col is None or col not in df_f:
+            return None
+        s = (
+            df_f[[epoch_col, col]]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+            .groupby(epoch_col, as_index=False)[col]
+            .mean()
+            .rename(columns={col: "y"})
+        )
         if s.empty:
-            return None, None
+            return None
         if smooth_window and smooth_window > 1:
-            s[col] = s[col].rolling(smooth_window, min_periods=1, center=False).mean()
-        return s[epoch_col].values, s[col].values
+            s["y"] = s["y"].rolling(smooth_window, min_periods=1).mean()
+        return s
 
-    plt.figure(figsize=(8, 5))
+    train_s = _series(train_col)
+    val_s = _series(val_col)
 
-    plotted = False
-    if train_col is not None:
-        x, y = _series(train_col)
-        if x is not None:
-            plt.plot(x, y, label=f"{train_col} (≥{cutoff})")
-            plotted = True
-
-    if val_col is not None:
-        x, y = _series(val_col)
-        if x is not None:
-            plt.plot(x, y, label=f"{val_col} (≥{cutoff})")
-            plotted = True
-
-    if not plotted:
-        log("Skip plot: nothing to plot after burn-in filter.")
-        plt.close()
+    if train_s is None and val_s is None:
+        print("Nothing to plot after filtering; skipping.")
         return
 
-    if clip_top_q is not None and 0 < clip_top_q < 1:
-        # clip y-axis to reduce impact of a few spikes
-        ys = []
-        if train_col is not None:
-            ys.append(df_f[train_col].dropna().values)
-        if val_col is not None:
-            ys.append(df_f[val_col].dropna().values)
-        y_all = np.concatenate(ys) if ys else None
-        if y_all is not None and y_all.size:
-            ymax = float(np.quantile(y_all, clip_top_q))
-            ymin = float(np.nanmin(y_all))
-            plt.ylim(bottom=ymin, top=ymax)
+    plt.figure(figsize=(10, 6))
+    if train_s is not None:
+        plt.plot(train_s[epoch_col].to_numpy(), train_s["y"].to_numpy(), label=f"{train_col} (≥{cutoff})")
+    if val_s is not None:
+        plt.plot(val_s[epoch_col].to_numpy(), val_s["y"].to_numpy(), label=f"{val_col} (≥{cutoff})")
 
+    # --- robust y-limits (two-sided quantiles on combined series) ---
+    ys = []
+    if train_s is not None:
+        ys.append(train_s["y"].to_numpy())
+    if val_s is not None:
+        ys.append(val_s["y"].to_numpy())
+    if ys:
+        y_all = np.concatenate(ys)
+        if y_all.size:
+            qlo, qhi = np.quantile(y_all, clip_q)
+            if np.isfinite(qlo) and np.isfinite(qhi) and qhi > qlo:
+                plt.ylim(qlo, qhi)
+
+    # --- log scale only if strictly positive ---
     if logy:
-        plt.yscale("log")
+        yb, yt = plt.gca().get_ylim()
+        if yb > 0 and yt > 0:
+            plt.yscale("log")
+        else:
+            print("logy requested but data ≤ 0; using linear scale.")
 
     plt.xlabel(epoch_col)
     plt.ylabel("loss")
     plt.title("Train vs. Validation Loss")
     plt.legend()
     plt.tight_layout()
+
     artefacts_dir.mkdir(parents=True, exist_ok=True)
-    out = artefacts_dir / "train_val_loss.png"
+    out = artefacts_dir / "loss_curve.png"
     plt.savefig(out, dpi=150)
     plt.close()
     print(f"Saved train/val loss plot to {out} (cutoff ≥ {cutoff})")
@@ -747,7 +756,7 @@ def run_experiment(cfg: FlowConfig):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=20,
+        patience=15,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         verbose=True,
