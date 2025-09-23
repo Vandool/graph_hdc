@@ -1102,11 +1102,11 @@ class ConditionalGINConcat(pl.LightningModule):
             "learning_rate",
         )
 
-        self.cfg = cfg
-        num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
-        den = float(self.cfg.p_per_parent) if self.cfg.p_per_parent else 1.0
-        ratio = num / max(1.0, den)
-        self.register_buffer("pos_weight", torch.tensor([ratio], dtype=torch.float32))
+        # self.cfg = cfg
+        # num = float(self.cfg.n_per_parent) if self.cfg.n_per_parent else 0.0
+        # den = float(self.cfg.p_per_parent) if self.cfg.p_per_parent else 1.0
+        # ratio = num / max(1.0, den)
+        # self.register_buffer("pos_weight", torch.tensor([ratio], dtype=torch.float32))
 
         self.input_dim = input_dim
         self.condition_dim = condition_dim

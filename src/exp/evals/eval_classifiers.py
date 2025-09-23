@@ -49,6 +49,13 @@ Results
 /home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt: Accuracy 0.66 on 100 of validation set.
 /home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_medium_qm9/models/epoch06-val0.2831.ckpt: Accuracy 0.52 on 100 of validation set.
 /home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_deep_qm9/models/epoch02-val0.3406.ckpt: Accuracy 0.3 on 100 of validation set.
+
+{'beam_size': 64, 'oracle_threshold': 0.4073161780834198, 'strict': False, 'use_pair_feasibility': True, 'expand_on_n_anchors': 12}
+/home/akaveh/Projects/kit/graph_hdc/_models/1_gin/gin-f_baseline_qm9/models/epoch09-val0.3464.ckpt: Accuracy 0.56 on 100 of validation set.
+/home/akaveh/Projects/kit/graph_hdc/_models/1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt: Accuracy 0.5 on 100 of validation set.
+/home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt: Accuracy 0.73 on 100 of validation set.
+/home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_medium_qm9/models/epoch06-val0.2831.ckpt: Accuracy 0.68 on 100 of validation set.
+/home/akaveh/Projects/kit/graph_hdc/_models/1_mlp_lightning/MLP_deep_qm9/models/epoch02-val0.3406.ckpt: Accuracy 0.54 on 100 of validation set.
 """
 
 
@@ -70,7 +77,9 @@ use_best_threshold = True
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
-for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substring="nvp"):
+files = list(find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "zinc")))
+print(f"Found {len(files)} checkpoints.")
+for ckpt_path in files:
     print(f"File Name: {ckpt_path}")
 
     # Read the metrics from training
@@ -83,20 +92,20 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     last = epoch_metrics.iloc[-1].add_suffix("_last")
 
     oracle_setting = {
-        "beam_size": 32,
+        "beam_size": 1,
         "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
         "use_pair_feasibility": True,
-        "expand_on_n_anchors": 4,
+        "expand_on_n_anchors": 12,
     }
 
     ## Determine model type
     model_type: registery.ModelType = "MLP"
     if "bah" in str(ckpt_path):
-        continue
+        # continue
         model_type = "BAH"
     elif "gin-c" in str(ckpt_path):
-        continue
+        # continue
         model_type = "GIN-C"
     elif "gin-f" in str(ckpt_path):  # Case gin-f
         model_type = "GIN-F"
@@ -107,7 +116,6 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
         ds = SupportedDataset.ZINC_SMILES_HRR_7744
         dataset = ZincSmiles(split=split)
     else:  # Case qm9
-        continue
         ds = SupportedDataset.QM9_SMILES_HRR_1600
         dataset = QM9Smiles(split=split)
 
@@ -120,7 +128,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     try:
         classifier = (
             registery.retrieve_model(name=model_type)
-            .load_from_checkpoint(ckpt_path, map_location="cpu", strict=True)
+            .load_from_checkpoint(ckpt_path, map_location="cpu", strict=False)
             .to(device)
             .eval()
         )
@@ -151,16 +159,7 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
             # print("================================================")
             full_graph_nx = DataTransformer.pyg_to_nx(data=datas[g])
             node_multiset = DataTransformer.get_node_counter_from_batch(batch=g, data=batch)
-            # print(f"[{j}] Original Graph")
-            # visualisations.draw_nx_with_atom_colorings(full_graph_nx, label="ORIGINAL")
-            # plt.show()
-            # mol_full, _ = DataTransformer.nx_to_mol(full_graph_nx)
-            # display(mol_full)
-
-            # print(f"Num Nodes {datas[g].num_nodes}")
-            # print(f"Num Edges {int(datas[g].num_edges / 2)}")
-            # print(f"Multiset Nodes {node_multiset.total()}")
-            nx_GS: list[nx.Graph] = greedy_oracle_decoder_faster(
+            nx_GS, _  = greedy_oracle_decoder_faster(
                 node_multiset=node_multiset,
                 oracle=oracle,
                 full_g_h=graph_terms_hd[g],
@@ -177,15 +176,6 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
             sub_g_ys = [0]
             for i, g in enumerate(nx_GS):
                 is_final = is_final_graph(g, full_graph_nx)
-                # print("Is final graph: ", is_final)
-                # if is_final:
-                # print(f"Graph Nr: {i}")
-                # visualisations.draw_nx_with_atom_colorings(g, label="DECODED")
-                # plt.show()
-                # mol, _ = DataTransformer.nx_to_mol(g)
-                # display(mol)
-                # print(f"Num Atoms {mol.GetNumAtoms()}")
-                # print(f"Num Bonds {mol.GetNumBonds()}")
 
                 sub_g_ys.append(int(is_final))
             is_final_graph_ = int(sum(sub_g_ys) >= 1)
@@ -217,8 +207,8 @@ for ckpt_path in find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), sk
     asset_dir = GLOBAL_ARTEFACTS_PATH / "classification"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
-    parquet_path = asset_dir / "oracle_acc.parquet"
-    csv_path = asset_dir / "oracle_acc.csv"
+    parquet_path = asset_dir / "oracle_acc_2.parquet"
+    csv_path = asset_dir / "oracle_acc_2.csv"
 
     metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 

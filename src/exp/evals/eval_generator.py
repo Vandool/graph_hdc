@@ -62,7 +62,7 @@ gen_paths = list(
         start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2",
         prefixes=("epoch",),
         desired_ending=".ckpt",
-        skip_substring="zinc",
+        skip_substrings=("zinc",),
     )
 )
 print(f"Found {len(gen_paths)} generator checkpoints")

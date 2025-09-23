@@ -571,10 +571,6 @@ class MetricsPlotsAndOracleCallback(Callback):
         except Exception:
             mcc05 = 0.0
 
-        # --- Confusion matrix @0.5 ---
-        cm05 = confusion_matrix(y, yhat05, labels=[0, 1])
-        tn05, fp05, fn05, tp05 = [int(v) for v in cm05.ravel()]
-
         # best-F1 from PR thresholds
         if prec is not None and len(prec) > 1:
             f1s = 2 * prec[1:] * rec[1:] / (prec[1:] + rec[1:] + 1e-12)
@@ -620,11 +616,6 @@ class MetricsPlotsAndOracleCallback(Callback):
             "val_f1@0.5": f105,
             "val_bal_acc@0.5": bal05,
             "val_mcc@0.5": mcc05,
-            # Confusion matrix counts (scalars => safe for Lightning/CSVLogger)
-            # "val_tn@0.5": tn05,
-            # "val_fp@0.5": fp05,
-            # "val_fn@0.5": fn05,
-            # "val_tp@0.5": tp05,
             "val_best_f1": f1_best,
             "val_best_thr": best_thr,
             # confusion matrix at best threshold

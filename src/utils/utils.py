@@ -51,14 +51,14 @@ FORMAL_CHARGE_IDX_TO_VAL: dict[int, int] = {0: 0, 1: +1, 2: -1}
 def find_files(
     start_dir: str,
     prefixes: tuple[str, ...] = (),
-    skip_substring: str | None = None,
+    skip_substrings: tuple[str, ...] | None = None,
     desired_ending: str | None = ".ckpt",
 ) -> Iterator[Path]:
     """Yield files from `start_dir` matching given conditions.
 
     :param start_dir: Root directory to search.
     :param prefixes: Filenames must start with one of these prefixes (empty = no filter).
-    :param skip_substring: Exclude files whose path contains this substring (None = no filter).
+    :param skip_substrings: Exclude files whose path contains this substring (None = no filter).
     :param desired_ending: Filenames must end with this suffix (None = no filter).
     """
     for p in Path(start_dir).rglob("*"):
@@ -66,7 +66,7 @@ def find_files(
             continue
         if prefixes and not p.name.startswith(prefixes):
             continue
-        if skip_substring and skip_substring in str(p):
+        if skip_substrings and any(s in str(p) for s in skip_substrings):
             continue
         if desired_ending and not p.name.endswith(desired_ending):
             continue
