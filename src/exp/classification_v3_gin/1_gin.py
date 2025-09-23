@@ -529,6 +529,21 @@ class MetricsPlotsAndOracleCallback(Callback):
         )
         self._val_losses.append(val_loss)
 
+        with contextlib.suppress(Exception):
+            # Loss curves
+            epochs = np.arange(len(self._val_losses))
+            plt.figure()
+            if self._train_losses:
+                plt.plot(np.arange(len(self._train_losses)), self._train_losses, label="train_loss")
+            plt.plot(epochs, self._val_losses, label="val_loss")
+            plt.xlabel("epoch")
+            plt.ylabel("loss")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(self.artefacts_dir / "loss_curves.png")
+            plt.close()
+
+
         # prevalence
         pi = float(y.mean())
 
@@ -818,8 +833,12 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         conv_units=cfg.conv_units,
         film_units=cfg.film_units,
         pred_units=cfg.pred_head_units,
+        learning_rate=cfg.lr,
         cfg=cfg,
     ).to(device)
+
+    log(f"Model: {model!s}")
+    log(f"Model hparams: {model.hparams!s}")
 
     log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
     log(f"Model on: {next(model.parameters()).device}")

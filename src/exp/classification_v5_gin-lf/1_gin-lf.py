@@ -529,10 +529,6 @@ class MetricsPlotsAndOracleCallback(Callback):
         except Exception:
             mcc05 = 0.0
 
-        # --- Confusion matrix @0.5 ---
-        cm05 = confusion_matrix(y, yhat05, labels=[0, 1])
-        tn05, fp05, fn05, tp05 = [int(v) for v in cm05.ravel()]
-
         # best-F1 from PR thresholds
         if prec is not None and len(prec) > 1:
             f1s = 2 * prec[1:] * rec[1:] / (prec[1:] + rec[1:] + 1e-12)
