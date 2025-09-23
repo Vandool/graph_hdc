@@ -477,16 +477,29 @@ class MetricsPlotsAndOracleCallback(Callback):
         self._logits.clear()
         self._val_batch_losses = []
 
-    def on_validation_batch_end(self, _, __, outputs, ___, _____, dataloader_idx=0):  # noqa: ARG002
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         # No extra forward — use outputs from validation_step
         if outputs is None:
             return
-        # Lightning can give list/tuple when multiple loaders; normalize
-        self._ys.append(outputs["y"])
-        self._logits.append(outputs["logits"].float())
-        self._ys.append(outputs["y"].float())
-        if "loss" in outputs and torch.is_tensor(outputs["loss"]):
-            self._val_batch_losses.append(outputs["loss"].float())
+        # If multiple loaders, Lightning can hand a list/tuple
+        if isinstance(outputs, (list, tuple)):
+            if not outputs:
+                return
+            outputs = outputs[0]
+
+        y = outputs.get("y")
+        logits = outputs.get("logits")
+        loss = outputs.get("loss")
+
+        if y is None or logits is None:
+            return
+
+        # keep a consistent contract: detached, float, CPU, 1D
+        self._ys.append(y.detach().float().cpu().view(-1))
+        self._logits.append(logits.detach().float().cpu().view(-1))
+
+        if torch.is_tensor(loss):
+            self._val_batch_losses.append(loss.detach().float().cpu())
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if not self._ys:
