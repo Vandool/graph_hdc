@@ -1,0 +1,934 @@
+import contextlib
+import datetime
+import enum
+import json
+import math
+import os
+import random
+import shutil
+import string
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from pprint import pprint
+
+import matplotlib.pyplot as plt
+import numpy as np
+import optuna
+import pandas as pd
+import torch
+from pytorch_lightning import LightningModule, Trainer, seed_everything
+from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.loggers import CSVLogger
+from torch_geometric.loader import DataLoader
+from torchhd import HRRTensor
+
+from src.datasets.qm9_smiles_generation import QM9Smiles
+from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.encoding.configs_and_constants import Features, SupportedDataset
+from src.encoding.graph_encoders import load_or_create_hypernet
+from src.encoding.the_types import VSAModel
+from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
+from src.utils.registery import resolve_model
+from src.utils.utils import GLOBAL_MODEL_PATH, generated_node_edge_dist, pick_device
+
+LOCAL_DEV = "LOCAL_HDC_miss"
+
+PROJECT_NAME = "real_nvp_v2"
+
+
+# ---------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------
+# ---------- tiny logger ----------
+def log(msg: str) -> None:
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
+
+
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
+
+def setup_exp(dir_name: str | None = None) -> dict:
+    script_path = Path(__file__).resolve()
+    experiments_path = script_path.parent
+    script_stem = script_path.stem
+
+    base_dir = experiments_path / "results" / script_stem
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Setting up experiment in {base_dir}")
+    if dir_name:
+        exp_dir = base_dir / dir_name
+    else:
+        slug = f"{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d_%H-%M-%S')}_{''.join(random.choices(string.ascii_lowercase, k=4))}"
+        exp_dir = base_dir / slug
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Experiment directory created: {exp_dir}")
+
+    dirs = {
+        "exp_dir": exp_dir,
+        "models_dir": exp_dir / "models",
+        "evals_dir": exp_dir / "evaluations",
+        "artefacts_dir": exp_dir / "artefacts",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+
+    try:
+        shutil.copy(script_path, exp_dir / script_path.name)
+        print(f"Saved a copy of the script to {exp_dir / script_path.name}")
+    except Exception as e:
+        print(f"Warning: Failed to save script copy: {e}")
+
+    return dirs
+
+
+# ---------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------
+
+
+@dataclass
+class FlowConfig:
+    exp_dir_name: str | None = None
+    seed: int = 42
+    epochs: int = 50
+    batch_size: int = 64
+    lr: float = 1e-4
+    weight_decay: float = 0.0
+    is_dev: bool = os.getenv("IS_DEV", "0") == "1"
+
+    # HDC / encoder
+    hv_dim: int = 40 * 40  # 1600
+    vsa: VSAModel = VSAModel.HRR
+    dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
+
+    num_flows: int = 4
+    num_hidden_channels: int = 256
+
+    smax_initial: float = 1.0
+    smax_final: float = 4
+    smax_warmup_epochs: float = 10
+
+    use_act_norm: bool = True
+
+    # Checkpointing
+    continue_from: Path | None = None
+    resume_retrain_last_epoch: bool = False
+
+
+@torch.no_grad()
+def fit_featurewise_standardization(model, loader, hv_dim: int, max_batches: int | None = None, device="cpu"):
+    # Accumulate sums per-dimension (feature-wise)
+    cnt = 0
+    sum_vec = torch.zeros(2 * hv_dim, dtype=torch.float64, device=device)
+    sumsq_vec = torch.zeros(2 * hv_dim, dtype=torch.float64, device=device)
+
+    for bi, batch in enumerate(loader):
+        if max_batches is not None and bi >= max_batches:
+            break
+        batch = batch.to(device)
+        x = model._flat_from_batch(batch).to(torch.float64)  # [B, 2D]
+        cnt += x.shape[0]
+        sum_vec += x.sum(dim=0)
+        sumsq_vec += (x * x).sum(dim=0)
+
+    mu = (sum_vec / max(1, cnt)).to(torch.float32)
+    var = (sumsq_vec / max(1, cnt) - (sum_vec / max(1, cnt)) ** 2).clamp_min_(0).to(torch.float32)
+    sigma = var.sqrt().clamp_min_(1e-6)
+    model.set_standardization(mu, sigma)
+
+
+# ---------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------
+
+
+def _first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def plot_train_val_loss(
+    df: pd.DataFrame,
+    artefacts_dir: Path,
+    *,
+    skip_first: float = 0.1,  # int: num epochs to skip; float in (0,1): fraction of epochs to skip
+    min_epoch: int | None = None,  # overrides skip_first if set
+    clip_top_q: float | None = None,  # e.g. 0.98 to clip outliers on y-axis
+    smooth_window: int | None = None,  # rolling mean window (in points)
+    logy: bool = False,
+):
+    # possible names across PL versions / logging configs
+    train_epoch_keys = ["train_loss_epoch", "train_loss", "epoch_train_loss"]
+    val_epoch_keys = ["val_loss", "val/loss", "validation_loss"]
+
+    train_col = _first_existing(df, train_epoch_keys)
+    val_col = _first_existing(df, val_epoch_keys)
+    epoch_col = _first_existing(df, ["epoch", "step"])
+
+    if epoch_col is None or (train_col is None and val_col is None):
+        log("Skip plot: no epoch/metric columns in metrics.csv for this run.")
+        return
+
+    # ---- decide the cutoff epoch ----
+    uniq_epochs = pd.unique(df[epoch_col].dropna())
+    try:
+        uniq_epochs = np.sort(uniq_epochs.astype(int))
+    except Exception:
+        uniq_epochs = np.sort(uniq_epochs)
+
+    if min_epoch is not None:
+        cutoff = min_epoch
+    else:
+        if isinstance(skip_first, float) and 0 < skip_first < 1:
+            k = int(round(skip_first * len(uniq_epochs)))
+        else:
+            k = int(skip_first)
+        k = max(0, min(k, max(len(uniq_epochs) - 1, 0)))
+        cutoff = uniq_epochs[k] if len(uniq_epochs) else 0
+
+    # filter out burn-in
+    df_f = df[df[epoch_col] >= cutoff]
+
+    # helper: get a clean series, optionally smoothed
+    def _series(col):
+        s = df_f[[epoch_col, col]].dropna()
+        if s.empty:
+            return None, None
+        if smooth_window and smooth_window > 1:
+            s[col] = s[col].rolling(smooth_window, min_periods=1, center=False).mean()
+        return s[epoch_col].values, s[col].values
+
+    plt.figure(figsize=(8, 5))
+
+    plotted = False
+    if train_col is not None:
+        x, y = _series(train_col)
+        if x is not None:
+            plt.plot(x, y, label=f"{train_col} (≥{cutoff})")
+            plotted = True
+
+    if val_col is not None:
+        x, y = _series(val_col)
+        if x is not None:
+            plt.plot(x, y, label=f"{val_col} (≥{cutoff})")
+            plotted = True
+
+    if not plotted:
+        log("Skip plot: nothing to plot after burn-in filter.")
+        plt.close()
+        return
+
+    if clip_top_q is not None and 0 < clip_top_q < 1:
+        # clip y-axis to reduce impact of a few spikes
+        ys = []
+        if train_col is not None:
+            ys.append(df_f[train_col].dropna().values)
+        if val_col is not None:
+            ys.append(df_f[val_col].dropna().values)
+        y_all = np.concatenate(ys) if ys else None
+        if y_all is not None and y_all.size:
+            ymax = float(np.quantile(y_all, clip_top_q))
+            ymin = float(np.nanmin(y_all))
+            plt.ylim(bottom=ymin, top=ymax)
+
+    if logy:
+        plt.yscale("log")
+
+    plt.xlabel(epoch_col)
+    plt.ylabel("loss")
+    plt.title("Train vs. Validation Loss")
+    plt.legend()
+    plt.tight_layout()
+    artefacts_dir.mkdir(parents=True, exist_ok=True)
+    out = artefacts_dir / "train_val_loss.png"
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"Saved train/val loss plot to {out} (cutoff ≥ {cutoff})")
+
+
+def pick_precision():
+    # Works on A100/H100 if BF16 is supported by the PyTorch/CUDA build.
+    if torch.cuda.is_available():
+        if torch.cuda.is_bf16_supported():
+            return "bf16-mixed"  # safest + fast on H100/A100
+        return "16-mixed"  # widely supported fallback
+    return 32  # CPU or MPS
+
+
+def sample_and_decode_preview(
+    model,
+    hypernet,
+    *,
+    max_print: int = 16,
+    logger=print,
+) -> None:
+    model.eval()
+    with torch.no_grad():
+        node_s, graph_s, _ = model.sample_split(max_print)  # [K, D] each
+
+    # If your tensors subclass needs to be enforced (as in your code)
+    node_s = node_s.as_subclass(HRRTensor)
+    graph_s = graph_s.as_subclass(HRRTensor)
+
+    logger(f"[preview] node_s device: {node_s.device}")
+    logger(f"[preview] graph_s device: {graph_s.device}")
+    with contextlib.suppress(Exception):
+        logger(f"[preview] Hypernet node codebook device: {hypernet.nodes_codebook.device}")
+
+    # Decode and print a few
+    node_counters = hypernet.decode_order_zero_counter(node_s)
+    for i, (n, ctr) in enumerate(node_counters.items()):
+        if i >= max_print:
+            break
+        logger(f"[preview] Sample {n}: nodes={ctr.total()}, edges={sum(e + 1 for _, e, _, _ in ctr)}\n{ctr}")
+
+
+class PeriodicSampleDecodeCallback(Callback):
+    r"""
+    Periodically samples from the model and decodes with the hypernet, printing
+    a small textual preview for quick qualitative inspection.
+
+    Triggers every ``interval_epochs`` epochs at train-epoch end.
+    """
+
+    def __init__(
+        self,
+        hypernet,
+        *,
+        interval_epochs: int = 10,
+        max_print: int = 16,
+    ):
+        super().__init__()
+        self.hypernet = hypernet
+        self.interval = int(interval_epochs)
+        self.max_print = int(max_print)
+
+    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        epoch = int(getattr(trainer, "current_epoch", 0))
+        if self.interval <= 0 or ((epoch + 1) % self.interval) != 0:
+            return
+
+        # Route logs to either W&B text panel (if available) or stdout
+        logs_buffer = []
+
+        def _collect(msg: str):
+            logs_buffer.append(str(msg))
+
+        sample_and_decode_preview(
+            pl_module,
+            self.hypernet,
+            max_print=self.max_print,
+            logger=_collect,
+        )
+
+        text_blob = "\n".join(logs_buffer)
+        try:
+            trainer.logger.log_text("preview/decoded_samples", text_blob)  # some loggers support this
+            print(text_blob, flush=True)
+        except Exception:
+            # Fallback to stdout
+            print(text_blob, flush=True)
+
+
+class TimeLoggingCallback(Callback):
+    def setup(self, trainer, pl_module, stage=None):
+        self.start_time = time.time()
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        elapsed = time.time() - self.start_time
+        trainer.logger.log_metrics({"elapsed_time_sec": elapsed}, step=trainer.current_epoch)
+
+
+class PeriodicNLLEval(Callback):
+    def __init__(
+        self,
+        val_loader,
+        artefacts_dir: Path,
+        every_n_epochs: int = 50,
+        max_batches: int | None = 200,
+        log_hist: bool = False,
+    ):
+        super().__init__()
+        self.val_loader = val_loader
+        self.artefacts_dir = Path(artefacts_dir)
+        self.every = int(every_n_epochs)
+        self.max_batches = max_batches
+        self.log_hist = log_hist
+
+    @torch.no_grad()
+    def on_validation_epoch_end(self, trainer, pl_module):
+        epoch = int(trainer.current_epoch) + 1
+        if self.every <= 0 or (epoch % self.every) != 0:
+            return
+
+        stats = _eval_flow_metrics(
+            pl_module, self.val_loader, pl_module.device, hv_dim=pl_module.D, max_batches=self.max_batches
+        )
+        if not stats:
+            return
+
+        # persist arrays (with epoch in file for easier joins)
+        self.artefacts_dir.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(stats)
+        df["epoch"] = epoch
+        df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
+
+        # compact scalar summary with consistent names
+        summary = _summarize_arrays(stats)
+        log_payload = {f"val/{k}": v for k, v in summary.items()}
+        log_payload["epoch"] = epoch
+
+        # log scalars to all attached loggers (CSV & W&B if present)
+        try:
+            trainer.logger.log_metrics(log_payload, step=trainer.global_step)
+        except Exception:
+            log(log_payload)
+
+
+def _norm_cdf(x):
+    return 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+
+@torch.no_grad()
+def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | None = None):
+    """
+    Eval for normalizing flows trained with exact likelihood.
+
+    We report ONLY arrays with the same length so they can be dropped into a single
+    pandas DataFrame without shape errors. Per-dimension diagnostics are summarized
+    to scalars and *broadcast* to per-sample length (so they’re easy to join & plot).
+
+    Why these metrics (high level):
+      • nll/bpd: core objective the model optimizes; should go down if the flow
+        learns a better density than a naive Gaussian after your μ/σ standardization.
+      • Gaussian baseline: tells you how much "structure" the flow actually learns
+        beyond mean/variance re-scaling (important because your features have wildly
+        different scales; standardization already fixes some of that).
+      • Δbpd (model − Gaussian): the *value add* of the flow; negative values mean
+        the flow beats the Gaussian baseline in bits-per-dim (good).
+      • PIT KS & 90% coverage: calibration in base space; checks whether the learned
+        transform truly maps data → N(0, I). If this fails, sampling and tail behavior
+        can be off even if NLL looks okay.
+      • sum_log_sigma_bits / const_bpd: isolates the contribution from your fixed
+        standardization step; helps detect cases where most of the “good” bpd is due
+        to μ/σ rather than the flow layers (a real risk with highly heteroscedastic data).
+
+    Returns arrays (all same length) for easy DataFrame construction:
+      bpd_model, bpd_gauss, delta_bpd, bpd_stdspace, nll_model,
+      sum_log_sigma_bits, const_bpd,
+      pit_ks_mean/std/max, cov90_abs_err_mean/std/max
+    """
+    model.eval()
+    ln2 = math.log(2.0)
+    dim = 2 * hv_dim
+
+    # log p(z) of a standard normal factorizes; this is the constant term in nats
+    const_term = 0.5 * dim * math.log(2 * math.pi)
+
+    nll_model_list, bpd_std_list, bpd_gauss_list = [], [], []
+    pit_ks_list, cov90_err_list = [], []
+
+    # Helper: push from standardized z to the base N(0, I) to test calibration.
+    # We try the fast path (flow.inverse on the aggregate), then safely fall back
+    # to layer-by-layer inversion. This ensures reversibility is actually exercised.
+    def _to_base(flow, z_std: torch.Tensor) -> torch.Tensor:
+        if hasattr(flow, "inverse"):
+            try:
+                zb, _ = flow.inverse(z_std)
+                return zb
+            except Exception:
+                pass
+        zb = z_std
+        for f in reversed(flow.flows):
+            zb, _ = f.inverse(zb)
+        return zb
+
+    for bi, batch in enumerate(loader):
+        if max_batches is not None and bi >= max_batches:
+            break
+
+        batch = batch.to(device)
+        flat = model._flat_from_batch(batch)  # [B, dim]
+
+        # Standardize with your learned/fitted μ, σ.
+        # This is a *determinantful* pre-transform; we track its log-det so that
+        # likelihood is computed in the original data measure (not in z-space).
+        z, log_det_corr = model._pretransform(flat)  # z ∼ data standardized
+
+        # Likelihood under the FLOW in standardized space (the thing being learned).
+        # This is the exact objective the flow trains on.
+        nll_stdspace = -model.flow.log_prob(z)  # [B] nats, exact
+
+        # Likelihood of a *plain Gaussian* in the same standardized space.
+        # This is your "no flow layers" baseline: only μ/σ but no higher-order structure.
+        quad = 0.5 * (z**2).sum(dim=1)  # ∑ z_i^2 / 2
+        nll_gauss_stdspace = quad + const_term  # exact NLL of N(0, I)
+
+        # Move both NLLs back to the *data* space by adding the pre-transform’s
+        # log-det correction. This keeps the comparison fair and truly reversible.
+        nll_model = nll_stdspace + log_det_corr  # flow NLL in data space
+        nll_gauss = nll_gauss_stdspace + log_det_corr  # Gaussian baseline in data space
+
+        # Numerical hygiene: drop non-finite samples consistently.
+        mask = torch.isfinite(nll_model) & torch.isfinite(nll_stdspace) & torch.isfinite(nll_gauss)
+        if not mask.any():
+            continue
+
+        nll_model = nll_model[mask]
+        nll_stdspace = nll_stdspace[mask]
+        nll_gauss = nll_gauss[mask]
+        z_masked = z[mask]
+
+        # Bits-per-dim is the standard unit for flows (scale-invariant across dims).
+        # bpd_stdspace reflects the flow’s coding cost in the *standardized* space.
+        bpd_stdspace = nll_stdspace / (dim * ln2)  # [B] bits/dim (model, standardized)
+        bpd_gauss = nll_gauss / (dim * ln2)  # [B] bits/dim (Gaussian baseline, data space)
+
+        nll_model_list.append(nll_model.detach().cpu())
+        bpd_std_list.append(bpd_stdspace.detach().cpu())
+        bpd_gauss_list.append(bpd_gauss.detach().cpu())
+
+        # ---------------- Calibration diagnostics in base space ----------------
+        # If the flow learned a correct, invertible map to N(0, I), then pushing
+        # standardized data through "inverse" should yield z_base ~ N(0, I).
+        z_base = _to_base(model.flow, z_masked)  # [B, dim]
+
+        # PIT (Probability Integral Transform): Φ(z_base) should be Uniform(0,1).
+        # KS statistic per-dimension quantifies mismatch; smaller is better.
+        u = _norm_cdf(z_base).clamp_(0, 1)  # [B, dim] uniforms if calibrated
+
+        # Compute KS on a random subset of dims to keep it cheap. We summarize later.
+        Bm, D = u.shape
+        take = min(512, D)
+        if take > 0 and Bm > 0:
+            idx = torch.randperm(D, device=u.device)[:take]
+            U = u[:, idx]  # [B, take]
+            U_sorted, _ = torch.sort(U, dim=0)
+            # Theoretical CDF grid for uniforms
+            grid = (torch.arange(1, Bm + 1, device=u.device) / Bm).unsqueeze(1)  # [B, 1]
+            ks = torch.max(torch.abs(U_sorted - grid), dim=0).values  # [take]
+            pit_ks_list.append(ks.detach().cpu())
+
+            # 90% central coverage per coordinate in base space should be ~0.90 for N(0,1).
+            # This probes *tail calibration*. Important for your setting because
+            # branch-2 had huge raw scale; after standardization + flow, bad tails would
+            # show up as systematic under/over-coverage here.
+            inside = (z_base.abs() <= 1.6448536269514722).float()  # [B, dim]
+            cov = inside.mean(dim=0)  # per-dim coverage rate
+            cov_err = (cov - 0.90).abs()
+            cov90_err_list.append(cov_err.detach().cpu())
+
+    # If nothing was collected (e.g., all masked), return empty dict.
+    if not nll_model_list:
+        return {}
+
+    # Flatten per-sample metrics to numpy
+    nll_model = torch.cat(nll_model_list).numpy()
+    bpd_stdspace = torch.cat(bpd_std_list).numpy()
+    bpd_gauss = torch.cat(bpd_gauss_list).numpy()
+
+    # bpd_model is the final coding cost (in data space) the model assigns.
+    bpd_model = nll_model / (dim * ln2)
+
+    # Δbpd shows the *net* improvement of the learned flow over the Gaussian baseline.
+    # Negative is better (fewer bits to code the data).
+    delta_bpd = bpd_model - bpd_gauss
+
+    # How much of your bpd is a constant due to standardization’s log|σ|?
+    # This is useful to diagnose when most “gain” comes from μ/σ rather than learned transforms.
+    sum_log_sigma_bits = float(model.log_sigma.sum().item() / math.log(2.0))
+    const_bpd = sum_log_sigma_bits / dim  # per-dim constant bits from the pre-transform
+
+    # Summarize calibration diagnostics across dims (mean/std/max are enough).
+    if pit_ks_list:
+        pit_ks = torch.cat(pit_ks_list).numpy()
+        pit_mean = float(np.mean(pit_ks))
+        pit_std = float(np.std(pit_ks))
+        pit_max = float(np.max(pit_ks))
+    else:
+        pit_mean = pit_std = pit_max = float("nan")
+
+    if cov90_err_list:
+        cov90 = torch.cat(cov90_err_list).numpy()
+        cov_mean = float(np.mean(cov90))
+        cov_std = float(np.std(cov90))
+        cov_max = float(np.max(cov90))
+    else:
+        cov_mean = cov_std = cov_max = float("nan")
+
+    # Broadcast scalar summaries so all columns align in a single DataFrame.
+    def _broadcast(val: float, ref: np.ndarray) -> np.ndarray:
+        return np.full_like(ref, val, dtype=np.float64)
+
+    return {
+        # Core objective (in data space): should decrease as the model learns structure.
+        "bpd_model": bpd_model,  # per-sample bits-per-dim under the flow
+        # Baseline with no flow layers: isolates the benefit of learning beyond μ/σ.
+        "bpd_gauss": bpd_gauss,  # per-sample bits-per-dim under Gaussian baseline
+        # Net benefit of the flow: negative = flow better than baseline (good).
+        "delta_bpd": delta_bpd,  # per-sample improvement (model - Gaussian)
+        # The same objective but in the *standardized* space (helps debug μ/σ vs flow).
+        "bpd_stdspace": bpd_stdspace,  # per-sample bits-per-dim in standardized space
+        # Raw NLL in data space (for completeness / alternative plotting).
+        "nll_model": nll_model,  # per-sample negative log-likelihood (nats)
+        # Constant contributions & calibration summaries (broadcast to match length):
+        "sum_log_sigma_bits": _broadcast(sum_log_sigma_bits, bpd_model),  # total bits from log σ
+        "const_bpd": _broadcast(const_bpd, bpd_model),  # per-dim constant bits
+        # PIT KS (smaller is better): marginal calibration of base-space coordinates.
+        "pit_ks_mean": _broadcast(pit_mean, bpd_model),
+        "pit_ks_std": _broadcast(pit_std, bpd_model),
+        "pit_ks_max": _broadcast(pit_max, bpd_model),
+        # 90% coverage abs error (smaller is better): tail calibration in base space.
+        "cov90_abs_err_mean": _broadcast(cov_mean, bpd_model),
+        "cov90_abs_err_std": _broadcast(cov_std, bpd_model),
+        "cov90_abs_err_max": _broadcast(cov_max, bpd_model),
+    }
+
+
+def _summarize_arrays(arrs: dict[str, np.ndarray]) -> dict[str, float]:
+    """Mean, std, median, min, max, count for each key."""
+    out = {}
+    for k, v in arrs.items():
+        if v.size == 0:  # skip empties
+            continue
+        out[f"{k}_mean"] = float(np.mean(v))
+        out[f"{k}_std"] = float(np.std(v))
+        out[f"{k}_median"] = float(np.median(v))
+        out[f"{k}_min"] = float(np.min(v))
+        out[f"{k}_max"] = float(np.max(v))
+        out[f"{k}_count"] = int(v.size)
+    return out
+
+
+def _hist(figpath: Path, data: np.ndarray, title: str, xlabel: str, bins: int = 80):
+    arr = np.asarray(data).ravel()
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        log(f"Skip hist {figpath.name}: empty/non-finite data")
+        return
+    vmin, vmax = float(arr.min()), float(arr.max())
+    if np.isclose(vmin, vmax):
+        span = 1.0 if vmin == 0.0 else 0.05 * abs(vmin)
+        vmin, vmax, bins = vmin - span, vmax + span, 1
+    plt.figure(figsize=(6, 4))
+    plt.hist(arr, bins=bins, range=(vmin, vmax))
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel("count")
+    plt.tight_layout()
+    plt.savefig(figpath)
+    plt.close()
+
+
+def _finite_clean(x: np.ndarray, *, max_abs: float | None = None) -> np.ndarray:
+    a = np.asarray(x).ravel()
+    m = np.isfinite(a)
+    if max_abs is not None:
+        m &= np.abs(a) <= max_abs
+    a = a[m]
+    return a
+
+
+def run_experiment(cfg: FlowConfig):
+    local_dev = cfg.is_dev
+    pprint(cfg)
+    # ----- setup dirs -----
+    log("Parsing args done. Starting run_experiment …")
+    dirs = setup_exp(cfg.exp_dir_name)
+    exp_dir = Path(dirs["exp_dir"])
+    models_dir = Path(dirs["models_dir"])
+    evals_dir = Path(dirs["evals_dir"])
+    artefacts_dir = Path(dirs["artefacts_dir"])
+
+    # Save the config
+    def _json_sanitize(obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, enum.Enum):
+            return obj.value
+        return obj
+
+    (evals_dir / "run_config.json").write_text(
+        json.dumps({k: _json_sanitize(v) for k, v in asdict(cfg).items()}, indent=2)
+    )
+
+    seed_everything(cfg.seed)
+
+    # Dataset & Encoder (HRR @ 7744)
+    ds_cfg = cfg.dataset.default_cfg
+    device = pick_device()
+    log(f"Using device: {device!s}")
+
+    log("Loading/creating hypernet …")
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log("Hypernet ready.")
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    encoder = hypernet.to(device).eval()
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    log("Hypernet ready.")
+
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    log("Hypernet ready.")
+
+    # ----- datasets / loaders -----
+    log(f"Loading {cfg.dataset.value} pair datasets.")
+    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
+        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600")
+        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600")
+    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
+        train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
+        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    log(
+        f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+    )
+
+    # pick worker counts per GPU; tune for your cluster
+    num_workers = 16 if torch.cuda.is_available() else 0
+    if local_dev:
+        train_dataset = train_dataset[: cfg.batch_size]
+        validation_dataset = validation_dataset[: cfg.batch_size]
+        num_workers = 0
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=bool(num_workers > 0),
+        drop_last=True,
+        # prefetch_factor=6,
+    )
+    validation_dataloader = DataLoader(
+        validation_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=bool(num_workers > 0),
+        drop_last=False,
+        # prefetch_factor=6,
+    )
+    log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
+
+    # ----- model / trainer -----
+    # model = RealNVPV2Lightning(cfg)
+    model = resolve_model("NVP", cfg=cfg).to(device=device)
+
+    log(f"Model: {model!s}")
+    log(f"Model device: {model.device}")
+    log(f"Model hparams: {model.hparams}")
+
+    fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=device)
+
+    csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",
+        save_top_k=1,
+        mode="min",
+        dirpath=str(models_dir),
+        auto_insert_metric_name=False,
+        filename="epoch{epoch:02d}-val{val_loss:.4f}",
+        save_last=True,
+    )
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
+    time_logger = TimeLoggingCallback()
+    periodic_nll = PeriodicNLLEval(
+        val_loader=validation_dataloader,
+        artefacts_dir=artefacts_dir,
+        every_n_epochs=50 if not local_dev else 1,
+        max_batches=200 if not local_dev else 1,
+    )
+
+    early_stopping = EarlyStopping(
+        monitor="val_loss",
+        mode="min",
+        patience=20,
+        min_delta=0.0,
+        check_finite=True,  # stop if val becomes NaN/Inf
+        verbose=True,
+    )
+
+    sample_and_decode_cb = PeriodicSampleDecodeCallback(hypernet, interval_epochs=10, max_print=16)
+
+    # ----- W&B -----
+    loggers = [csv_logger]
+
+    trainer = Trainer(
+        max_epochs=cfg.epochs,
+        logger=loggers,
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping, sample_and_decode_cb],
+        default_root_dir=str(exp_dir),
+        accelerator="auto",
+        devices="auto",
+        gradient_clip_val=1.0,
+        log_every_n_steps=100 if not local_dev else 1,
+        enable_progress_bar=True,
+        deterministic=False,
+        precision=pick_precision(),
+        num_sanity_val_steps=0,
+    )
+
+    # ----- train -----
+    resume_path: Path | None = str(cfg.continue_from) if cfg.continue_from else None
+    trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader, ckpt_path=resume_path)
+
+    # ----- curves to parquet / png -----
+    metrics_path = Path(csv_logger.log_dir) / "metrics.csv"
+    if metrics_path.exists():
+        df = pd.read_csv(metrics_path)
+        df.to_parquet(evals_dir / "metrics.parquet", index=False)
+        plot_train_val_loss(df, artefacts_dir)
+        # Optional: print final numbers for quick scan
+        train_last = df.loc[df["train_loss_epoch"].notna(), "train_loss_epoch"].tail(1)
+        val_last = df.loc[df["val_loss"].notna(), "val_loss"].tail(1)
+        if not train_last.empty or not val_last.empty:
+            print(
+                f"Final losses → train: {float(train_last.values[-1]) if not train_last.empty else 'n/a'} "
+                f"| val: {float(val_last.values[-1]) if not val_last.empty else 'n/a'}"
+            )
+
+    # =================================================================
+    # Post-training analysis: load best, evaluate NLL, sample & log
+    # =================================================================
+    best_path = checkpoint_callback.best_model_path
+    if (not best_path) or ("nan" in Path(best_path).name) or (not Path(best_path).exists()):
+        best_path = checkpoint_callback.last_model_path
+
+    if not best_path or not Path(best_path).exists():
+        log("No checkpoint found (best/last). Skipping post-training analysis.")
+        return 0.0
+
+    log(f"Loading best checkpoint: {best_path}")
+    best_model = resolve_model("NVP").load_from_checkpoint(best_path)
+    best_model.to(device).eval()
+
+    # ---- per-sample NLL (really the KL objective) on validation ----
+    val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)
+    nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))
+    if nll_arr.size:
+        # save full arrays for later deep-dive
+        pd.DataFrame(
+            {
+                "nll_model": val_stats["nll_model"],
+                "bpd_model": val_stats["bpd_model"],
+                "bpd_gauss": val_stats["bpd_gauss"],
+                "bpd_stdspace": val_stats["bpd_stdspace"],
+                "delta_bpd": val_stats["delta_bpd"],
+            }
+        ).to_parquet(evals_dir / "val_metrics_final.parquet", index=False)
+
+        # simple hist PNGs (optional)
+        _hist(artefacts_dir / "val_bpd_model_hist.png", val_stats["bpd_model"], "Validation bpd (model)", "bpd")
+        _hist(artefacts_dir / "val_bpd_gauss_hist.png", val_stats["bpd_gauss"], "Validation bpd (Gaussian)", "bpd")
+        _hist(
+            artefacts_dir / "val_delta_bpd_hist.png",
+            val_stats["delta_bpd"],
+            "Validation Δbpd (model - Gaussian)",
+            "Δbpd",
+        )
+
+        # scalar summary (prefixed under eval/val/*)
+        summary = _summarize_arrays(val_stats)
+        summary_payload = {f"eval/val/{k}": v for k, v in summary.items()}
+        log(summary_payload)
+
+    # ---- sample from the flow ----
+    with torch.no_grad():
+        node_s, graph_s, logs = best_model.sample_split(10_000)  # each [K, D]
+
+    node_s = node_s.as_subclass(HRRTensor)
+    graph_s = graph_s.as_subclass(HRRTensor)
+
+    log(f"node_s device: {node_s.device!s}")
+    log(f"graph_s device: {graph_s.device!s}")
+    log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
+
+    node_counters = hypernet.decode_order_zero_counter(node_s)
+    report = generated_node_edge_dist(
+        generated_node_types=node_counters,
+        artefact_dir=artefacts_dir,
+        dataset_val=cfg.dataset.value,
+        dataset=train_dataset,
+    )
+    pprint(report)
+
+    node_np = node_s.detach().cpu().numpy()
+    graph_np = graph_s.detach().cpu().numpy()
+
+    # per-branch norms and pairwise cosine samples
+    node_norm = np.linalg.norm(node_np, axis=1)
+    graph_norm = np.linalg.norm(graph_np, axis=1)
+
+    def _pairwise_cosine(x: np.ndarray, m: int = 2000) -> np.ndarray:
+        n = x.shape[0]
+        if n < 2:
+            return np.array([])
+        idx = np.random.choice(n, size=(min(m, n - 1), 2), replace=True)
+        a = x[idx[:, 0]]
+        b = x[idx[:, 1]]
+        an = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-8)
+        bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-8)
+        return np.sum(an * bn, axis=1)
+
+    node_cos = _pairwise_cosine(node_np, m=4000)
+    graph_cos = _pairwise_cosine(graph_np, m=4000)
+
+    # plots
+    _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
+    _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
+    if node_cos.size:
+        _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    if graph_cos.size:
+        _hist(artefacts_dir / "sample_graph_cos_hist.png", graph_cos, "Graph pairwise cosine", "cos")
+
+    # quick table
+    pd.DataFrame(
+        {
+            **{f"node_{i}": node_np[:16, i] for i in range(min(16, node_np.shape[1]))},
+            **{f"graph_{i}": graph_np[:16, i] for i in range(min(16, graph_np.shape[1]))},
+        }
+    ).to_parquet(evals_dir / "sample_head.parquet", index=False)
+
+    log("Experiment completed.")
+    return val_stats["nll_model"]
+
+
+def get_cfg(trial: optuna.Trial, dataset: str):
+    cfg = {
+        "batch_size": trial.suggest_int("batch_size", 32, 512, log=True),
+        "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
+        "weight_decay": trial.suggest_categorical(
+            "weight_decay",
+            choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
+        ),
+        "num_flows": trial.suggest_int("num_flows", 4, 16),
+        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=64),
+        "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
+        "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
+        "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),
+    }
+    flow_cfg = FlowConfig()
+    for k, v in cfg.items():
+        setattr(flow_cfg, k, v)
+    flow_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
+    return flow_cfg
+
+
+def run_zinc_trial(trial: optuna.Trial):
+    flow_cfg = get_cfg(trial, dataset="zinc")
+    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_7744
+    flow_cfg.hv_dim = 80 * 80
+    return run_experiment(flow_cfg)
+
+
+def run_qm9_trial(trial: optuna.Trial):
+    flow_cfg = get_cfg(trial, dataset="qm9")
+    flow_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600
+    flow_cfg.hv_dim = 40 * 40
+    return run_experiment(flow_cfg)

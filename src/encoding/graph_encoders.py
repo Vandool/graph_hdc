@@ -35,9 +35,9 @@ class AbstractGraphEncoder(pl.LightningModule):
         pl.LightningModule.__init__(self, **kwargs)
 
     def forward_graphs(
-            self,
-            dataset: Dataset,
-            batch_size: int = 128,
+        self,
+        dataset: Dataset,
+        batch_size: int = 128,
     ) -> list[dict[str, np.ndarray]]:
         """
         Given a list of ``Dataset`` this method will run the hypernet "forward" pass on all the data batches
@@ -74,8 +74,8 @@ class AbstractGraphEncoder(pl.LightningModule):
 
     @staticmethod
     def extract_graph_results(
-            data: Data,
-            graph_results: dict[str, torch.Tensor],
+        data: Data,
+        graph_results: dict[str, torch.Tensor],
     ) -> list[dict[str, np.ndarray]]:
         """
         Given an input ``data`` object and the ``graph_results`` dict that is returned by the "forward" method
@@ -126,8 +126,8 @@ class AbstractGraphEncoder(pl.LightningModule):
     # == To be implemented ==
 
     def forward(
-            self,
-            data: Data,
+        self,
+        data: Data,
     ) -> dict[str, torch.Tensor]:
         """
         This method accepts a PyG Data object which represents a *batch* of graphs and is supposed
@@ -242,12 +242,12 @@ class HyperNet(AbstractGraphEncoder):
     __allowed_vsa_models__: ClassVar[set[VSAModel]] = {VSAModel.MAP, VSAModel.FHRR, VSAModel.HRR}
 
     def __init__(
-            self,
-            config: DatasetConfig | None = None,
-            depth: int = 3,
-            *,
-            use_explain_away: bool = True,
-            use_edge_codebook: bool = True,
+        self,
+        config: DatasetConfig | None = None,
+        depth: int = 3,
+        *,
+        use_explain_away: bool = True,
+        use_edge_codebook: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
         self.use_explain_away = use_explain_away
@@ -275,8 +275,11 @@ class HyperNet(AbstractGraphEncoder):
         self.edge_encoder_map: EncoderMap = {
             feat: (
                 cfg.encoder_cls(
-                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset,
-                    device=self._cfg_device
+                    num_categories=cfg.count,
+                    dim=config.hv_dim,
+                    vsa=config.vsa.value,
+                    idx_offset=cfg.idx_offset,
+                    device=self._cfg_device,
                 ),
                 cfg.index_range,
             )
@@ -285,8 +288,11 @@ class HyperNet(AbstractGraphEncoder):
         self.graph_encoder_map: EncoderMap = {
             feat: (
                 cfg.encoder_cls(
-                    num_categories=cfg.count, dim=config.hv_dim, vsa=config.vsa.value, idx_offset=cfg.idx_offset,
-                    device=self._cfg_device
+                    num_categories=cfg.count,
+                    dim=config.hv_dim,
+                    vsa=config.vsa.value,
+                    idx_offset=cfg.idx_offset,
+                    device=self._cfg_device,
                 ),
                 cfg.index_range,
             )
@@ -420,12 +426,12 @@ class HyperNet(AbstractGraphEncoder):
         return torchhd.multibind(to_bind)  # [..., N, D]
 
     def forward(
-            self,
-            data: Data | Batch,
-            *,
-            bidirectional: bool = False,  # PyG datasets come already bidirectional
-            normalize: bool = False,
-            separate_levels: bool = True,
+        self,
+        data: Data | Batch,
+        *,
+        bidirectional: bool = False,  # PyG datasets come already bidirectional
+        normalize: bool = False,
+        separate_levels: bool = True,
     ) -> dict:
         """
         Performs a forward pass on the given PyG ``data`` object which represents a batch of graphs. Primarily
@@ -663,13 +669,13 @@ class HyperNet(AbstractGraphEncoder):
         return tensor is None or tensor.numel() == 0
 
     def decode_order_one_counter_explain_away(
-            self,
-            embedding: torch.Tensor,  # [B, D] or [D]
-            unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
-            max_iters: int = 50,
-            threshold: float = 0.5,
-            *,
-            use_break: bool = True,
+        self,
+        embedding: torch.Tensor,  # [B, D] or [D]
+        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
+        max_iters: int = 50,
+        threshold: float = 0.5,
+        *,
+        use_break: bool = True,
     ) -> list[Counter]:
         """
         Peel off top edges iteratively exactly as in your script,
@@ -741,13 +747,13 @@ class HyperNet(AbstractGraphEncoder):
         return results
 
     def decode_order_one_counter_explain_away_faster(
-            self,
-            embedding: torch.Tensor,  # [B, D] or [D]
-            unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
-            max_iters: int = 50,
-            threshold: float = 0.5,
-            *,
-            use_break: bool = False,
+        self,
+        embedding: torch.Tensor,  # [B, D] or [D]
+        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
+        max_iters: int = 50,
+        threshold: float = 0.5,
+        *,
+        use_break: bool = False,
     ) -> list[Counter]:
         self.populate_nodes_codebooks()
         self._populate_nodes_indexer()
@@ -802,9 +808,9 @@ class HyperNet(AbstractGraphEncoder):
                         found.add((v, u))
 
                         graph_hv = (
-                                graph_hv
-                                - self.nodes_codebook[u].bind(self.nodes_codebook[v])
-                                - self.nodes_codebook[v].bind(self.nodes_codebook[u])
+                            graph_hv
+                            - self.nodes_codebook[u].bind(self.nodes_codebook[v])
+                            - self.nodes_codebook[v].bind(self.nodes_codebook[u])
                         )
 
                         # remove both directions
@@ -827,13 +833,13 @@ class HyperNet(AbstractGraphEncoder):
         return results
 
     def decode_order_one_counter_explain_away_faster_lazy(
-            self,
-            embedding: torch.Tensor,  # [B, D] or [D]
-            unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
-            max_iters: int = 50,
-            threshold: float = 0.5,
-            *,
-            use_break: bool = False,
+        self,
+        embedding: torch.Tensor,  # [B, D] or [D]
+        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
+        max_iters: int = 50,
+        threshold: float = 0.5,
+        *,
+        use_break: bool = False,
     ) -> list[Counter]:
         # Use no edge codebook
         self.populate_nodes_codebooks()
@@ -885,9 +891,9 @@ class HyperNet(AbstractGraphEncoder):
                         # record & explain-away
                         found.update({(u, v), (v, u)})
                         graph_hv = (
-                                graph_hv
-                                - bound_hvs[g_idx]  # (u, v)
-                                - bound_hvs[pairs.index((v, u))]  # (v, u)
+                            graph_hv
+                            - bound_hvs[g_idx]  # (u, v)
+                            - bound_hvs[pairs.index((v, u))]  # (v, u)
                         )
                         # mark both directions as inactive
                         active[g_idx] = False
@@ -895,7 +901,6 @@ class HyperNet(AbstractGraphEncoder):
                         active_modified = True
                         if use_break:
                             break
-                    #
                     elif 0 < score <= threshold:
                         if not active_modified:
                             should_break = True
@@ -910,9 +915,9 @@ class HyperNet(AbstractGraphEncoder):
         return results
 
     def decode_order_one_counter(
-            self,
-            embedding: torch.Tensor,
-            unique_decode_nodes_batch: list[set[tuple[int, int]]],  # [unique_nodes], len = batch_size
+        self,
+        embedding: torch.Tensor,
+        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # [unique_nodes], len = batch_size
     ) -> list[dict]:
         """
         Returns information about the kind and number of edges (order one information) that were contained in the
@@ -995,7 +1000,7 @@ class HyperNet(AbstractGraphEncoder):
             # 4) gather their hypervectors and compute similarities
             # edges_codebook: [#all_possible_edges, D]
             codebook_slice = self.edges_codebook[edge_idxs]  # [E, D]
-            sims = torchhd.dot(embedding[b: b + 1], codebook_slice).flatten()  # [E]
+            sims = torchhd.dot(embedding[b : b + 1], codebook_slice).flatten()  # [E]
 
             # 5) round to counts, clamp ≥0
             counts = sims.tolist()
@@ -1102,7 +1107,6 @@ class HyperNet(AbstractGraphEncoder):
             "node_encoder_map": serialize_encoder_map(self.node_encoder_map),
             "edge_encoder_map": serialize_encoder_map(self.edge_encoder_map),
             "graph_encoder_map": serialize_encoder_map(self.graph_encoder_map),
-
             # --- codebooks ---
             "nodes_codebook": serialize_codebook(self.nodes_codebook),
             "edge_feature_codebook": serialize_codebook(self.edge_feature_codebook),
@@ -1195,14 +1199,20 @@ class HyperNet(AbstractGraphEncoder):
                 setattr(self, k, v)
 
         # encoder maps (encoders already carry their codebooks on CPU)
-        self.node_encoder_map  = deserialize_encoder_map(state["node_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu")
-        self.edge_encoder_map  = deserialize_encoder_map(state["edge_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu")
-        self.graph_encoder_map = deserialize_encoder_map(state["graph_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu")
+        self.node_encoder_map = deserialize_encoder_map(
+            state["node_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        self.edge_encoder_map = deserialize_encoder_map(
+            state["edge_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        self.graph_encoder_map = deserialize_encoder_map(
+            state["graph_encoder_map"], override_device="cuda" if torch.cuda.is_available() else "cpu"
+        )
 
         # restore codebooks (may be None if checkpoint created before codebooks existed)
-        self.nodes_codebook         = state.get("nodes_codebook", None)
-        self.edge_feature_codebook  = state.get("edge_feature_codebook", None)
-        self.edges_codebook         = state.get("edges_codebook", None)
+        self.nodes_codebook = state.get("nodes_codebook", None)
+        self.edge_feature_codebook = state.get("edge_feature_codebook", None)
+        self.edges_codebook = state.get("edges_codebook", None)
 
         # (re)build indexers from the encoder maps (sizes are inferable)
         self._populate_nodes_indexer()
@@ -1212,12 +1222,14 @@ class HyperNet(AbstractGraphEncoder):
             self._populate_edges_indexer()
 
         # move everything to target device (prefer saved device in attributes; fallback CPU)
-        override_device="cuda" if torch.cuda.is_available() else "cpu"
-        def _to_dev(x): return None if x is None else x.to(override_device)
+        override_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.nodes_codebook        = _to_dev(self.nodes_codebook)
+        def _to_dev(x):
+            return None if x is None else x.to(override_device)
+
+        self.nodes_codebook = _to_dev(self.nodes_codebook)
         self.edge_feature_codebook = _to_dev(self.edge_feature_codebook)
-        self.edges_codebook        = _to_dev(self.edges_codebook)
+        self.edges_codebook = _to_dev(self.edges_codebook)
 
         for emap in (self.node_encoder_map, self.edge_encoder_map, self.graph_encoder_map):
             for enc, _ in emap.values():
@@ -1244,9 +1256,9 @@ class HyperNet(AbstractGraphEncoder):
         return instance
 
     def possible_graph_from_constraints(
-            self,
-            zero_order_constraints: list[dict],
-            first_order_constraints: list[dict],
+        self,
+        zero_order_constraints: list[dict],
+        first_order_constraints: list[dict],
     ) -> tuple[dict, list]:
         # ~ Build node information from constraints list
         # This data structure will contain a unique integer node index as the key and the value will
@@ -1280,20 +1292,20 @@ class HyperNet(AbstractGraphEncoder):
         return index_node_map, list(edge_indices)
 
     def reconstruct(
-            self,
-            graph_hv: torch.Tensor,
-            node_terms: torch.Tensor | None = None,
-            edge_terms: torch.Tensor | None = None,
-            num_iterations: int = 25,
-            learning_rate: float = 1.0,
-            batch_size: int = 10,
-            low: float = 0.0,
-            high: float = 1.0,
-            alpha: float = 1.0,
-            lambda_l1: float = 0.0,
-            *,
-            use_node_degree: bool = False,
-            is_undirected: bool = True,
+        self,
+        graph_hv: torch.Tensor,
+        node_terms: torch.Tensor | None = None,
+        edge_terms: torch.Tensor | None = None,
+        num_iterations: int = 25,
+        learning_rate: float = 1.0,
+        batch_size: int = 10,
+        low: float = 0.0,
+        high: float = 1.0,
+        alpha: float = 1.0,
+        lambda_l1: float = 0.0,
+        *,
+        use_node_degree: bool = False,
+        is_undirected: bool = True,
     ) -> dict:
         """
         Reconstructs a graph dict representation from the given graph hypervector by first decoding
@@ -1352,9 +1364,7 @@ class HyperNet(AbstractGraphEncoder):
         if is_undirected:
             assert edges_per_graph % 2 == 0, "Expected each undirected edge twice"
             num_unique = edges_per_graph // 2
-            raw_weights = torch.nn.Parameter(
-                torch.empty(batch_size * num_unique, 1, device=dev).uniform_(low, high)
-            )
+            raw_weights = torch.nn.Parameter(torch.empty(batch_size * num_unique, 1, device=dev).uniform_(low, high))
         else:
             raw_weights = torch.nn.Parameter(
                 torch.empty(batch_size * edges_per_graph, 1, device=dev).uniform_(low, high)
@@ -1484,9 +1494,12 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-        path: Path, cfg: DatasetConfig, depth: int = 3, *, use_edge_codebook: bool = False
+    path: Path, cfg: DatasetConfig, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
-    path = path / f"hypernet_{cfg.name}_{cfg.vsa.value}_dim{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}.pt"
+    path = (
+        path
+        / f"hypernet_{cfg.name}_{cfg.vsa.value}_dim{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}.pt"
+    )
     if path.exists():
         print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet.load(path=path)

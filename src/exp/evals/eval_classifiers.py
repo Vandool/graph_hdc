@@ -92,10 +92,10 @@ for ckpt_path in files:
     last = epoch_metrics.iloc[-1].add_suffix("_last")
 
     oracle_setting = {
-        "beam_size": 1,
+        "beam_size": 128,
         "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
-        "use_pair_feasibility": True,
+        "use_pair_feasibility": False,
         "expand_on_n_anchors": 12,
     }
 
