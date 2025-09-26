@@ -250,7 +250,6 @@ def run_experiment(cfg: Config):
         norm=cfg.norm,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
-        cfg=cfg,
     ).to(device=device)
 
     log(f"Model: {model!s}")
