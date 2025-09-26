@@ -337,10 +337,11 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             "weight_decay",
             [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
-        "depth": trial.suggest_categorical("depth", [3]),
+        "depth": trial.suggest_categorical("depth", [2, 3, 4]),
         "h1": trial.suggest_int("h1", 256, 2048, step=256),
         "h2": trial.suggest_int("h2", 128, 1024, step=128),
         "h3": trial.suggest_int("h3", 64, 512, step=64),
+        "h4": trial.suggest_int("h4", 32, 256, step=32),
         "activation": trial.suggest_categorical("activation", ACTS.keys()),
         "dropout": trial.suggest_float("dropout", 0.0, 0.25),
         "norm": trial.suggest_categorical("norm", NORMS.keys()),
@@ -352,12 +353,14 @@ def get_cfg(trial: optuna.Trial, dataset: str):
         hidden_dims.append(cfg["h2"])
     if cfg["depth"] >= 3:
         hidden_dims.append(cfg["h3"])
+    if cfg["depth"] >= 4:
+        hidden_dims.append(cfg["h4"])
 
     lpr_cfg = Config()
     lpr_cfg.batch_size = cfg["batch_size"]
     lpr_cfg.lr = cfg["lr"]
     lpr_cfg.weight_decay = cfg["weight_decay"]
-    lpr_cfg.hidden_dims = hidden_dims
+    lpr_cfg.hidden_dims = sorted(hidden_dims, reverse=True)
     lpr_cfg.activation = cfg["activation"]
     lpr_cfg.norm = cfg["norm"]
     lpr_cfg.dropout = cfg["dropout"]
