@@ -114,6 +114,9 @@ $MODULE_LOAD
 echo 'Node:' \$(hostname)
 echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export PYTORCH_NUM_THREADS=1
 cd '${EXPERIMENTS_PATH}'
 pixi run --frozen -e '${PIXI_ENV}' python ${QUOTED_ARGS}
 WRAP
