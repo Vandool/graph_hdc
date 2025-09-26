@@ -25,6 +25,7 @@ from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.regressor.hpo.folder_name import make_run_folder_name
+from src.generation.logp_regressor import ACTS, NORMS
 from src.utils.registery import resolve_model, retrieve_model
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
@@ -345,9 +346,9 @@ def get_cfg(trial: optuna.Trial, dataset: str):
         "h1": trial.suggest_int("h1", 256, 2048, step=64),
         "h2": trial.suggest_int("h2", 128, 1024, step=64),
         "h3": trial.suggest_int("h3", 64, 512, step=64),
-        "activation": trial.suggest_categorical("activation", ["relu", "gelu", "silu", "leakyrelu"]),
+        "activation": trial.suggest_categorical("activation", ACTS.keys()),
         "dropout": trial.suggest_float("dropout", 0.0, 0.3),
-        "norm": trial.suggest_categorical("norm", ["none", "lay_norm", "batch_norm"]),
+        "norm": trial.suggest_categorical("norm", NORMS.keys()),
     }
 
     # build hidden_dims from depth

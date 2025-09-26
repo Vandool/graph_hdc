@@ -19,6 +19,7 @@ ACTS = {
 NORMS = {
     "batch_norm": nn.BatchNorm1d,
     "lay_norm": nn.LayerNorm,  # as specified
+    "none": None
 }
 
 
@@ -38,14 +39,14 @@ def _make_mlp(
 ) -> nn.Sequential:
     layers: list[nn.Module] = []
     act_factory = ACTS.get(activation.lower(), nn.GELU)
-    norm_factory = NORMS.get(norm.lower(), nn.LayerNorm) if norm else None
+    norm_factory = NORMS.get(norm.lower(), nn.LayerNorm)
 
     prev = in_dim
     for h in hidden_dims:
         layers.append(nn.Linear(prev, h))
         if norm_factory is not None:
             # BatchNorm1d and LayerNorm both accept feature dim h
-            layers.append(_instantiate(norm_factory).__class__(h))
+            layers.append(norm_factory(h))
         layers.append(_instantiate(act_factory))
         if dropout and dropout > 0:
             layers.append(nn.Dropout(dropout))
