@@ -24,7 +24,7 @@ from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
-from src.exp.regressor.hpo.folder_name import make_run_folder_name
+from src.exp.logp_regressor.hpo.folder_name import make_run_folder_name
 from src.generation.logp_regressor import ACTS, NORMS
 from src.utils.registery import resolve_model, retrieve_model
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
