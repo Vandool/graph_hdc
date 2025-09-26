@@ -6,7 +6,7 @@ from typing import Any, Literal
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 
-ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "GIN-LF", "NVP"]
+ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "GIN-LF", "NVP", "LPR"]
 
 # Store CLASSES (constructors), not instances
 _MODEL_REGISTRY: dict[ModelType, type[LightningModule]] = {}

@@ -31,18 +31,18 @@ Notes
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 
 import torch
 from rdkit import Chem
+from rdkit.Chem import Crippen
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
-from src.utils.chem import compute_qed, eval_key_from_data
-from src.utils.utils import GLOBAL_DATASET_PATH, fit_stats, zscore
+from src.utils.chem import eval_key_from_data
+from src.utils.utils import GLOBAL_DATASET_PATH
 
 
 # ─────────────────────────────── SMILES iterator ──────────────────────────────
@@ -88,6 +88,12 @@ def mol_to_data(mol: Chem.Mol) -> Data:
     - degree_minus_1: degree-1 mapped to {0,1,2,3,4,...}
     - formal_charge_mapped: {0,1,-1} -> {0,1,2}
     - total_num_Hs: explicit+implicit hydrogens as integer (0..n)
+
+    Molecule features (per graph)
+    ------------------------
+    - smiles: canonical SMILES string
+    - eval_smiles: Smiles generated using our decoding pipeline
+    - logp: RDKit cLogP (Wildman-Crippen); deterministic for a given SMILES
     """
     x = []
     for atom in mol.GetAtoms():
@@ -122,6 +128,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         edge_index=torch.tensor([src, dst], dtype=torch.long),
         smiles=Chem.MolToSmiles(mol, canonical=True),
         eval_smiles=eval_smiles,
+        logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
     )
 
 
@@ -187,7 +194,6 @@ class QM9Smiles(InMemoryDataset):
     # ---------- create `processed/…` -------------------------------------------
     def process(self):
         data_list: list[Data] = []
-        qeds: list[float] = []
 
         src = Path(self.raw_paths[0])
         total = _count_smiles_lines(src)
@@ -202,34 +208,6 @@ class QM9Smiles(InMemoryDataset):
             if mol is None:
                 continue
             data = mol_to_data(mol)
-
-            # --- QED property ---
-            qeds.append(compute_qed(mol))
-            data.qed_raw = qeds[-1]  # keep temp, standardize later
-
-            if self.pre_filter and not self.pre_filter(data):
-                continue
-            if self.pre_transform:
-                data = self.pre_transform(data)
-            data_list.append(data)
-
-            # --- standardize QED ---
-            stats_path = Path(self.processed_dir) / "qed_stats.json"
-            if self.split == "train":
-                stats = fit_stats(qeds)
-                Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
-                with open(stats_path, "w") as f:
-                    json.dump(stats, f)
-            else:
-                with open(stats_path) as f:
-                    stats = json.load(f)
-
-            for d in data_list:
-                q = float(getattr(d, "qed_raw", float("nan")))
-                d.cond = torch.tensor([zscore(q, stats)], dtype=torch.float32)
-                if hasattr(d, "qed_raw"):
-                    delattr(d, "qed_raw")
-
             if self.pre_filter and not self.pre_filter(data):
                 continue
             if self.pre_transform:
@@ -294,7 +272,6 @@ def precompute_encodings(
 
 
 if __name__ == "__main__":
-    # train_ds = QM9Smiles(split="train")
-    # valid_ds = QM9Smiles(split="valid")
-    # test_ds = QM9Smiles(split="test")
-    simple_ds = QM9Smiles(split="test")
+    train_ds = QM9Smiles(split="train")
+    valid_ds = QM9Smiles(split="valid")
+    test_ds = QM9Smiles(split="test")
