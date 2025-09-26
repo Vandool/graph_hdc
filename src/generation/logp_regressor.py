@@ -38,8 +38,8 @@ def _make_mlp(
     norm: str = "lay_norm",  # exclusive: choose exactly one or use None to disable
 ) -> nn.Sequential:
     layers: list[nn.Module] = []
-    act_factory = ACTS.get(activation.lower(), nn.GELU)
-    norm_factory = NORMS.get(norm.lower(), nn.LayerNorm)
+    act_factory = ACTS.get(activation, nn.GELU)
+    norm_factory = NORMS.get(norm, nn.LayerNorm)
 
     prev = in_dim
     for h in hidden_dims:

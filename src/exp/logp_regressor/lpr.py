@@ -363,7 +363,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
     lpr_cfg.weight_decay = cfg["weight_decay"]
     lpr_cfg.hidden_dims = hidden_dims
     lpr_cfg.activation = cfg["activation"]
-    lpr_cfg.norm = None if cfg["norm"] == "none" else cfg["norm"]
+    lpr_cfg.norm = cfg["norm"]
     lpr_cfg.dropout = cfg["dropout"]
 
     lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
