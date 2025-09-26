@@ -90,7 +90,7 @@ def setup_exp(dir_name: str | None = None) -> dict:
 class Config:
     exp_dir_name: str | None = None
     seed: int = 42
-    epochs: int = 50
+    epochs: int = 100
     batch_size: int = 64
     is_dev: bool = os.getenv("IS_DEV", "0") == "1"
 
