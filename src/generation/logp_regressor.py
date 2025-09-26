@@ -19,7 +19,7 @@ ACTS = {
 NORMS = {
     "batch_norm": nn.BatchNorm1d,
     "lay_norm": nn.LayerNorm,  # as specified
-    "none": None
+    "none": None,
 }
 
 
@@ -86,11 +86,20 @@ class LogPRegressor(pl.LightningModule):
         )
         self.loss_fn = nn.MSELoss()
 
+    def _flat_from_batch(self, batch) -> torch.Tensor:
+        D = self.hparams.input_dim // 2
+        B = batch.num_graphs
+        n, g = batch.node_terms.as_subclass(torch.Tensor), batch.graph_terms.as_subclass(torch.Tensor)
+        if n.dim() == 1:
+            n = n.view(B, D)
+        if g.dim() == 1:
+            g = g.view(B, D)
+        return torch.cat([n, g], dim=-1)
+
     def forward(self, batch) -> torch.Tensor:
-        # batch.node_terms: [B, D], batch.graph_terms: [B, D]
-        x = torch.cat([batch.node_terms, batch.graph_terms], dim=-1)  # [B, 2D]
-        y_hat = self.net(x).squeeze(-1)  # [B]
-        return y_hat
+        # batch.node_terms: [B*D], batch.graph_terms: [B*D]
+        x = self._flat_from_batch(batch)  # [B, 2D]
+        return self.net(x).squeeze(-1)
 
     def _step(self, batch, stage: str):
         y = batch.logp.float().view(-1)  # [B]
