@@ -190,13 +190,10 @@ def run_experiment(cfg: Config):
 
     log("Loading/creating hypernet …")
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
-    log("Hypernet ready.")
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
 
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    log("Hypernet ready.")
 
     # ----- datasets / loaders -----
     log(f"Loading {cfg.dataset.value} pair datasets.")
