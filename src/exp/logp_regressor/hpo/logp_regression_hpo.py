@@ -15,7 +15,7 @@ SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
     "weight_decay": optuna.distributions.CategoricalDistribution([0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
     # model architecture
-    "depth": optuna.distributions.CategoricalDistribution([2, 3, 4]),  # number of hidden layers
+    "depth": optuna.distributions.CategoricalDistribution([2, 3]),  # number of hidden layers
     "h1": optuna.distributions.IntDistribution(256, 2048, step=256),
     "h2": optuna.distributions.IntDistribution(128, 1024, step=128),
     "h3": optuna.distributions.IntDistribution(64, 512, step=64),

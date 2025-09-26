@@ -194,7 +194,6 @@ def run_experiment(cfg: Config):
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
 
-
     # ----- datasets / loaders -----
     log(f"Loading {cfg.dataset.value} pair datasets.")
     if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
@@ -338,12 +337,12 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             "weight_decay",
             [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
-        "depth": trial.suggest_categorical("depth", [1, 2, 3]),
-        "h1": trial.suggest_int("h1", 256, 2048, step=64),
-        "h2": trial.suggest_int("h2", 128, 1024, step=64),
+        "depth": trial.suggest_categorical("depth", [3]),
+        "h1": trial.suggest_int("h1", 256, 2048, step=256),
+        "h2": trial.suggest_int("h2", 128, 1024, step=128),
         "h3": trial.suggest_int("h3", 64, 512, step=64),
         "activation": trial.suggest_categorical("activation", ACTS.keys()),
-        "dropout": trial.suggest_float("dropout", 0.0, 0.3),
+        "dropout": trial.suggest_float("dropout", 0.0, 0.25),
         "norm": trial.suggest_categorical("norm", NORMS.keys()),
     }
 
