@@ -9,7 +9,7 @@ from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
 from src.exp.real_nvp_hpo.real_nvp import run_qm9_trial, run_zinc_trial
 
 SPACE = {
-    "batch_size": optuna.distributions.IntDistribution(32, 512, log=True),
+    "batch_size": optuna.distributions.IntDistribution(32, 512, step=32),
     "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
     "weight_decay": optuna.distributions.CategoricalDistribution([0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
     "num_flows": optuna.distributions.IntDistribution(4, 16),

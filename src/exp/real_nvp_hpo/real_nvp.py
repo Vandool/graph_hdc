@@ -915,14 +915,14 @@ def run_experiment(cfg: FlowConfig):
 
 def get_cfg(trial: optuna.Trial, dataset: str):
     cfg = {
-        "batch_size": trial.suggest_int("batch_size", 32, 512, log=True),
+        "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
         "weight_decay": trial.suggest_categorical(
             "weight_decay",
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "num_flows": trial.suggest_int("num_flows", 4, 16),
-        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=64),
+        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=128),
         "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
         "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
         "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),
