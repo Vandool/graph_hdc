@@ -420,7 +420,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
     lpr_cfg.norm = cfg["norm"]
     lpr_cfg.dropout = cfg["dropout"]
 
-    lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
+    lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset, prefix="pr-lpr")
     return lpr_cfg
 
 
