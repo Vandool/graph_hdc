@@ -13,10 +13,12 @@ from pprint import pprint
 import matplotlib.pyplot as plt
 import optuna
 import pandas as pd
+import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from torch_geometric.loader import DataLoader
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
@@ -129,36 +131,88 @@ class TimeLoggingCallback(Callback):
         trainer.logger.log_metrics({"elapsed_time_sec": elapsed}, step=trainer.current_epoch)
 
 
-class LossCurveCallback(Callback):
-    def __init__(self, artefacts_dir: Path):
+class LossCurveCallback(pl.Callback):
+    def __init__(self, artefacts_dir: Path, make_grid: bool = True):
         super().__init__()
-        self.artefacts_dir = artefacts_dir
+        self.artefacts_dir = Path(artefacts_dir)
+        self.make_grid = make_grid
 
-    def on_train_end(self, trainer, pl_module):
-        # metrics.csv is already written by CSVLogger
-        metrics_path = Path(trainer.logger.log_dir) / "metrics.csv"
-        if not metrics_path.exists():
+    @rank_zero_only
+    def on_fit_end(self, trainer, pl_module):
+        log_dir = getattr(trainer.logger, "log_dir", None)
+        if not log_dir:
             return
-        df = pd.read_csv(metrics_path)
-        # select columns that exist
-        cols = [c for c in df.columns if c in ("epoch", "train_loss", "val_loss")]
-        if not {"train_loss", "val_loss"} <= set(cols):
+        csv_path = Path(log_dir) / "metrics.csv"
+        if not csv_path.exists():
             return
-        plt.figure(figsize=(8, 6))
-        plt.plot(df["epoch"], df["train_loss"], label="train")
-        plt.plot(df["epoch"], df["val_loss"], label="val")
-        plt.xlabel("epoch")
-        plt.ylabel("loss (MSE)")
-        plt.legend()
-        plt.title("Training vs Validation Loss")
-        out_path = self.artefacts_dir / "loss_curve.png"
-        plt.tight_layout()
-        plt.savefig(out_path)
-        plt.close()
-        print(f"[LossCurveCallback] Saved loss curve to {out_path}")
+
+        df = pd.read_csv(csv_path)
+        df["epoch"] = pd.to_numeric(df["epoch"], errors="coerce")
+        df = df.dropna(subset=["epoch"]).copy()
+        df["epoch"] = df["epoch"].astype(int)
+
+        # separate tables and skip epoch 0
+        train = df[df["train_loss"].notna() & (df["epoch"] > 0)][["epoch", "train_loss", "train_mae", "train_rmse"]]
+        val = df[df["val_loss"].notna() & (df["epoch"] > 0)][["epoch", "val_loss", "val_mae", "val_rmse"]]
+
+        self.artefacts_dir.mkdir(parents=True, exist_ok=True)
+
+        def plot_metric(metric: str):
+            plt.figure(figsize=(8, 5))
+            if f"train_{metric}" in train:
+                plt.plot(train["epoch"], train[f"train_{metric}"], label=f"train_{metric}")
+            if f"val_{metric}" in val:
+                plt.plot(val["epoch"], val[f"val_{metric}"], label=f"val_{metric}")
+            plt.xlabel("epoch")
+            plt.ylabel(metric.upper())
+            plt.title(f"Training vs Validation {metric.upper()} (epoch > 0)")
+            plt.legend()
+            out = self.artefacts_dir / f"{metric}_curve.png"
+            plt.savefig(out, dpi=160)
+            plt.close()
+            print(f"[LossCurveCallback] saved {out}")
+
+        # plot all three
+        for m in ("loss", "mae", "rmse"):
+            plot_metric(m)
+
+        if self.make_grid:
+            fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+            for ax, m in zip(axes, ("loss", "mae", "rmse"), strict=False):
+                if f"train_{m}" in train:
+                    ax.plot(train["epoch"], train[f"train_{m}"], label=f"train_{m}")
+                if f"val_{m}" in val:
+                    ax.plot(val["epoch"], val[f"val_{m}"], label=f"val_{m}")
+                ax.set_ylabel(m.upper())
+                ax.legend()
+                ax.grid(alpha=0.2)
+            axes[-1].set_xlabel("epoch")
+            fig.tight_layout()
+            fig.savefig(self.artefacts_dir / "curves_grid.png", dpi=160)
+            plt.close(fig)
+            print("[LossCurveCallback] saved curves_grid.png")
 
 
-def run_experiment(cfg: Config):
+class SimplePruningCallback(Callback):
+    def __init__(self, trial: optuna.Trial, monitor: str = "val_loss"):
+        super().__init__()
+        self.trial = trial
+        self.monitor = monitor
+
+    def on_validation_end(self, trainer, pl_module):
+        val = trainer.callback_metrics.get(self.monitor)
+        if val is None:
+            return
+        # get python float
+        if torch.is_tensor(val):
+            val = val.detach().float().item()
+        self.trial.report(val, step=trainer.current_epoch)
+        if self.trial.should_prune():
+            msg = f"Pruned at epoch {trainer.current_epoch}"
+            raise optuna.TrialPruned(msg)
+
+
+def run_experiment(cfg: Config, trial: optuna.Trial):
     local_dev = cfg.is_dev
     pprint(cfg)
     # ----- setup dirs -----
@@ -275,14 +329,15 @@ def run_experiment(cfg: Config):
     )
 
     loss_curve_cb = LossCurveCallback(artefacts_dir)
-
     # ----- W&B -----
     loggers = [csv_logger]
+
+    prunin_cb = SimplePruningCallback(trial)
 
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping, loss_curve_cb],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping, loss_curve_cb, prunin_cb],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
@@ -373,4 +428,4 @@ def run_qm9_trial(trial: optuna.Trial):
     lpr_cfg = get_cfg(trial, dataset="qm9")
     lpr_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600
     lpr_cfg.hv_dim = 40 * 40
-    return run_experiment(lpr_cfg)
+    return run_experiment(lpr_cfg, trial)
