@@ -108,9 +108,10 @@ class LogPRegressor(pl.LightningModule):
         with torch.no_grad():
             mae = F.l1_loss(y_hat, y)
             rmse = torch.sqrt(F.mse_loss(y_hat, y))
-        self.log(f"{stage}_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
-        self.log(f"{stage}_mae", mae, prog_bar=(stage != "train"), on_step=False, on_epoch=True)
-        self.log(f"{stage}_rmse", rmse, prog_bar=False, on_step=False, on_epoch=True)
+        B = batch.num_graphs
+        self.log(f"{stage}_loss", loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=B)
+        self.log(f"{stage}_mae", mae, prog_bar=(stage != "train"), on_step=False, on_epoch=True, batch_size=B)
+        self.log(f"{stage}_rmse", rmse, prog_bar=False, on_step=False, on_epoch=True, batch_size=B)
         return loss
 
     def training_step(self, batch, batch_idx):  # noqa: ARG002
