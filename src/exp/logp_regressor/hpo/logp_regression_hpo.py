@@ -3,7 +3,7 @@ import pathlib
 
 import optuna
 import pandas as pd
-from optuna_integration import BoTorchSampler
+from optuna.samplers import TPESampler
 
 from src.exp.logp_regressor.hpo.folder_name import make_run_folder_name
 from src.exp.logp_regressor.lpr import run_qm9_trial
@@ -22,7 +22,7 @@ SPACE = {
     "h4": optuna.distributions.IntDistribution(32, 256, step=32),
     "activation": optuna.distributions.CategoricalDistribution(logp_regressor.ACTS.keys()),
     "norm": optuna.distributions.CategoricalDistribution(logp_regressor.NORMS.keys()),
-    "dropout": optuna.distributions.FloatDistribution(0.0, 0.25),
+    "dropout": optuna.distributions.FloatDistribution(0.0, 0.2),
 }
 
 DIRECTION = "minimize"  # e.g., minimize val_mae
@@ -35,7 +35,12 @@ def load_study(study_name: str, sqlite_path: str) -> optuna.Study:
         direction=DIRECTION,
         storage=f"sqlite:///{sqlite_path}",
         load_if_exists=True,
-        sampler=BoTorchSampler(seed=42),
+        sampler=TPESampler(
+            seed=42,
+            n_startup_trials=12,
+            multivariate=True,  # model interactions between params
+            group=True,  # handles conditional/discrete structure better
+        ),
     )
 
 
@@ -88,6 +93,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
         row = {
             "dataset": dataset,
             "exp_dir_name": exp_dir,  # <-- include in CSV
+            "best_epoch": t.user_attrs.get("best_epoch") or -1,
             "number": t.number,
             "value": t.value,
             "state": t.state.name if hasattr(t.state, "name") else str(t.state),
@@ -126,11 +132,12 @@ if __name__ == "__main__":
 
     # Wrapper to set exp_dir_name once params are known
     def objective(trial: optuna.Trial) -> float:
-        val = base_objective(trial)
+        val, best_epoch = base_objective(trial)
         # After suggestions happened, params are available:
         cfg = dict(trial.params)
         exp_dir = make_run_folder_name(cfg, dataset=args.dataset)
         trial.set_user_attr("exp_dir_name", exp_dir)
+        trial.set_user_attr("best_epoch", best_epoch)
         return val
 
     # Run optimization

@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import enum
 import json
@@ -30,10 +31,6 @@ from src.exp.logp_regressor.hpo.folder_name import make_run_folder_name
 from src.generation.logp_regressor import ACTS, NORMS
 from src.utils.registery import resolve_model, retrieve_model
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
-
-LOCAL_DEV = "LOCAL_HDC_miss"
-
-PROJECT_NAME = "real_nvp_v2"
 
 
 # ---------------------------------------------------------------------
@@ -92,7 +89,7 @@ def setup_exp(dir_name: str | None = None) -> dict:
 class Config:
     exp_dir_name: str | None = None
     seed: int = 42
-    epochs: int = 100
+    epochs: int = 200
     batch_size: int = 64
     is_dev: bool = os.getenv("IS_DEV", "0") == "1"
 
@@ -191,25 +188,6 @@ class LossCurveCallback(pl.Callback):
             fig.savefig(self.artefacts_dir / "curves_grid.png", dpi=160)
             plt.close(fig)
             print("[LossCurveCallback] saved curves_grid.png")
-
-
-class SimplePruningCallback(Callback):
-    def __init__(self, trial: optuna.Trial, monitor: str = "val_loss"):
-        super().__init__()
-        self.trial = trial
-        self.monitor = monitor
-
-    def on_validation_end(self, trainer, pl_module):
-        val = trainer.callback_metrics.get(self.monitor)
-        if val is None:
-            return
-        # get python float
-        if torch.is_tensor(val):
-            val = val.detach().float().item()
-        self.trial.report(val, step=trainer.current_epoch)
-        if self.trial.should_prune():
-            msg = f"Pruned at epoch {trainer.current_epoch}"
-            raise optuna.TrialPruned(msg)
 
 
 def run_experiment(cfg: Config, trial: optuna.Trial):
@@ -322,7 +300,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=15,
+        patience=10,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         verbose=True,
@@ -332,12 +310,10 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     # ----- W&B -----
     loggers = [csv_logger]
 
-    prunin_cb = SimplePruningCallback(trial)
-
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping, loss_curve_cb, prunin_cb],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping, loss_curve_cb],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
@@ -356,8 +332,13 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     # ----- curves to parquet / png -----
     metrics_path_csv = Path(csv_logger.log_dir) / "metrics.csv"
     metrics_path_parquet = evals_dir / "metrics.parquet"
+    best_epoch = 0
+    min_val_loss = float("inf")
     if metrics_path_csv.exists():
         df = pd.read_csv(metrics_path_csv)
+        with contextlib.suppress(Exception):
+            best_epoch = int(df.loc[df["val_loss"].idxmin(), "epoch"])
+            min_val_loss = df["val_loss"].min() if "val_loss" in df else float("nan")
         df.to_parquet(metrics_path_parquet, index=False)
 
     best_path = checkpoint_callback.best_model_path
@@ -365,23 +346,18 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
 
     if not best_path or not Path(best_path).exists():
         log("No checkpoint found (best/last). Skipping post-training analysis.")
-        return 0.0
+        return 0.0, -1
 
     log(f"Loading best checkpoint: {best_path}")
-    best_model = retrieve_model("LPR").load_from_checkpoint(best_path)
-    best_model.to(device).eval()
-
-    # get the best val_loss from CSV
-    if metrics_path_csv.exists():
-        df = pd.read_csv(metrics_path_csv)
-        min_val_loss = df["val_loss"].min() if "val_loss" in df else float("nan")
-    else:
-        min_val_loss = float("nan")
+    try:
+        retrieve_model("LPR").load_from_checkpoint(best_path)
+    except Exception:
+        log(f"ERROR [{best_path}]: model could not be loaded!")
 
     log("Experiment completed.")
     log(f"Best val loss: {min_val_loss:.4f}")
     log(f"Best checkpoint: {best_path}")
-    return min_val_loss
+    return min_val_loss, best_epoch
 
 
 def get_cfg(trial: optuna.Trial, dataset: str):
@@ -398,7 +374,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
         "h3": trial.suggest_int("h3", 64, 512, step=64),
         "h4": trial.suggest_int("h4", 32, 256, step=32),
         "activation": trial.suggest_categorical("activation", ACTS.keys()),
-        "dropout": trial.suggest_float("dropout", 0.0, 0.25),
+        "dropout": trial.suggest_float("dropout", 0.0, 0.2),
         "norm": trial.suggest_categorical("norm", NORMS.keys()),
     }
 
@@ -420,7 +396,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
     lpr_cfg.norm = cfg["norm"]
     lpr_cfg.dropout = cfg["dropout"]
 
-    lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset, prefix="pr-lpr")
+    lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
     return lpr_cfg
 
 
