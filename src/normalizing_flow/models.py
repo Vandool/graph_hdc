@@ -21,10 +21,6 @@ class AbstractNFModel(pl.LightningModule):
     # Child classes will override training_step / validation_step to accept PyG Batch.
     # These helpers operate on *flat* tensors already computed by the child.
 
-    def nf_forward(self, flat):
-        # log q(x), z = f(x), etc. (normflows interface returns log prob with signs)
-        return self.flow.forward(flat)
-
     def nf_forward_kld(self, flat):
         return self.flow.forward_kld(flat)  # returns per-sample KL, normflows API
 
@@ -32,18 +28,10 @@ class AbstractNFModel(pl.LightningModule):
         z, logs = self.flow.sample(num_samples)
         return z, logs
 
-    @torch.no_grad()
-    def sample_split(self, num_samples: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-          node_terms:  [num_samples, D]
-          graph_terms: [num_samples, D]
-          logs
-        """
-        z, _logs = self.sample(num_samples)  # [num_samples, 2D]
-        node_terms = z[:, : self.D].contiguous()
-        graph_terms = z[:, self.D :].contiguous()
-        return node_terms, graph_terms, _logs
+    def split(self, flat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # flat: [B, 2D] in data-space
+        D = self.D
+        return flat[:, :D].contiguous(), flat[:, D:].contiguous()
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
@@ -148,6 +136,11 @@ class RealNVPV2Lightning(AbstractNFModel):
     def _posttransform(self, z):
         return self.mu + z * torch.exp(self.log_sigma)
 
+    def decode_from_latent(self, z_std):
+        # z_std in standardized latent space -> x in data-space (differentiable)
+        x_std = self.flow.forward(z_std)      # normflows forward: z_std -> x_std
+        return self._posttransform(x_std)
+
     @torch.no_grad()
     def sample_split(self, num_samples: int):
         """
@@ -158,8 +151,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         """
         z, _logs = self.sample(num_samples)  # standardized space
         x = self._posttransform(z)  # back to data space
-        node_terms = x[:, : self.D].contiguous()
-        graph_terms = x[:, self.D :].contiguous()
+        node_terms, graph_terms = self.split(x)
         return node_terms, graph_terms, _logs
 
     def nf_forward_kld(self, flat):
@@ -252,34 +244,3 @@ class RealNVPV2Lightning(AbstractNFModel):
         val = float("nan") if obj.numel() == 0 else float(obj.mean().detach().cpu().item())
         self.log("val_loss", val, on_epoch=True, prog_bar=True, batch_size=flat.size(0))
         return torch.tensor(val, device=flat.device) if val == val else None  # return NaN-safe
-
-    # ---- helpers for sampling/inspection
-
-
-## Neural Spline Flow
-
-
-class NeuralSplineLightning(AbstractNFModel):
-    def __init__(self, cfg: FlowConfig):
-        super().__init__(cfg)
-
-        latent_dim = cfg.num_input_channels
-        flows = []
-        for _ in range(cfg.num_flows):
-            flows.append(
-                nf.flows.AutoregressiveRationalQuadraticSpline(
-                    num_input_channels=cfg.num_input_channels,
-                    num_blocks=cfg.num_blocks,
-                    num_hidden_channels=cfg.num_hidden_channels,
-                    num_context_channels=cfg.num_context_channels,
-                    num_bins=cfg.num_bins,
-                    tail_bound=cfg.tail_bound,
-                    activation=cfg.activation,
-                    dropout_probability=cfg.dropout_probability,
-                    permute_mask=cfg.permute,
-                )
-            )
-            flows.append(nf.flows.Permute(latent_dim, mode="shuffle"))
-
-        base = nf.distributions.DiagGaussian(latent_dim, trainable=False)
-        self.flow = nf.NormalizingFlow(q0=base, flows=flows)

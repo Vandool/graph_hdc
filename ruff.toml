@@ -33,6 +33,7 @@ lint.ignore = [
     "UP007", # prefer X|Y types
     "W291", # trailing whitespace
     "T201", # Remove Prints
+    "T203", # Remove pprints
     "BLE001" # Do not catch blind exception: `Exception`
 ]
 

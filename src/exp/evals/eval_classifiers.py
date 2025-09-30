@@ -10,7 +10,10 @@ from torchhd import HRRTensor
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import SupportedDataset
-from src.encoding.decoder import greedy_oracle_decoder_faster, is_induced_subgraph_by_features
+from src.encoding.decoder import (
+    greedy_oracle_decoder_trace_back_dyname_beam_size,
+    is_induced_subgraph_by_features,
+)
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.oracles import Oracle
 from src.utils import registery
@@ -77,7 +80,7 @@ use_best_threshold = True
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
-files = list(find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "qm9")))
+files = list(find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "zinc")))
 print(f"Found {len(files)} checkpoints.")
 for ckpt_path in files:
     print(f"File Name: {ckpt_path}")
@@ -92,11 +95,11 @@ for ckpt_path in files:
     last = epoch_metrics.iloc[-1].add_suffix("_last")
 
     oracle_setting = {
-        "beam_size": 4,
+        "beam_size": 8,
         "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
-        "use_pair_feasibility": True,
-        "expand_on_n_anchors": 8,
+        "use_pair_feasibility": False,
+        "expand_on_n_anchors": 9,
     }
 
     ## Determine model type
@@ -161,18 +164,15 @@ for ckpt_path in files:
             # print("================================================")
             full_graph_nx = DataTransformer.pyg_to_nx(data=datas[g])
             node_multiset = DataTransformer.get_node_counter_from_batch(batch=g, data=batch)
-            nx_GS, _  = greedy_oracle_decoder_faster(
+            nx_GS, _ = greedy_oracle_decoder_trace_back_dyname_beam_size(
                 node_multiset=node_multiset,
                 oracle=oracle,
                 full_g_h=graph_terms_hd[g],
                 **oracle_setting,
             )
-            # print(len(nx_GS))
-            # print(nx_GS)
             nx_GS = list(filter(None, nx_GS))
             if len(nx_GS) == 0:
                 y.append(0)
-                # print("No Graphs encoded ...!")
                 continue
 
             sub_g_ys = [0]
@@ -181,7 +181,7 @@ for ckpt_path in files:
 
                 sub_g_ys.append(int(is_final))
             is_final_graph_ = int(sum(sub_g_ys) >= 1)
-            print(is_final_graph_)
+            # print(is_final_graph_)
             y.append(is_final_graph_)
             if is_final_graph_:
                 correct_decoded.append(j)
@@ -194,7 +194,8 @@ for ckpt_path in files:
     ### Save metrics
     run_metrics = {
         "path": "/".join(ckpt_path.parts[-4:]),
-        "model_type": model_type,
+        "model_type": f"{model_type}",
+        "back_tracing": True,
         "dataset": ds.value,
         "num_eval_samples": batch_size,
         "time_per_sample": (time.perf_counter() - start_t) / batch_size,
@@ -209,8 +210,8 @@ for ckpt_path in files:
     asset_dir = GLOBAL_ARTEFACTS_PATH / "classification"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
-    parquet_path = asset_dir / f"oracle_acc_{dataset_base}.parquet"
-    csv_path = asset_dir / f"oracle_acc_{dataset_base}.csv"
+    parquet_path = asset_dir / f"oracle_acc_back_tracing_eval_{dataset_base}.parquet"
+    csv_path = asset_dir / f"oracle_acc_back_tracing_eval_{dataset_base}.csv"
 
     metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 

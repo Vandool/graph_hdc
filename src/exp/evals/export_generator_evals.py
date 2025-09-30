@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.exp.real_nvp_v2.hpo.space import SPACE
+from src.exp.real_nvp_hpo.hpo.optuna_hpo import SPACE
 from src.utils import registery
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
 

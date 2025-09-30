@@ -87,6 +87,13 @@ class Generator:
         only_final_graphs: bool = True,
     ) -> tuple[list[Graph], list[bool], list[list[float]]]:
         node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
+        return self.decode(node_terms, graph_terms, only_final_graphs=only_final_graphs)
+
+
+    def decode(
+        self, node_terms: torch.Tensor, graph_terms: torch.Tensor, *, only_final_graphs: bool = True
+    ):
+        n_samples = node_terms.shape[0]
         node_terms_hd = node_terms.as_subclass(self.vsa.tensor_class)
         graph_terms_hd = graph_terms.as_subclass(self.vsa.tensor_class)
 
@@ -107,7 +114,7 @@ class Generator:
                 # nothing to decode for this sample → return empty
                 best_graphs.append(nx.Graph())
                 are_final_flags.append(False)
-                all_similarities.append([])
+                all_similarities.append([0])
                 continue
 
             candidates, is_final = greedy_oracle_decoder_faster(
@@ -121,13 +128,13 @@ class Generator:
 
             if not candidates:
                 best_graphs.append(nx.Graph())
-                all_similarities.append([])
+                all_similarities.append([0])
                 continue
 
             nonempty_idx = [k for k, g in enumerate(candidates) if g.number_of_nodes() > 0]
             if not nonempty_idx:
                 best_graphs.append(nx.Graph())
-                all_similarities.append([])
+                all_similarities.append([0])
                 continue
 
             data_list = [DataTransformer.nx_to_pyg(candidates[k]) for k in nonempty_idx]
@@ -138,7 +145,7 @@ class Generator:
                 g_terms = enc_out["graph_embedding"]  # [B, D]
             except Exception:
                 best_graphs.append(nx.Graph())
-                all_similarities.append([])
+                all_similarities.append([0])
                 continue
 
             q = graph_terms_hd[i].to(g_terms.device, g_terms.dtype)  # [D]

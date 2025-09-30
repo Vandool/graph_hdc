@@ -1,19 +1,18 @@
 import os
 import time
 from pathlib import Path
+from pprint import pprint
 
 import pandas as pd
 import torch
 from pytorch_lightning import seed_everything
-from rdkit import Chem
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import SupportedDataset
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.oracles import Oracle
+from src.generation.evaluator import GenerationEvaluator
 from src.generation.generation import Generator
 from src.utils import registery
-from src.utils.chem import canonical_key, draw_mol, is_valid_molecule, reconstruct_for_eval
+from src.utils.chem import draw_mol
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
 
 # keep it modest to avoid oversubscription; tune if needed
@@ -44,17 +43,16 @@ seed_everything(seed)
 device = torch.device("cpu")
 draw = False
 
-T_canon_zinc = None
-T_canon_qm9 = None
+evaluator = None
 
-n_samples = 10
+n_samples = 100
 strict_decoder = False
-beam_size = 4
-expand_on_n_anchors = 8
+beam_size = 64
+expand_on_n_anchors = 9
 USE_PAIR_FEASIBILITY = True
-generation = "generation6"
+generation = "generation11"
 
-results: dict[str, str] = {}
+errors: dict[str, str] = {}
 # Iterate all the checkpoints
 loop = 0
 gen_paths = list(
@@ -62,7 +60,7 @@ gen_paths = list(
         start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2",
         prefixes=("epoch",),
         desired_ending=".ckpt",
-        skip_substrings=("qm9",),
+        skip_substrings=("zinc",),
     )
 )
 print(f"Found {len(gen_paths)} generator checkpoints")
@@ -71,32 +69,30 @@ for gen_ckpt_path in gen_paths:
     # if loop >= 1:
     #     break
     # loop += 1
-    do = {
-        # QM9 TOP
-        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an/models/epoch42-val-4172.5571.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch26-val-2516.5386.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch50-val-4308.1338.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd1e-4_an/models/epoch12-val-1689.4788.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd0.0_an/models/epoch12-val-2198.1746.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd1e-4_an/models/epoch13-val-2190.4648.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch41-val-3322.6777.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f12_hid512_s42_lr1e-3_wd0.0_an/models/epoch19-val-2442.2910.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd0.0_an/models/epoch25-val-2071.7695.ckpt",
-
-        # ZINC TOP
-        "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd1e-4_an/models/epoch16-val-2940.8835.ckpt",
-        "0_real_nvp_v2/nvp_zinc_h7744_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch13-val-14633.5537.ckpt",
-        "0_real_nvp_v2/nvp_zinc_h7744_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch21-val-15153.5127.ckpt",
-        "0_real_nvp_v2/nvp_zinc_h7744_f8_hid512_s42_lr1e-3_wd0.0_noan/models/epoch10-val-10562.5449.ckpt",
-        "0_real_nvp_v2/nvp_zinc_h7744_f6_hid512_s42_lr1e-3_wd0.0_an/models/epoch12-val-9837.6328.ckpt",
-        "0_real_nvp_v2/nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch13-val-18494.6348.ckpt",
-        "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd0.0_an/models/epoch16-val-2688.6597.ckpt",
-
-    }
-
-    if any(d in str(gen_ckpt_path) for d in do):
-        print(f"Skipping {gen_ckpt_path}")
-        continue
+    # do = {
+    #     # QM9 TOP
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an/models/epoch42-val-4172.5571.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch26-val-2516.5386.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch50-val-4308.1338.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd1e-4_an/models/epoch12-val-1689.4788.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd0.0_an/models/epoch12-val-2198.1746.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd1e-4_an/models/epoch13-val-2190.4648.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch41-val-3322.6777.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f12_hid512_s42_lr1e-3_wd0.0_an/models/epoch19-val-2442.2910.ckpt",
+    #     "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd0.0_an/models/epoch25-val-2071.7695.ckpt",
+    #     # ZINC TOP
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd1e-4_an/models/epoch16-val-2940.8835.ckpt",
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch13-val-14633.5537.ckpt",
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch21-val-15153.5127.ckpt",
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f8_hid512_s42_lr1e-3_wd0.0_noan/models/epoch10-val-10562.5449.ckpt",
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f6_hid512_s42_lr1e-3_wd0.0_an/models/epoch12-val-9837.6328.ckpt",
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch13-val-18494.6348.ckpt",
+    #     "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd0.0_an/models/epoch16-val-2688.6597.ckpt",
+    # }
+    #
+    # if not any(d in str(gen_ckpt_path) for d in do):
+    #     print(f"Skipping {gen_ckpt_path}")
+    #     continue
 
     print(f"Generator Checkpoint: {gen_ckpt_path}")
     # Read the metrics from training
@@ -116,37 +112,23 @@ for gen_ckpt_path in gen_paths:
             gen_ckpt_path, map_location=device, strict=True
         )
     except Exception as e:
-        results[gen_ckpt_path] = f"Error: {e}"
+        errors[gen_ckpt_path] = f"Error: {e}"
         continue
 
-    # We want evaluations against the training set
-    split = "train"
-    ## Determine Dataset
-    T_canon = None
     if "zinc" in str(gen_ckpt_path):
-        ds = SupportedDataset.ZINC_SMILES_HRR_7744
         base_dataset = "zinc"
-        dataset = ZincSmiles(split=split)
-        if T_canon_zinc is None:
-            T_canon_zinc = {d.eval_smiles for d in dataset}.union({d.smiles for d in dataset})
-        T_canon = T_canon_zinc
-    else:  # Case qm9
-        ds = SupportedDataset.QM9_SMILES_HRR_1600
-        base_dataset = "qm9"
-        dataset = QM9Smiles(split=split)
-        if T_canon_qm9 is None:
-            T_canon_qm9 = {d.eval_smiles for d in dataset}.union({d.smiles for d in dataset})
-        T_canon = T_canon_qm9
-
-    # Best classifier checkpoint for
-    if base_dataset == "zinc":
         # ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc/models/epoch06-val0.2718.ckpt"
         ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc_resume/models/epoch10-val0.2387.ckpt"
     else:
-        ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt"
+        base_dataset = "qm9"
+        evaluator = GenerationEvaluator(base_dataset=base_dataset)
+        # ckpt_path = GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt"
+        # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_large_qm9/models/epoch16-val0.2740.ckpt"
         # ckpt_path = GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt"
-        # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_med_qm9/models/epoch19-val0.2648.ckpt"
+        ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_med_qm9/models/epoch19-val0.2648.ckpt"
         # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt"
+        # ckpt_path = GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_larger_qm9/models/epoch16-val0.2949.ckpt"
+
     print(f"Classifier's checkpoint: {ckpt_path}")
 
     # Read the metrics from training
@@ -171,19 +153,22 @@ for gen_ckpt_path in gen_paths:
             .eval()
         )
     except Exception as e:
-        results[ckpt_path] = f"Error: {e}"
+        errors[ckpt_path] = f"Error: {e}"
         continue
     oracle = Oracle(model=classifier, model_type=model_type)
 
-    decoder_settings = {
-        "beam_size": beam_size,
-        "oracle_threshold": oracle_threshold,
-        # "strict": False,
-        "use_pair_feasibility": USE_PAIR_FEASIBILITY,
-        "expand_on_n_anchors": expand_on_n_anchors,
-    }
     generator = Generator(
-        gen_model=gen_model, oracle=oracle, ds_config=ds.default_cfg, decoder_settings=decoder_settings, device=device
+        gen_model=gen_model,
+        oracle=oracle,
+        ds_config=ZINC_SMILES_HRR_7744_CONFIG if base_dataset == "zinc" else QM9_SMILES_HRR_1600_CONFIG,
+        decoder_settings={
+            "beam_size": beam_size,
+            "oracle_threshold": oracle_threshold,
+            # "strict": False,
+            "use_pair_feasibility": USE_PAIR_FEASIBILITY,
+            "expand_on_n_anchors": expand_on_n_anchors,
+        },
+        device=device,
     )
 
     start_t = time.perf_counter()
@@ -192,33 +177,9 @@ for gen_ckpt_path in gen_paths:
     delta_t = time.perf_counter() - start_t
     assert len(samples) == n_samples
 
-    # --- convert to RDKit mols (keep length n_samples) ---
-    mols: list[Chem.Mol | None] = []
-    for g in samples:
-        mol: Chem.Mol | None = None
-        try:
-            mol = reconstruct_for_eval(g, dataset=base_dataset)
-        except Exception as e:
-            print(f"nx_to_mol error: {e}")
-        mols.append(mol)
-    assert len(mols) == n_samples
-
-    # --- Validity ---
-    valid_flags = [(m is not None and is_valid_molecule(m)) for m in mols]
-    n_valid = sum(1 for f in valid_flags if f)
-    validity = 100.0 * n_valid / n_samples if n_samples > 0 else 0.0
-
-    # --- Uniqueness (among valid) ---
-    valid_canon = [canonical_key(m) for m, f in zip(mols, valid_flags, strict=False) if f]
-    valid_canon = [c for c in valid_canon if c is not None]
-    unique_valid_smiles: set[str] = set(valid_canon)
-    uniqueness = 100.0 * (len(unique_valid_smiles) / n_valid) if n_valid > 0 else 0.0
-
-    novel_set = unique_valid_smiles - T_canon
-    novelty = 100.0 * (len(novel_set) / n_valid) if n_valid > 0 else 0.0
-
-    # --- N.U.V. (intersection ratio over all generated) ---
-    nuv = 100.0 * (len(novel_set) / n_samples) if n_samples > 0 else 0.0
+    if evaluator is None:
+        evaluator = GenerationEvaluator(base_dataset=base_dataset)
+    metrics = evaluator.evaluate(samples=samples, final_flags=final_flags, sims=sims)
 
     ### Save metrics
     gen_path = "/".join(gen_ckpt_path.parts[-4:])
@@ -226,23 +187,23 @@ for gen_ckpt_path in gen_paths:
         "gen_path": str(gen_path),
         "best_epoch": best_epoch,
         "min_val_loss": min_val_loss,
-        "dataset": ds.value,
         "num_eval_samples": n_samples,
         "time_per_sample": delta_t / n_samples,
         "strict": strict_decoder,
-        "final_flags": int(100 * sum(final_flags) / n_samples),
-        "validity": validity,
-        "uniqueness": uniqueness,
-        "novelty": novelty,
-        "nuv": nuv,
+        **metrics,
         "classifier": str(ckpt_path),
         "model_type": model_type,
-        **decoder_settings,
+        "beam_size": beam_size,
+        "oracle_threshold": oracle_threshold,
+        # "strict": False,
+        "use_pair_feasibility": USE_PAIR_FEASIBILITY,
+        "expand_on_n_anchors": expand_on_n_anchors,
     }
 
     if draw:
         base_dir = GLOBAL_ARTEFACTS_PATH / generation / f"drawings_valid_strict-decoder-{strict_decoder}"
         base_dir.mkdir(parents=True, exist_ok=True)
+        mols, valid_flags = evaluator.get_mols_and_valid_flags()
         for i, (mol, mask, final) in enumerate(zip(mols, valid_flags, final_flags, strict=False)):
             if mask:
                 out = base_dir / f"{gen_path.replace('/', '-')!s}-{final}-{i}.png"
@@ -265,3 +226,5 @@ for gen_ckpt_path in gen_paths:
     # write back out
     metrics_df.to_parquet(parquet_path, index=False)
     metrics_df.to_csv(csv_path, index=False)
+
+pprint(errors)

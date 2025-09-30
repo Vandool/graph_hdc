@@ -101,6 +101,9 @@ class LogPRegressor(pl.LightningModule):
         x = self._flat_from_batch(batch)  # [B, 2D]
         return self.net(x).squeeze(-1)
 
+    def gen_forward(self, batch):
+        return self.net(batch).squeeze(-1)
+
     def _step(self, batch, stage: str):
         y = batch.logp.float().view(-1)  # [B]
         y_hat = self.forward(batch)  # [B]

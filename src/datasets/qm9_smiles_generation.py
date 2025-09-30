@@ -161,13 +161,13 @@ class QM9Smiles(InMemoryDataset):
 
     def __init__(
         self,
-        root: str | Path = GLOBAL_DATASET_PATH / "QM9Smiles",
-        split: str = "train",
-        transform: Callable | None = None,
-        pre_transform: Callable | None = None,
-        pre_filter: Callable | None = None,
-        enc_suffix: str = "",
-    ):
+            root: str | Path = GLOBAL_DATASET_PATH / "QM9Smiles",
+            split: str = "train",
+            transform: Callable | None = None,
+            pre_transform: Callable | None = None,
+            pre_filter: Callable | None = None,
+            enc_suffix: str = "",
+    ) -> None:
         self.split = split.lower()
         self.enc_suffix = enc_suffix
         assert self.split in {"train", "valid", "test", "simple"}

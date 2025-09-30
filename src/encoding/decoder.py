@@ -1,6 +1,5 @@
 import itertools
 import logging
-import time
 from collections import Counter
 from collections.abc import Sequence
 from itertools import chain, combinations
@@ -18,6 +17,7 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
 )
+from tqdm import tqdm
 
 from src.encoding.oracles import Oracle
 from src.encoding.the_types import Feat
@@ -578,23 +578,12 @@ def greedy_oracle_decoder_faster(
     use_pair_feasibility: bool = False,
     activate_guard: bool = True,
 ) -> tuple[list[nx.Graph], bool]:
-    t0 = time.perf_counter()
-
-    def _ts() -> str:
-        return f"[{time.perf_counter() - t0:8.3f}s]"
-
-    def _feat_str(t: tuple[int, int, int, int]) -> str:
-        # (atom_type_idx, degree_idx, charge_idx, total_hs)
-        return f"(type={t[0]},deg_idx={t[1]},chg_idx={t[2]},Hs={t[3]})"
-
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
-    print(f"{_ts()} Decoding a graph with nodes={total_nodes}, edges={total_edges}.")
 
     ## Guard the decoder
-    if (activate_guard and total_nodes > 50) or total_edges > 60:
-        print(f"{_ts()} GUARD: too many nodes/edges (nodes={total_nodes}, edges={total_edges}). Abort.")
+    if (activate_guard and total_nodes > 15) or total_edges > 20:
         return [nx.Graph()], False
 
     # -- local helpers --
@@ -616,14 +605,7 @@ def greedy_oracle_decoder_faster(
         return uniq
 
     def _call_oracle(Gs: list[nx.Graph]) -> tuple[list[float], list[int]]:
-        print(f"{_ts()} ORACLE: scoring {len(Gs)} candidates...")
         probs = oracle.is_induced_graph(small_gs=Gs, final_h=full_g_h).flatten()  # torch.sigmoid(logits)
-        # Defensive stats
-        with torch.no_grad():
-            pmin = float(probs.min()) if probs.numel() else float("nan")
-            pmax = float(probs.max()) if probs.numel() else float("nan")
-            pmean = float(probs.mean()) if probs.numel() else float("nan")
-        print(f"{_ts()} ORACLE: min/mean/max = {pmin:.4f}/{pmean:.4f}/{pmax:.4f}, thresh={oracle_threshold}")
         sorted_indices = torch.argsort(probs, descending=True).tolist()
         return probs.tolist(), sorted_indices
 
@@ -633,31 +615,20 @@ def greedy_oracle_decoder_faster(
         leftover_condition = leftover_features(full_ctr, G).total() == 0
         # Even the dataset itself has some radical atoms, we should not enforce this.
         residual_condition = sum(residuals(G).values()) == 0 or True
-        ok = node_condition and edge_condition and leftover_condition and residual_condition
-        if not ok:
-            print(
-                f"{_ts()} FINAL-CHECK FAIL: nodes={G.number_of_nodes()}/{total_nodes}, "
-                f"edges={G.number_of_edges()}/{total_edges}, "
-                f"leftover_total={leftover_features(full_ctr, G).total()}."
-            )
-        return ok
+        return node_condition and edge_condition and leftover_condition and residual_condition
 
     def _apply_strict_filter(population: list[nx.Graph]) -> tuple[list[nx.Graph], bool]:
         final_graphs = [g for g in population if _is_valid_final_graph(g)]
         are_final = len(final_graphs) > 0
         if not are_final:
-            print(f"{_ts()} STRICT-FILTER: no valid finals in population; returning empty marker.")
             final_graphs.append(nx.Graph())
-        else:
-            print(f"{_ts()} STRICT-FILTER: {len(final_graphs)} final graphs.")
         return final_graphs, are_final
 
     def _generate_response(population: list[nx.Graph]) -> tuple[list[nx.Graph], bool]:
-        print(f"{_ts()} GENERATE: population={len(population)} → applying strict={strict}.")
         final_graphs, are_final = _apply_strict_filter(population=population)
         if strict:
             return final_graphs, are_final
-        return population, bool(len(final_graphs) == len(population))
+        return population, are_final
 
     # Cache: from a 2-node test we can learn if an edge between two feature types is plausible.
     # Key is an ordered pair of feature tuples (t_small, t_big) with t_small <= t_big.
@@ -671,28 +642,22 @@ def greedy_oracle_decoder_faster(
     # ---------------------------
 
     feat_types = _order_leftovers_by_degree_distinct(full_ctr)
-    print(f"{_ts()} DISTINCT FEATURE TYPES ({len(feat_types)}): {[_feat_str(t) for t in feat_types]}")
 
     # Trivial case 1
     if total_nodes == 1 and len(feat_types) == 1:
-        print(f"{_ts()} TRIVIAL-1: single node.")
         G = nx.Graph()
         add_node_with_feat(G, Feat.from_tuple(feat_types[0]))
         return [G], True
 
     # Trivial case 2
     if total_nodes == 2:
-        print(f"{_ts()} TRIVIAL-2: two nodes.")
         G = nx.Graph()
         nodes = list(full_ctr.elements())
         n1 = add_node_with_feat(G, Feat.from_tuple(nodes[0]))
         n2 = add_node_with_feat(G, Feat.from_tuple(nodes[1]))
         ok = add_edge_if_possible(G, n1, n2)
-        print(f"{_ts()} TRIVIAL-2: add_edge_if_possible={ok}, edges={G.number_of_edges()}.")
         if ok and _is_valid_final_graph(G):
-            print(f"{_ts()} TRIVIAL-2: valid final.")
             return [G], True
-        print(f"{_ts()} TRIVIAL-2: invalid final, returning empty.")
         return [nx.Graph()], False
 
     # build all distinct ordered pairs (i <= j) where at least one has residual > 0 (deg_idx > 0)
@@ -706,7 +671,6 @@ def greedy_oracle_decoder_faster(
             if u == v and full_ctr[u] < 2 < total_nodes:
                 continue
             first_pairs.append((u, v))
-    print(f"{_ts()} FIRST-PAIRS: {len(first_pairs)} pairs.")
 
     # materialize 2-node candidates
     first_pop: list[nx.Graph] = []
@@ -715,15 +679,12 @@ def greedy_oracle_decoder_faster(
         uid = add_node_with_feat(G, Feat.from_tuple(u_t))
         ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=total_nodes) is not None
         if not ok:
-            print(f"{_ts()} INIT[{k}]: skip (cannot connect). pair={_feat_str(u_t)}–{_feat_str(v_t)}")
             continue
         key = _hash(G)
         if key in global_seen:
-            print(f"{_ts()} INIT[{k}]: skip (global_seen).")
             continue
         global_seen.add(key)
         first_pop.append(G)
-    print(f"{_ts()} FIRST-POP: {len(first_pop)} candidates (post-dedup).")
 
     # oracle filter for 2-node graphs; also learn pair feasibility
     healthy_pop: list[nx.Graph] = []
@@ -735,13 +696,10 @@ def greedy_oracle_decoder_faster(
             tup1 = G.nodes[nodes[1]]["feat"].to_tuple()
             kk = tuple(sorted((tup0, tup1)))
             pair_ok[kk] = bool(G.number_of_edges() == 1 and oracle_results[i] >= oracle_threshold)
-            print(f"{_ts()} PAIR-LEARN: {kk} -> {pair_ok[kk]}")
         if oracle_results[i] >= oracle_threshold:
             healthy_pop.append(G)
-    print(f"{_ts()} HEALTHY-POP: {len(healthy_pop)} (kept by oracle).")
 
     if not healthy_pop:
-        print(f"{_ts()} EMPTY-HEALTHY: stopping early.")
         return [nx.Graph()], False
 
     # ---------------------------
@@ -753,141 +711,83 @@ def greedy_oracle_decoder_faster(
     max_iters = total_nodes
     curr_nodes = 2
 
-    while curr_nodes < max_iters:
-        print(f"{_ts()} === GEN {curr_nodes - 1}→{curr_nodes}: population={len(population)} ===")
-        children: list[nx.Graph] = []
-        local_seen: set = set()  # per-iteration dedup to keep branching under control
+    with tqdm(total=max_iters - 1, desc="Iterations", unit="node") as pbar:
+        while curr_nodes < max_iters:
+            children: list[nx.Graph] = []
+            local_seen: set = set()  # per-iteration dedup to keep branching under control
 
-        for gi, G in enumerate(population):
-            leftovers_ctr = leftover_features(full_ctr, G)
-            if not leftovers_ctr:
-                print(f"{_ts()} POP[{gi}]: no leftovers, skip.")
-                continue
-
-            leftover_types = _order_leftovers_by_degree_distinct(leftovers_ctr)
-            ancrs = anchors(G)
-            print(
-                f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]: nodes={G.number_of_nodes()}, edges={G.number_of_edges()}, "
-                f"leftovers={sum(leftovers_ctr.values())} (types={len(leftover_types)}), "
-                f"anchors={len(ancrs)}"
-            )
-            if not ancrs:
-                print(f"{_ts()} POP[{gi}]: no anchors, cannot expand.")
-                continue
-
-            # how many anchors we’ll actually use (slice semantics preserved)
-            ancr_cap = len(ancrs[:expand_on_n_anchors])
-            combos = ancr_cap * len(leftover_types)
-            print(
-                f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]: anchor_cap={ancr_cap}, leftover_types={len(leftover_types)}, "
-                f"pair_combos={combos}"
-            )
-
-            inner_iter = 0
-            for a, lo_t in list(itertools.product(ancrs[:expand_on_n_anchors], leftover_types)):
-                inner_iter += 1
-                a_t = G.nodes[a]["feat"].to_tuple()
-                kpair = tuple(sorted((a_t, lo_t)))
-                if use_pair_feasibility and kpair in pair_ok and pair_ok[kpair] is False:
-                    print(
-                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: PRUNE pair {kpair} (learned infeasible)"
-                        % inner_iter
-                    )
+            for gi, G in enumerate(population):
+                leftovers_ctr = leftover_features(full_ctr, G)
+                if not leftovers_ctr:
                     continue
 
-                C = G.copy()
-                nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=total_nodes)
-                if nid is None:
-                    print(
-                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: add_node_and_connect -> None (anchor={a}, lo={_feat_str(lo_t)})"
-                        % inner_iter
-                    )
-                    continue
-                if C.number_of_edges() > total_edges:
-                    print(
-                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: edges overflow after first connect: %d>%d"
-                        % (inner_iter, C.number_of_edges(), total_edges)
-                    )
+                leftover_types = _order_leftovers_by_degree_distinct(leftovers_ctr)
+                ancrs = anchors(G)
+                if not ancrs:
                     continue
 
-                keyC = _hash(C)
-                if keyC in global_seen or keyC in local_seen:
-                    print(f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: dedup (child C)" % inner_iter)
-                else:
+                # how many anchors we’ll actually use (slice semantics preserved)
+                inner_iter = 0
+                for a, lo_t in list(itertools.product(ancrs[:expand_on_n_anchors], leftover_types)):
+                    inner_iter += 1
+                    a_t = G.nodes[a]["feat"].to_tuple()
+                    kpair = tuple(sorted((a_t, lo_t)))
+                    if use_pair_feasibility and kpair in pair_ok and pair_ok[kpair] is False:
+                        continue
+
+                    C = G.copy()
+                    nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=total_nodes)
+                    if nid is None:
+                        continue
+                    if C.number_of_edges() > total_edges:
+                        continue
+
+                    keyC = _hash(C)
+                    if keyC in global_seen or keyC in local_seen:
+                        continue
                     global_seen.add(keyC)
                     local_seen.add(keyC)
                     children.append(C)
-                    print(
-                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: +child C (nodes=%d, edges=%d)"
-                        % (inner_iter, C.number_of_nodes(), C.number_of_edges())
-                    )
 
-                # ring closures against remaining anchors
-                ancrs_rest = [a_ for a_ in ancrs if a_ != a]
-                if ancrs_rest:
-                    # powerset size (non-empty subsets)
-                    psize = (1 << len(ancrs_rest)) - 1
-                    print(
-                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d: ring-closure subsets=%d over anchors_rest=%s"
-                        % (inner_iter, psize, ancrs_rest)
-                    )
+                    ancrs_rest = [a_ for a_ in ancrs if a_ != a]
 
-                sub_counter = 0
-                for subset in powerset(ancrs_rest):
-                    if len(subset) == 0:
-                        continue
-                    sub_counter += 1
+                    sub_counter = 0
+                    for subset in powerset(ancrs_rest):
+                        if len(subset) == 0:
+                            continue
+                        sub_counter += 1
 
-                    H = C.copy()
-                    new_nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=total_nodes)
-                    if new_nid is None:
-                        print(
-                            f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: connect_all_if_possible -> None (subset=%s)"
-                            % (inner_iter, sub_counter, list(subset))
-                        )
-                        continue
-                    if H.number_of_edges() > total_edges:
-                        print(
-                            f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: edges overflow after ring close: %d>%d"
-                            % (inner_iter, sub_counter, H.number_of_edges(), total_edges)
-                        )
-                        continue
+                        H = C.copy()
+                        new_nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=total_nodes)
+                        if new_nid is None:
+                            continue
+                        if H.number_of_edges() > total_edges:
+                            continue
 
-                    keyH = _hash(H)
-                    if keyH in global_seen or keyH in local_seen:
-                        # Can be very frequent; keep a light log:
-                        # print(f"{_ts()} POP[{gi}]#%d.%d: dedup (child H)" % (inner_iter, sub_counter))
-                        continue
-                    global_seen.add(keyH)
-                    local_seen.add(keyH)
-                    children.append(H)
-                    print(
-                        f"{_ts()} GEN[{curr_nodes}/{total_nodes}]-POP[{gi}]#%d.%d: +child H (subset=%s, nodes=%d, edges=%d)"
-                        % (inner_iter, sub_counter, list(subset), H.number_of_nodes(), H.number_of_edges())
-                    )
+                        keyH = _hash(H)
+                        if keyH in global_seen or keyH in local_seen:
+                            continue
+                        global_seen.add(keyH)
+                        local_seen.add(keyH)
+                        children.append(H)
 
-        if not children:
-            print(f"{_ts()} NO-CHILDREN: stopping; returning current population.")
-            return _generate_response(population)
+            if not children:
+                return _generate_response(population)
 
-        print(f"{_ts()} CHILDREN: {len(children)} total before oracle.")
-        accepted: list[nx.Graph] = []
-        oracle_results, sorted_idx = _call_oracle(children)
+            accepted: list[nx.Graph] = []
+            oracle_results, sorted_idx = _call_oracle(children)
 
-        kept = 0
-        for idx in sorted_idx[:beam_size]:
-            if oracle_results[idx] >= oracle_threshold:
-                accepted.append(children[idx])
-                kept += 1
-        print(f"{_ts()} ORACLE-BEAM: kept={kept}/{min(beam_size, len(children))} (≥{oracle_threshold}).")
+            kept = 0
+            for idx in sorted_idx[:beam_size]:
+                if oracle_results[idx] >= oracle_threshold:
+                    accepted.append(children[idx])
+                    kept += 1
 
-        if not accepted:
-            print(f"{_ts()} NO-ACCEPTED: stopping; returning current population.")
-            return _generate_response(population)
+            if not accepted:
+                return _generate_response(population)
 
-        population = accepted
-        curr_nodes += 1
-        print(f"{_ts()} NEXT-GEN: population={len(population)}, curr_nodes={curr_nodes}")
+            population = accepted
+            curr_nodes += 1
+            pbar.update(1)
 
-    print(f"{_ts()} SAFEGUARD EXIT: reached max iters (curr_nodes={curr_nodes}, max={max_iters}).")
     return _generate_response(population)
