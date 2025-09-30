@@ -19,7 +19,7 @@ from sklearn.metrics import (
 )
 from tqdm import tqdm
 
-from src.encoding.oracles import Oracle
+from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.encoding.the_types import Feat
 from src.utils.visualisations import draw_nx_with_atom_colorings
 
@@ -782,6 +782,225 @@ def greedy_oracle_decoder_faster(
                 if oracle_results[idx] >= oracle_threshold:
                     accepted.append(children[idx])
                     kept += 1
+
+            if not accepted:
+                return _generate_response(population)
+
+            population = accepted
+            curr_nodes += 1
+            pbar.update(1)
+
+    return _generate_response(population)
+
+
+def greedy_oracle_decoder_voter_oracle(
+    node_multiset: Counter,
+    full_g_h: torch.Tensor,  # [D] final graph hyper vector
+    oracle: SimpleVoterOracle,
+    *,
+    beam_size: int = 32,
+    expand_on_n_anchors: int | None = None,
+    strict: bool = True,
+    use_pair_feasibility: bool = False,
+    activate_guard: bool = True,
+) -> tuple[list[nx.Graph], bool]:
+    full_ctr: Counter = node_multiset.copy()
+    total_edges = total_edges_count(full_ctr)
+    total_nodes = sum(full_ctr.values())
+
+    ## Guard the decoder
+    if (activate_guard and total_nodes > 15) or total_edges > 20:
+        return [nx.Graph()], False
+
+    # -- local helpers --
+    def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
+        """WL hash that respects `feat`."""
+        H = G.copy()
+        for n in H.nodes:
+            f = H.nodes[n]["feat"]
+            H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
+        return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
+
+    def _hash(G: nx.Graph) -> tuple[str, int, int]:
+        return _wl_hash(G), G.number_of_nodes(), G.number_of_edges()
+
+    def _order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
+        """Unique feature tuples, sorted by final degree (asc), then lexicographically."""
+        uniq = list(ctr.keys())
+        uniq.sort(key=lambda t: (t[1] + 1, t))
+        return uniq
+
+    def _call_oracle(Gs: list[nx.Graph]) -> list[bool]:
+        probs = oracle.is_induced_graph(small_gs=Gs, final_h=full_g_h).flatten()
+        return probs.tolist()
+
+    def _is_valid_final_graph(G: nx.Graph) -> bool:
+        node_condition = G.number_of_nodes() == total_nodes
+        edge_condition = G.number_of_edges() == total_edges
+        leftover_condition = leftover_features(full_ctr, G).total() == 0
+        # Even the dataset itself has some radical atoms, we should not enforce this.
+        residual_condition = sum(residuals(G).values()) == 0 or True
+        return node_condition and edge_condition and leftover_condition and residual_condition
+
+    def _apply_strict_filter(population: list[nx.Graph]) -> tuple[list[nx.Graph], bool]:
+        final_graphs = [g for g in population if _is_valid_final_graph(g)]
+        are_final = len(final_graphs) > 0
+        if not are_final:
+            final_graphs.append(nx.Graph())
+        return final_graphs, are_final
+
+    def _generate_response(population: list[nx.Graph]) -> tuple[list[nx.Graph], bool]:
+        final_graphs, are_final = _apply_strict_filter(population=population)
+        if strict:
+            return final_graphs, are_final
+        return population, are_final
+
+    # Cache: from a 2-node test we can learn if an edge between two feature types is plausible.
+    # Key is an ordered pair of feature tuples (t_small, t_big) with t_small <= t_big.
+    pair_ok: dict[tuple[tuple[int, int, int, int], tuple[int, int, int, int]], bool] = {}
+
+    # Global dedup across the whole search (WL hash based)
+    global_seen: set = set()
+
+    # ---------------------------
+    # 1) Initial population (2-node graphs)
+    # ---------------------------
+
+    feat_types = _order_leftovers_by_degree_distinct(full_ctr)
+
+    # Trivial case 1
+    if total_nodes == 1 and len(feat_types) == 1:
+        G = nx.Graph()
+        add_node_with_feat(G, Feat.from_tuple(feat_types[0]))
+        return [G], True
+
+    # Trivial case 2
+    if total_nodes == 2:
+        G = nx.Graph()
+        nodes = list(full_ctr.elements())
+        n1 = add_node_with_feat(G, Feat.from_tuple(nodes[0]))
+        n2 = add_node_with_feat(G, Feat.from_tuple(nodes[1]))
+        ok = add_edge_if_possible(G, n1, n2)
+        if ok and _is_valid_final_graph(G):
+            return [G], True
+        return [nx.Graph()], False
+
+    # build all distinct ordered pairs (i <= j) where at least one has residual > 0 (deg_idx > 0)
+    first_pairs: list[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]] = []
+    for i in range(len(feat_types)):
+        for j in range(i, len(feat_types)):
+            u = feat_types[i]
+            v = feat_types[j]
+            if u[1] == 0 and v[1] == 0 and total_nodes > 2:
+                continue
+            if u == v and full_ctr[u] < 2 < total_nodes:
+                continue
+            first_pairs.append((u, v))
+
+    # materialize 2-node candidates
+    first_pop: list[nx.Graph] = []
+    for k, (u_t, v_t) in enumerate(first_pairs):
+        G = nx.Graph()
+        uid = add_node_with_feat(G, Feat.from_tuple(u_t))
+        ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=total_nodes) is not None
+        if not ok:
+            continue
+        key = _hash(G)
+        if key in global_seen:
+            continue
+        global_seen.add(key)
+        first_pop.append(G)
+
+    # oracle filter for 2-node graphs; also learn pair feasibility
+    healthy_pop: list[nx.Graph] = []
+    oracle_results = _call_oracle(first_pop)
+    for i, G in enumerate(first_pop):
+        if G.number_of_nodes() == 2:
+            nodes = list(G.nodes)
+            tup0 = G.nodes[nodes[0]]["feat"].to_tuple()
+            tup1 = G.nodes[nodes[1]]["feat"].to_tuple()
+            kk = tuple(sorted((tup0, tup1)))
+            pair_ok[kk] = bool(G.number_of_edges() == 1 and oracle_results[i])
+        if oracle_results[i]:
+            healthy_pop.append(G)
+
+    if not healthy_pop:
+        return [nx.Graph()], False
+
+    # ---------------------------
+    # 2) Iterative expansion
+    # ---------------------------
+
+    population = healthy_pop
+    # loop until we place all nodes; guard with max_iters to avoid infinite loops
+    max_iters = total_nodes
+    curr_nodes = 2
+
+    with tqdm(total=max_iters - 2, desc="Iterations", unit="node") as pbar:
+        while curr_nodes < max_iters:
+            children: list[nx.Graph] = []
+            local_seen: set = set()  # per-iteration dedup to keep branching under control
+
+            for gi, G in enumerate(population):
+                leftovers_ctr = leftover_features(full_ctr, G)
+                if not leftovers_ctr:
+                    continue
+
+                leftover_types = _order_leftovers_by_degree_distinct(leftovers_ctr)
+                ancrs = anchors(G)
+                if not ancrs:
+                    continue
+
+                # how many anchors we’ll actually use (slice semantics preserved)
+                inner_iter = 0
+                for a, lo_t in list(itertools.product(ancrs[:expand_on_n_anchors], leftover_types)):
+                    inner_iter += 1
+                    a_t = G.nodes[a]["feat"].to_tuple()
+                    kpair = tuple(sorted((a_t, lo_t)))
+                    if use_pair_feasibility and kpair in pair_ok and pair_ok[kpair] is False:
+                        continue
+
+                    C = G.copy()
+                    nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=total_nodes)
+                    if nid is None:
+                        continue
+                    if C.number_of_edges() > total_edges:
+                        continue
+
+                    keyC = _hash(C)
+                    if keyC in global_seen or keyC in local_seen:
+                        continue
+                    global_seen.add(keyC)
+                    local_seen.add(keyC)
+                    children.append(C)
+
+                    ancrs_rest = [a_ for a_ in ancrs if a_ != a]
+
+                    sub_counter = 0
+                    for subset in powerset(ancrs_rest):
+                        if len(subset) == 0:
+                            continue
+                        sub_counter += 1
+
+                        H = C.copy()
+                        new_nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=total_nodes)
+                        if new_nid is None:
+                            continue
+                        if H.number_of_edges() > total_edges:
+                            continue
+
+                        keyH = _hash(H)
+                        if keyH in global_seen or keyH in local_seen:
+                            continue
+                        global_seen.add(keyH)
+                        local_seen.add(keyH)
+                        children.append(H)
+
+            if not children:
+                return _generate_response(population)
+
+            oracle_results = _call_oracle(children)
+            accepted: list[nx.Graph] = [c for c, o in zip(children, oracle_results, strict=True) if o][:beam_size]
 
             if not accepted:
                 return _generate_response(population)

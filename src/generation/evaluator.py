@@ -136,10 +136,9 @@ class GenerationEvaluator:
             if v:
                 try:
                     props.append(float(prop_fn(m)))
-                    tgts.append(float(target))
-                    finals.append(f)
                 except Exception:
                     props.append(float("nan"))
+                finally:
                     tgts.append(float(target))
                     finals.append(f)
 

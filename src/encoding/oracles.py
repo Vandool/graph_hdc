@@ -1,7 +1,9 @@
 import math
 from datetime import datetime
+from pathlib import Path
 
 import networkx as nx
+import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
@@ -17,8 +19,9 @@ from torchmetrics import AUROC, AveragePrecision
 
 from src.encoding.graph_encoders import AbstractGraphEncoder
 from src.exp.classification_v2.classification_utils import Config
-from src.utils.registery import ModelType, register_model
-from src.utils.utils import DataTransformer
+from src.utils import registery
+from src.utils.registery import ModelType, register_model, retrieve_model
+from src.utils.utils import DataTransformer, pick_device
 
 
 class Oracle:
@@ -90,6 +93,104 @@ class Oracle:
         logits = self.model(h1, h2)  # [B] or [B,1]
         logits = logits.squeeze(-1)
         return torch.sigmoid(logits)
+
+
+class SimpleVoterOracle:
+    def __init__(
+        self, model_paths: list[Path], encoder: AbstractGraphEncoder | None = None, device: torch.device = pick_device()
+    ):
+        assert len(model_paths) % 2 == 1, "There should be an odd number of models to vote on."
+        self.models: list[tuple[pl.LightningModule, ModelType, float]] = []
+        for p in model_paths:
+            model_type = registery.get_model_type(p)
+            model = (
+                retrieve_model(name=model_type)
+                .load_from_checkpoint(p, map_location="cpu", strict=True)
+                .to(device)
+                .eval()
+            )
+            # Read the metrics from training
+            evals_dir = p.parent.parent / "evaluations"
+            epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
+
+            val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
+            best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()]
+            best_threshold = best["val_best_thr"]
+            self.models.append((model, model_type, best_threshold))
+        self.encoder = encoder.eval() if encoder is not None else None
+
+    @staticmethod
+    def _ensure_graph_fields(g: Data) -> Data:
+        E = g.edge_index.size(1)
+        if getattr(g, "edge_attr", None) is None:
+            g.edge_attr = torch.ones(E, 1, dtype=torch.float32)
+        if getattr(g, "edge_weights", None) is None:
+            g.edge_weights = torch.ones(E, dtype=torch.float32)
+        return g
+
+    @torch.inference_mode()
+    def is_induced_graph(self, small_gs: list[nx.Graph], final_h: torch.Tensor) -> torch.Tensor:
+        """
+        Majority voter over already-trained classifiers.
+
+        Returns
+        -------
+        majority : torch.Tensor
+            Boolean tensor of shape [B] indicating majority decision.
+        """
+        assert len(self.models) % 2 == 1, "Odd number of models required for majority voting."
+        # device / dtype from first model
+        first_params = next(self.models[0][0].parameters())
+        device = first_params.device
+        dtype = first_params.dtype
+
+        # --- build PyG batch of candidate graphs (g1) once ---
+        pyg_list = [self._ensure_graph_fields(DataTransformer.nx_to_pyg(g)) for g in small_gs]
+        assert len(pyg_list) == len(small_gs)
+        g1_b = Batch.from_data_list(pyg_list).to(device)
+
+        B = g1_b.num_graphs
+
+        if self.encoder is None:
+            msg = "encoder is required for non-GNN classifiers."
+            raise RuntimeError(msg)
+        enc_out = self.encoder.forward(g1_b)  # expects dict with 'graph_embedding'
+        h1 = enc_out["graph_embedding"].to(device=device, dtype=dtype)  # [B, D]
+        h2 = final_h.detach().to(device=device, dtype=dtype)
+        if h2.dim() == 1:
+            h2 = h2.unsqueeze(0)
+        h2 = h2.expand(B, -1)  # [B, D]
+
+        logits_per_model: list[torch.Tensor] = []
+        votes_per_model: list[torch.Tensor] = []
+
+        for model, model_type, threshold in self.models:
+            if "gin" in model_type.lower():
+                # per-graph conditioning
+                cond = final_h.detach().to(device=device, dtype=dtype)
+                if cond.dim() == 1:
+                    cond = cond.unsqueeze(0)
+                cond = cond.expand(B, -1)  # [B, D]
+                g1_b.cond = cond
+
+                out = model(g1_b)  # expects dict with 'graph_prediction': [B, 1] or [B]
+                logits = out["graph_prediction"].squeeze(-1)  # [B]
+            else:
+                logits = model(h1, h2).squeeze(-1)  # [B]
+                if logits.ndim == 0:
+                    logits = logits.view(1)
+
+            probs = torch.sigmoid(logits)  # [B]
+            vote = probs > float(threshold)  # [B] boolean
+
+            logits_per_model.append(logits)
+            votes_per_model.append(vote)
+
+        # --- aggregate ---
+        votes = torch.stack(votes_per_model, dim=0)  # [M, B]
+        vote_counts = votes.sum(dim=0)  # [B]
+        M = votes.size(0)
+        return vote_counts >= (M // 2 + 1)
 
 
 # ---------- tiny logger ----------
