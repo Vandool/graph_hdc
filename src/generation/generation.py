@@ -10,9 +10,9 @@ from networkx import Graph
 from torch_geometric.data import Batch
 
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
-from src.encoding.decoder import greedy_oracle_decoder_faster
+from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
 from src.encoding.graph_encoders import load_or_create_hypernet
-from src.encoding.oracles import Oracle
+from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import AbstractNFModel, FlowConfig
 from src.utils import visualisations
@@ -24,7 +24,14 @@ sys.modules["__main__"].FlowConfig = FlowConfig
 
 
 class Generator:
-    def __init__(self, gen_model: AbstractNFModel, oracle: Oracle, ds_config, decoder_settings: dict, device=None):
+    def __init__(
+        self,
+        gen_model: AbstractNFModel,
+        oracle: Oracle | SimpleVoterOracle,
+        ds_config,
+        decoder_settings: dict,
+        device=None,
+    ):
         device = torch.device("cpu") if device is None else device
         print(f"Using device: {device}")
         self.encoder = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
@@ -33,6 +40,11 @@ class Generator:
         self.oracle.encoder = self.encoder.eval()
         self.vsa: VSAModel = ds_config.vsa
         self.decoder_settings = decoder_settings
+        self.decoding_fn = (
+            greedy_oracle_decoder_voter_oracle
+            if isinstance(oracle, SimpleVoterOracle)
+            else greedy_oracle_decoder_faster
+        )
 
     def generate_all(
         self,
@@ -68,7 +80,7 @@ class Generator:
 
         for i, full_ctr in enumerate(full_ctrs.values()):
             # decoder returns (candidates, is_final) for a single sample
-            candidates, is_final = greedy_oracle_decoder_faster(
+            candidates, is_final = self.decoding_fn(
                 node_multiset=full_ctr,
                 oracle=self.oracle,
                 full_g_h=graph_terms_hd[i],
@@ -89,10 +101,7 @@ class Generator:
         node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
         return self.decode(node_terms, graph_terms, only_final_graphs=only_final_graphs)
 
-
-    def decode(
-        self, node_terms: torch.Tensor, graph_terms: torch.Tensor, *, only_final_graphs: bool = True
-    ):
+    def decode(self, node_terms: torch.Tensor, graph_terms: torch.Tensor, *, only_final_graphs: bool = True):
         n_samples = node_terms.shape[0]
         node_terms_hd = node_terms.as_subclass(self.vsa.tensor_class)
         graph_terms_hd = graph_terms.as_subclass(self.vsa.tensor_class)
@@ -117,7 +126,7 @@ class Generator:
                 all_similarities.append([0])
                 continue
 
-            candidates, is_final = greedy_oracle_decoder_faster(
+            candidates, is_final = self.decoding_fn(
                 node_multiset=full_ctr,
                 oracle=self.oracle,
                 full_g_h=graph_terms_hd[i],

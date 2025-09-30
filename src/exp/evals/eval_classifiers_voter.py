@@ -74,7 +74,7 @@ for model_paths in [
     ],
 ]:
     oracle_setting = {
-        "beam_size": 128,
+        "beam_size": 512,
         "strict": False,
         "use_pair_feasibility": True,
         "expand_on_n_anchors": 12,

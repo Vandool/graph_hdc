@@ -1,4 +1,3 @@
-import argparse
 import os
 import pathlib
 
@@ -10,7 +9,7 @@ from src.exp.cond_gen_hpo.cond_generation_hpo import run_qm9_cond_gen
 
 SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
-    "steps": optuna.distributions.FloatDistribution(50, 1000, log=True),
+    "steps": optuna.distributions.FloatDistribution(50, 1500, log=True),
     "scheduler": optuna.distributions.CategoricalDistribution(["cosine", "two-phase", "linear"]),
     "lambda_lo": optuna.distributions.FloatDistribution(1e-4, 5e-3, log=True),
     "lambda_hi": optuna.distributions.FloatDistribution(5e-3, 1e-2, log=True),
@@ -99,15 +98,21 @@ if __name__ == "__main__":
     # args = p.parse_args()
     base_objective = run_qm9_cond_gen
     for gen_model in [
-        "nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an",
-        "nvp_qm9_f10_hid1344_lr0.00051444_wd0.0001_bs45_smf5.55412_smi0.730256_smw11_an",
-        "nvp_qm9_f10_hid1472_lr0.000512756_wd0.0001_bs54_smf5.60543_smi2.9344_smw15_an",
-        "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an",
+        # "nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an",
+        # "nvp_qm9_f10_hid1344_lr0.00051444_wd0.0001_bs45_smf5.55412_smi0.730256_smw11_an",
+        # "nvp_qm9_f10_hid1472_lr0.000512756_wd0.0001_bs54_smf5.60543_smi2.9344_smw15_an",
+        # "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an",
         "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
-        "nvp_qm9_f10_hid1472_lr0.000513196_wd0.0001_bs56_smf5.41974_smi1.39839_smw15_an",
-        "nvp_qm9_f14_hid512_lr0.000514306_wd0.0001_bs58_smf5.76312_smi0.1_smw14_an",
+        # "nvp_qm9_f10_hid1472_lr0.000513196_wd0.0001_bs56_smf5.41974_smi1.39839_smw15_an",
+        # "nvp_qm9_f14_hid512_lr0.000514306_wd0.0001_bs58_smf5.76312_smi0.1_smw14_an",
     ]:
-        for classifier in ["gin-f_baseline_qm9_resume", "MLP_Lightning_qm9", "BAH_large_qm9", "BAH_med_qm9"]:
+        for classifier in [
+            # "gin-f_baseline_qm9_resume",
+            # "MLP_Lightning_qm9",
+            # "BAH_large_qm9",
+            # "BAH_med_qm9",
+            "SIMPLE_VOTER",
+        ]:
             # args = argparse.Namespace(
             #     dataset="qm9",
             #     gen_model=gen,
@@ -135,7 +140,6 @@ if __name__ == "__main__":
 
             # Choose an objective provided by your code
 
-
             # Wrapper to set exp_dir_name once params are known
             def objective(trial: optuna.Trial) -> float:
                 res = base_objective(trial)
@@ -143,10 +147,11 @@ if __name__ == "__main__":
                 for k, v in res.items():
                     trial.set_user_attr(key=k, value=v)
 
-                return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
+                # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
+                return res["eval_success@eps"] * res["eval_validity"]
 
             # Run optimization
-            study.optimize(objective, n_trials=30)
+            study.optimize(objective, n_trials=40)
 
             # Export canonical CSV (with exp_dir_name)
             export_trials(study_name=study_name, db_path=db_path, dataset="qm9", csv=csv)

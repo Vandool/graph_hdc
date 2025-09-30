@@ -14,7 +14,7 @@ from pytorch_lightning import seed_everything
 from tqdm.auto import tqdm
 
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG
-from src.encoding.oracles import Oracle, SimpleVoterOracle
+from src.encoding.oracles import Oracle
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import Generator
 from src.generation.logp_regressor import LogPRegressor
@@ -222,42 +222,34 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     n, g = gen_model.split(torch.stack(hits))
     # n, g = gen_model.split(hdc)
 
+    classifier_ckpt = get_classifier(hint=os.getenv("CLASSIFIER"))
+    print(f"Classifier Checkpoint: {classifier_ckpt}")
+    model_type = get_model_type(classifier_ckpt)
+    classifier = (
+        registery.retrieve_model(name=model_type)
+        .load_from_checkpoint(classifier_ckpt, map_location="cpu", strict=True)
+        .to(device)
+        .eval()
+    )
+
+    # Read the metrics from training
+    evals_dir = classifier_ckpt.parent.parent / "evaluations"
+    epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
+
+    val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
+    best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()].add_suffix("_best")
+    oracle_threshold = best["val_best_thr_best"]
+    print(f"Oracle Threshold: {oracle_threshold}")
+
+    oracle = Oracle(model=classifier, model_type=model_type)
+
     decoder_settings = {
-        "beam_size": 128,
+        "beam_size": 512,
+        "oracle_threshold": oracle_threshold,
+        # "strict": False,
         "use_pair_feasibility": True,
         "expand_on_n_anchors": 9,
     }
-    if os.getenv("CLASSIFIER") == "SIMPLE_VOTER":
-        oracle = SimpleVoterOracle(
-            model_paths=[
-                GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt",
-                GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt",
-                GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt",
-            ]
-        )
-    else:
-        classifier_ckpt = get_classifier(hint=os.getenv("CLASSIFIER"))
-        print(f"Classifier Checkpoint: {classifier_ckpt}")
-        model_type = get_model_type(classifier_ckpt)
-        classifier = (
-            registery.retrieve_model(name=model_type)
-            .load_from_checkpoint(classifier_ckpt, map_location="cpu", strict=True)
-            .to(device)
-            .eval()
-        )
-
-        # Read the metrics from training
-        evals_dir = classifier_ckpt.parent.parent / "evaluations"
-        epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
-
-        val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
-        best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()].add_suffix("_best")
-        oracle_threshold = best["val_best_thr_best"]
-        print(f"Oracle Threshold: {oracle_threshold}")
-
-        oracle = Oracle(model=classifier, model_type=model_type)
-        decoder_settings["oracle_threshold"] = oracle_threshold
-
     generator = Generator(
         gen_model=gen_model,
         oracle=oracle,
@@ -283,7 +275,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         "lr": lr,
         "epsilon": epsilon,
         "initial_success_rate": success_rate,
-        "classifier": os.getenv("CLASSIFIER"),
+        "classifier": classifier_ckpt.parent.parent.stem,
         **decoder_settings,
     }
 
@@ -303,8 +295,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
                 logp = rdkit_logp(mol)
                 if abs(logp - target) > epsilon:
                     out = (
-                        base_dir
-                        / f"{gen_ckpt_path.parent.parent.stem}__{os.getenv('CLASSIFIER')}__logp{logp:.3f}{i}.png"
+                        base_dir / f"{gen_ckpt_path.parent.parent.stem}__{evals_dir.parent.stem}__logp{logp:.3f}{i}.png"
                     )
                     draw_mol(mol=mol, save_path=out, fmt="png")
 
