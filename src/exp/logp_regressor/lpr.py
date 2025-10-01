@@ -149,8 +149,8 @@ class LossCurveCallback(pl.Callback):
         df["epoch"] = df["epoch"].astype(int)
 
         # separate tables and skip epoch 0
-        train = df[df["train_loss"].notna() & (df["epoch"] > 0)][["epoch", "train_loss", "train_mae", "train_rmse"]]
-        val = df[df["val_loss"].notna() & (df["epoch"] > 0)][["epoch", "val_loss", "val_mae", "val_rmse"]]
+        train = df[df["train_loss"].notna() & (df["epoch"] > 0)][["epoch", "train_loss", "train_mae", "train_rmse", "train_r2"]]
+        val = df[df["val_loss"].notna() & (df["epoch"] > 0)][["epoch", "val_loss", "val_mae", "val_rmse", "val_r2"]]
 
         self.artefacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -170,7 +170,7 @@ class LossCurveCallback(pl.Callback):
             print(f"[LossCurveCallback] saved {out}")
 
         # plot all three
-        for m in ("loss", "mae", "rmse"):
+        for m in ("loss", "mae", "rmse", "r2"):
             plot_metric(m)
 
         if self.make_grid:
@@ -404,4 +404,11 @@ def run_qm9_trial(trial: optuna.Trial):
     lpr_cfg = get_cfg(trial, dataset="qm9")
     lpr_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600
     lpr_cfg.hv_dim = 40 * 40
+    return run_experiment(lpr_cfg, trial)
+
+
+def run_zinc_trial(trial: optuna.Trial):
+    lpr_cfg = get_cfg(trial, dataset="zinc")
+    lpr_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_7744
+    lpr_cfg.hv_dim = 7744
     return run_experiment(lpr_cfg, trial)

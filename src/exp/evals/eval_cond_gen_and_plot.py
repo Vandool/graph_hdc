@@ -23,7 +23,7 @@ from src.generation.generation import Generator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
 
 # keep it modest to avoid oversubscription; tune if needed
 num = max(1, min(8, os.cpu_count() or 1))

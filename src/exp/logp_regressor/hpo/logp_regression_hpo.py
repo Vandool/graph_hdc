@@ -6,7 +6,7 @@ import pandas as pd
 from optuna.samplers import TPESampler
 
 from src.exp.logp_regressor.hpo.folder_name import make_run_folder_name
-from src.exp.logp_regressor.lpr import run_qm9_trial
+from src.exp.logp_regressor.lpr import run_qm9_trial, run_zinc_trial
 from src.generation import logp_regressor
 
 SPACE = {
@@ -110,8 +110,8 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="LogP Regression - HPO")
-    p.add_argument("--dataset", type=str, default="qm9", choices=["qm9"])
-    p.add_argument("--n_trials", type=int, default=1)
+    p.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc"])
+    p.add_argument("--n_trials", type=int, default=2)
     args = p.parse_args()
 
     # Paths (per-dataset DB + CSV)
@@ -128,7 +128,7 @@ if __name__ == "__main__":
         study = load_study(study_name=study_name, sqlite_path=str(db_path))
 
     # Choose an objective provided by your code
-    base_objective = run_qm9_trial
+    base_objective = run_qm9_trial if args.dataset == "qm9" else run_zinc_trial
 
     # Wrapper to set exp_dir_name once params are known
     def objective(trial: optuna.Trial) -> float:

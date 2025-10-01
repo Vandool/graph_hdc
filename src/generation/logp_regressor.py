@@ -6,6 +6,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
+from torchmetrics import R2Score
 
 from src.utils.registery import register_model
 
@@ -85,6 +86,18 @@ class LogPRegressor(pl.LightningModule):
             norm=norm,
         )
         self.loss_fn = nn.MSELoss()
+        self.train_r2 = R2Score()
+        self.val_r2 = R2Score()
+        self.test_r2 = R2Score()
+
+    def on_train_epoch_start(self):
+        self.train_r2.reset()
+
+    def on_validation_epoch_start(self):
+        self.val_r2.reset()
+
+    def on_test_epoch_start(self):
+        self.test_r2.reset()
 
     def _flat_from_batch(self, batch) -> torch.Tensor:
         D = self.hparams.input_dim // 2
@@ -115,6 +128,18 @@ class LogPRegressor(pl.LightningModule):
         self.log(f"{stage}_loss", loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=B)
         self.log(f"{stage}_mae", mae, prog_bar=(stage != "train"), on_step=False, on_epoch=True, batch_size=B)
         self.log(f"{stage}_rmse", rmse, prog_bar=False, on_step=False, on_epoch=True, batch_size=B)
+
+        # ---- R² update + epoch log ----
+        if stage == "train":
+            self.train_r2.update(y_hat.detach(), y.detach())
+            self.log("train_r2", self.train_r2, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        elif stage == "val":
+            self.val_r2.update(y_hat.detach(), y.detach())
+            self.log("val_r2", self.val_r2, on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+        elif stage == "test":
+            self.test_r2.update(y_hat.detach(), y.detach())
+            self.log("test_r2", self.test_r2, on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+
         return loss
 
     def training_step(self, batch, batch_idx):  # noqa: ARG002
