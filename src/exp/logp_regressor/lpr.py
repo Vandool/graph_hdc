@@ -117,6 +117,7 @@ def pick_precision():
             return "bf16-mixed"  # safest + fast on H100/A100
         return "16-mixed"  # widely supported fallback
     return 32  # CPU or MPS
+torch.set_float32_matmul_precision("high")
 
 
 class TimeLoggingCallback(Callback):
