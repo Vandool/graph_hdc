@@ -28,6 +28,7 @@ from pathlib import Path
 
 import torch
 from rdkit import Chem
+from rdkit.Chem import Crippen
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
@@ -112,6 +113,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         edge_index=torch.tensor([src, dst], dtype=torch.long),
         smiles=Chem.MolToSmiles(mol, canonical=True),
         eval_smiles=eval_smiles,
+        logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
     )
 
 
@@ -163,7 +165,7 @@ class ZincSmiles(InMemoryDataset):
         assert self.split in {"train", "valid", "test", "simple"}
         super().__init__(root, transform, pre_transform, pre_filter)
 
-        # PyTorch ≥ 2.6 defaults to weights-only un-pickler → disable explicitly
+        # PyTorch ≥ 2.6 defaults to weights-only unpickler; disable explicitly.
         with open(self.processed_paths[0], "rb") as f:
             self.data, self.slices = torch.load(f, map_location="cpu", weights_only=False)
 
@@ -198,24 +200,6 @@ class ZincSmiles(InMemoryDataset):
             if (mol := Chem.MolFromSmiles(s)) is None:
                 continue
             data = mol_to_data(mol)
-
-            # --- standardize QED ---
-            stats_path = Path(self.processed_dir) / "qed_stats.json"
-            if self.split == "train":
-                stats = fit_stats(qeds)
-                Path(self.processed_dir).mkdir(parents=True, exist_ok=True)
-                with open(stats_path, "w") as f:
-                    json.dump(stats, f)
-            else:
-                with open(stats_path) as f:
-                    stats = json.load(f)
-
-            for d in data_list:
-                q = float(getattr(d, "qed_raw", float("nan")))
-                d.cond = torch.tensor([zscore(q, stats)], dtype=torch.float32)
-                if hasattr(d, "qed_raw"):
-                    delattr(d, "qed_raw")
-
             if self.pre_filter and not self.pre_filter(data):
                 continue
             if self.pre_transform:

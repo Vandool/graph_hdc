@@ -711,7 +711,7 @@ def greedy_oracle_decoder_faster(
     max_iters = total_nodes
     curr_nodes = 2
 
-    with tqdm(total=max_iters - 1, desc="Iterations", unit="node") as pbar:
+    with tqdm(total=max_iters - 2, desc="Iterations", unit="node") as pbar:
         while curr_nodes < max_iters:
             children: list[nx.Graph] = []
             local_seen: set = set()  # per-iteration dedup to keep branching under control
