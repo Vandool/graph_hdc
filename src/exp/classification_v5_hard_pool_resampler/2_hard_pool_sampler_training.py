@@ -42,6 +42,7 @@ from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader
 from torchmetrics import AUROC, AveragePrecision
+from tqdm.auto import tqdm
 
 from src.datasets.qm9_pairs import QM9Pairs
 from src.datasets.qm9_smiles_generation import QM9Smiles
@@ -403,7 +404,7 @@ class LitBAHClassifier(pl.LightningModule):
         self.val_ap.reset()
 
     def test_step(self, batch, batch_idx: int):
-        h1, h2, y = batch
+        h1, h2, y, _, _ = batch
         h1, h2, y = self._fix_shapes(h1, h2, y)
         logits = self(h1, h2)
         loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=self.pos_weight)
@@ -419,7 +420,6 @@ class LitBAHClassifier(pl.LightningModule):
 # ---------------------------------------------------------------------
 # Dataset and loaders
 # ---------------------------------------------------------------------
-
 
 class EpochResamplingSampler(Sampler[int]):
     """
@@ -687,7 +687,7 @@ class PairsDataModule(pl.LightningDataModule):
         self.base_index_by_k_label = defaultdict(list)  # (k,y)->[idx]
 
         # Iterate train_full once (no encoding) to record k and y cheaply
-        for idx in range(len(self.train_full)):
+        for idx in tqdm(range(len(self.train_full)), desc="Indexing train_full"):
             item = self.train_full[idx]
             k = int(item.k.view(-1)[0].item())
             y = int(item.y.view(-1)[0].item())

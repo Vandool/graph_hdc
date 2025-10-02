@@ -471,10 +471,6 @@ class PairsDataModule(pl.LightningDataModule):
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
     def train_dataloader(self):
-        train_ds = PairsEncodedDataset(
-            self.train_full, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
-        )
-
         sampler = EpochResamplingSampler(
             self.train_full,
             p_per_parent=self.cfg.p_per_parent,
@@ -484,7 +480,9 @@ class PairsDataModule(pl.LightningDataModule):
         )
 
         return DataLoader(  # this is torch_geometric.loader.DataLoader
-            train_ds,
+            dataset=PairsEncodedDataset(
+                self.train_full, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+            ),
             batch_size=self.cfg.batch_size,
             sampler=sampler,
             shuffle=False,
