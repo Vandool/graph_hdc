@@ -1,5 +1,5 @@
-JOB_NAME=gin-f_baseline_hp_zinc \
-MODEL_NAME=GIN-F \
+JOB_NAME=gin-lf_baseline_hp_zinc \
+MODEL_NAME=GIN-LF \
 HV_DIM=7744 \
 DATASET=ZINC_SMILES_HRR_7744 \
 BATCH_SIZE=256 \

@@ -134,7 +134,7 @@ case "$CLUSTER" in
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'gpu_h100|36:00:00|128G\ngpu_a100_il|36:00:00|128G\ngpu_h100_il|36:00:00|128G'
+    TUPLES=$'gpu_h100|72:00:00|128G\ngpu_a100_il|48:00:00|128G\ngpu_h100_il|48:00:00|128G'
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
@@ -146,7 +146,7 @@ case "$CLUSTER" in
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'normal|48:00:00|128G'
+    TUPLES=$'normal|72:00:00|128G'
     ;;
 esac
 
