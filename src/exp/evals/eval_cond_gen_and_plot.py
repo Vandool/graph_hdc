@@ -342,12 +342,21 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
     if cfg.get("plot", False):
         ds = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
         lp = np.array(ds.logp.tolist())
-        # --- dataset stats ---
+
+        total = evals["total"]
+        evals_total = {f"{k.split('_pct')[0]}": f"{v}%" for k, v in total.items() if "pct" in k}
+        valids = evals["valid"]
+        evals_valid = {"mae_to_target": f"{valids['mae_to_target']:.2f}"}
+        evals_valid.update({f"{k.split('_pct')[0]}": f"{int(v)}%" for k, v in valids.items() if "pct" in k})
+
         plot_logp_kde(
             dataset=base_dataset,
             lp=lp,
             lg=logp_gen_list,
-            evals=evals,
+            evals_total=evals_total,
+            evals_valid=evals_valid,
+            epsilon=epsilon,
+            target=target,
             out=(base_dir / f"logp_overlay_{target:.3f}.png"),
             description=f"Classifier ({os.getenv('CLASSIFIER')}",
         )
@@ -373,7 +382,7 @@ if __name__ == "__main__":
     model_configs = {
         "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an": {
             "lr": 0.0001535528683888,
-            "steps": 1492,
+            "steps": 100,
             "scheduler": "cosine",
             "lambda_lo": 0.0001840899208055,
             "lambda_hi": 0.0052054096619994,

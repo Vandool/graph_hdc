@@ -1,8 +1,6 @@
 import contextlib
-import math
 from collections.abc import Sequence
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Literal
 
 import matplotlib.pyplot as plt
@@ -11,6 +9,8 @@ import numpy as np
 import seaborn as sns
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+
+from src.datasets.qm9_smiles_generation import QM9Smiles
 
 # ──────────────────────────────────────────────────────────────────────────────
 ATOM_TYPES = ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"]
@@ -406,29 +406,38 @@ def draw_nx_with_atom_colorings(
     return ax
 
 
+import matplotlib.pyplot as plt
+
+
 def plot_logp_kde(
     dataset: str,
-    lp: np.ndarray,
-    lg: np.ndarray,
-    out: Path,
+    lp: np.ndarray,  # dataset logP
+    lg: np.ndarray,  # generated logP
+    out: Path,  # output file path
+    target: float,  # target logP (vertical line)
     description: str | None = None,
     *,
     bw_adjust: float = 0.9,
     figsize: tuple = (8, 5.5),
-    evals: dict | None = None,
+    evals_total: dict | None = None,  # e.g. {"validity_pct":"80%", "final_pct":"65%"}
+    evals_valid: dict | None = None,  # e.g. {"mae_to_target":"0.41", "success_at_eps":"74%"}
+    epsilon: float | None = None,  # if None -> 0.25 * std(dataset)
 ) -> None:
     """
-    Plot KDEs of dataset logP and generated logP with μ/±σ markers, and shade μ(gen)±ε
-    where ε = 0.25 * std(dataset). Saves figure to 'out' and returns None.
+    Plot KDEs of dataset vs generated logP; draw μ(dataset), μ/±σ(gen), target,
+    and shade the band target±ε (ε = 0.25*σ(dataset) unless provided).
+    Two metric panels are rendered: Total (left-bottom) and Valid (right-bottom).
     """
-    # stats
+    # --- stats ---
     mean_ds, std_ds = lp.mean(), lp.std(ddof=1)
     mean_gen, std_gen = lg.mean(), lg.std(ddof=1)
-    eps = 0.25 * std_ds
-    low, high = mean_gen - eps, mean_gen + eps
+    eps = epsilon if epsilon is not None else 0.25 * std_ds
+
+    # band around TARGET (for conditional eval parity)
+    low, high = float(target) - eps, float(target) + eps
     pct_in_band = np.logical_and(lg >= low, lg <= high).mean() * 100.0
 
-    # style
+    # --- style/axes ---
     sns.set_style("ticks")
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -436,15 +445,18 @@ def plot_logp_kde(
     sns.kdeplot(lp, fill=True, color="lightgrey", alpha=0.55, linewidth=0, bw_adjust=bw_adjust, ax=ax)
     sns.kdeplot(lg, fill=True, color="steelblue", alpha=0.85, linewidth=0, bw_adjust=bw_adjust, ax=ax)
 
-    # dataset μ (no ±σ lines)
+    # μ(dataset) (no ±σ lines)
     ax.axvline(mean_ds, color="grey", linestyle="--", linewidth=1.4, zorder=5)
 
-    # generated μ and ±σ
+    # μ/±σ (gen)
     ax.axvline(mean_gen, color="steelblue", linestyle="--", linewidth=1.8, zorder=6)
     ax.axvline(mean_gen - std_gen, color="steelblue", linestyle=":", linewidth=1.2, zorder=6)
     ax.axvline(mean_gen + std_gen, color="steelblue", linestyle=":", linewidth=1.2, zorder=6)
 
-    # ε-band around μ(gen)
+    # target
+    ax.axvline(float(target), color="black", linestyle="-", linewidth=1.6, zorder=7)
+
+    # ε-band around TARGET
     ax.axvspan(low, high, color="steelblue", alpha=0.18, zorder=4)
 
     # labels
@@ -453,78 +465,66 @@ def plot_logp_kde(
     sns.despine()
     fig.tight_layout()
 
-    # legend (concise but informative)
+    # --- legend ---
+    band_label = f"target±ε (ε={eps:.2f}; 0.25·σ({dataset}))" if epsilon is None else f"target±ε (ε={eps:.2f})"
     legend_elements = [
         Patch(facecolor="lightgrey", edgecolor="none", alpha=0.55, label=f"{dataset} KDE (n={lp.size})"),
         Patch(facecolor="steelblue", edgecolor="none", alpha=0.85, label=f"Generated KDE (n={lg.size})"),
-        Line2D([0], [0], color="grey", linestyle="--", linewidth=1.4, label=f"μ {dataset} = {mean_ds:.2f}"),
+        Line2D(
+            [0],
+            [0],
+            color="grey",
+            linestyle="--",
+            linewidth=1.4,
+            label=f"μ {dataset} = {mean_ds:.2f} (±σ={std_ds:.2f})",
+        ),
         Line2D([0], [0], color="steelblue", linestyle="--", linewidth=1.8, label=f"μ gen = {mean_gen:.2f}"),
         Line2D([0], [0], color="steelblue", linestyle=":", linewidth=1.2, label=f"±σ gen (σ={std_gen:.2f})"),
-        Patch(facecolor="steelblue", alpha=0.18, label=f"μ(gen)±ε, ε=0.25·σ({dataset})={eps:.2f}"),
+        Line2D([0], [0], color="black", linestyle="-", linewidth=1.6, label=f"target = {float(target):.2f}"),
+        Patch(facecolor="steelblue", edgecolor="none", alpha=0.18, label=band_label),
     ]
-
     ax.legend(
         handles=legend_elements,
         frameon=False,
-        ncol=1,  # single column
+        ncol=1,
         fontsize=10,
-        loc="upper left",  # position in plot
-        bbox_to_anchor=(0.01, 0.99),  # anchor inside figure
+        loc="upper left",
+        bbox_to_anchor=(0.01, 0.99),
         borderaxespad=0.5,
     )
 
-    # Title / header
-    title = dataset
-    if description:
-        title += f" - {description}"
+    # --- title ---
+    title = dataset if not description else f"{dataset} - {description}"
     ax.set_title(title, fontsize=13, pad=12)
 
-    # Add evals
-    def getf(k, dflt=None):
-        return evals.get(k, dflt)
+    # --- metric panels: stacked bottom-left (TOTAL above, VALID below) ---
+    lines_total = ["TOTAL"]
+    if evals_total:
+        for k, v in evals_total.items():
+            lines_total.append(f"{k}: {v}")
 
-    metrics_pct = ["validity", "final_success@eps", "uniqueness", "novelty", "diversity_hits"]
+    lines_valid = ["VALID"]
+    if evals_valid:
+        for k, v in evals_valid.items():
+            lines_valid.append(f"{k}: {v}")
 
-    table_rows = []
-    if evals:
-        mae = getf("mae_to_target")
-        table_rows.append(
-            (
-                "mae_to_target",
-                "-" if mae is None or (isinstance(mae, float) and math.isnan(mae)) else f"{float(mae):.3f}",
-            )
-        )
+    box_kwargs = {
+        "transform": ax.transAxes,
+        "ha": "left",
+        "va": "bottom",
+        "fontsize": 10,
+        "color": "steelblue",
+        "bbox": {"facecolor": "white", "edgecolor": "steelblue", "boxstyle": "round,pad=0.35", "alpha": 0.90},
+    }
 
-        for m in metrics_pct:
-            v = getf(m)
-            if v is None or (isinstance(v, float) and math.isnan(v)):
-                table_rows.append((m, "-"))
-            else:
-                f = float(v)
-                if 0.0 <= f <= 1.0:
-                    f *= 100.0
-                table_rows.append((m, f"{f:.0f}%"))
+    # Draw VALID at the bottom
+    y0 = 0.05
+    ax.text(0.02, y0, "\n".join(lines_valid), **box_kwargs)
 
-    # Stats box (bottom-left inside plot)
-    box_lines = [
-        f"{dataset}:    μ={mean_ds:.2f}, σ={std_ds:.2f}",
-        f"gen:  μ={mean_gen:.2f}, σ={std_gen:.2f}",
-        f"in μ(gen)±ε:  {pct_in_band:.1f}%",
-        "",  # blank line before metrics
-    ]
-    box_lines += [f"{k}: {v}" for k, v in table_rows]
-
-    ax.text(
-        0.02,
-        0.05,
-        "\n".join(box_lines),
-        transform=ax.transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=10,
-        color="steelblue",
-        bbox={"facecolor": "white", "edgecolor": "steelblue", "boxstyle": "round,pad=0.35", "alpha": 0.85},
-    )
+    # Draw TOTAL above VALID
+    line_h = 0.045  # approx line height in axes coords
+    y1 = y0 + line_h * max(3, len(lines_valid)) + 0.02  # small vertical gap
+    ax.text(0.02, y1, "\n".join(lines_total), **box_kwargs)
 
     # save
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -533,22 +533,20 @@ def plot_logp_kde(
 
 
 if __name__ == "__main__":
-    # --- Build a toy graph with node["feat"] having .atom_type and .to_tuple() ---
-    G = nx.cycle_graph(8)
-    for i, n in enumerate(G.nodes):
-        # fake "feat" with required attributes
-        G.nodes[n]["feat"] = SimpleNamespace(atom_type=i % 4, target_degree=2, to_tuple=lambda at=i % 4: (at, 1, 0, 0))
+    # ------------------------------------------------
+    ds = QM9Smiles(split="test")
+    lp = np.array(ds.logp.tolist())
+    target = 1.5
+    lg = np.random.normal(loc=target, scale=0.5, size=100)
 
-    # Subgraph: pick 3 nodes
-    H = G.subgraph([0, 1, 2]).copy()
-
-    # --- Draw ---
-    ax = draw_nx_with_atom_colorings(
-        H,
-        overlay_full_graph=G,  # faint backdrop
-        highlight_edges=[(0, 1)],  # highlight one edge
-        label="Demo: H overlayed on G",
-        figsize=(10, 8),
+    plot_logp_kde(
+        dataset="QM9",
+        lp=lp,
+        lg=lg,
+        out=Path("out/qm9_kde.png"),
+        target=target,
+        evals_total={"validity_pct": "80%", "final_pct": "65%"},
+        evals_valid={"mae_to_target": "0.41", "success_at_eps": "74%"},
+        description="DESCRIPTION HERE",
+        bw_adjust=0.8,
     )
-
-    plt.show()

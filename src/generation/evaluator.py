@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 
 import networkx as nx
 from rdkit import Chem
@@ -95,98 +96,135 @@ class GenerationEvaluator:
         samples,  # list[nx.Graph]
         target: float,  # single float target
         final_flags: list[bool],
-        prop_fn=rdkit_logp,
+        prop_fn: Callable = rdkit_logp,
         eps: float = 0.2,
         compute_diversity: bool = True,
         total_samples: int = 100,
-    ) -> dict[str, float]:
-        # --- template of all outputs ---
+    ) -> dict[str, dict[str, float]]:
+        """
+        Returns a dict with stable sections:
+          - meta:   dataset and configuration
+          - total:  metrics normalized by total_samples
+          - valid:  metrics over valid, non-NaN property samples
+          - hits:   metrics over the hit subset (|prop-target| <= eps among valid)
+        """
+
+        # ---------- meta ----------
         out = {
-            "dataset": self.base_dataset,
-            "n_samples": len(samples),
-            "validity": 0.0,
-            "final_flags": 100.0 * sum(final_flags) / total_samples,
-            "target_eps": eps,
-            "success@eps": 0.0,
-            "final_success@eps": 0.0,
-            "mae_to_target": float("nan"),
-            "rmse_to_target": float("nan"),
-            "corr_spearman": float("nan"),
-            "uniqueness": 0.0,  # among valids
-            "novelty": 0.0,  # among valids
-            "uniqueness_hits": 0.0,
-            "novelty_hits": 0.0,
-            "diversity_hits": 0.0,
+            "meta": {
+                "dataset": self.base_dataset,
+                "n_samples": len(samples),
+                "total_samples": int(total_samples),
+                "target": float(target),
+                "epsilon": float(eps),
+            },
+            "total": {
+                "validity_pct": 0.0,
+                "final_pct": 100.0 * sum(final_flags) / total_samples if total_samples else 0.0,
+            },
+            "valid": {
+                "n_valid": 0,
+                "n_valid_non_nan": 0,
+                "mae_to_target": float("nan"),
+                "rmse_to_target": float("nan"),
+                "success_at_eps_pct": 0.0,  # den = n_valid_non_nan
+                "final_success_at_eps_pct": 0.0,  # den = n_valid_non_nan
+                "uniqueness_pct": 0.0,  # among valid
+                "novelty_pct": 0.0,  # among valid
+            },
+            "hits": {
+                "n_hits": 0,
+                "uniqueness_hits_pct": 0.0,  # among hits
+                "novelty_hits_pct": 0.0,  # among hits
+                "diversity_hits_pct": 0.0,  # 100 * (1 - mean tanimoto sim) over hits
+            },
         }
 
-        # --- mols + validity ---
+        # ---------- to mols & validity ----------
         mols, valid = self._to_mols_and_valid(samples)
         self.mols = mols
         self.valid_flags = valid
 
-        n_valid = sum(valid)
-        out["validity"] = 100.0 * n_valid / total_samples
+        n_valid = int(sum(valid))
+        out["valid"]["n_valid"] = n_valid
+        out["total"]["validity_pct"] = 100.0 * n_valid / total_samples if total_samples else 0.0
 
         if n_valid == 0:
             return out
 
-        # --- compute property ---
-        props, tgts, finals = [], [], []
-        for m, v, f in zip(mols, valid, final_flags, strict=False):
-            if v:
-                try:
-                    props.append(float(prop_fn(m)))
-                except Exception:
-                    props.append(float("nan"))
-                finally:
-                    tgts.append(float(target))
-                    finals.append(f)
+        # ---------- compute property on valid only; keep mapping to valid indices ----------
+        props_triplets = []  # (valid_idx, prop, final_flag)
+        tgt = float(target)
+        v_idx = -1
+        for i, (m, v, f) in enumerate(zip(mols, valid, final_flags, strict=False)):
+            if not v:
+                continue
+            v_idx += 1  # position among *valid* items
+            try:
+                p = float(prop_fn(m))
+            except Exception:
+                p = float("nan")
+            props_triplets.append((v_idx, p, bool(f)))
 
-        # --- filter nans ---
-        paired = [(p, t, f) for p, t, f in zip(props, tgts, finals, strict=False) if not math.isnan(p)]
-        if not paired:
+        # filter non-NaN props, keep mapping to valid index
+        paired = [(vidx, p, tgt, f) for (vidx, p, f) in props_triplets if not math.isnan(p)]
+        den = len(paired)
+        out["valid"]["n_valid_non_nan"] = den
+        if den == 0:
             return out
 
-        fs = [f for _, _, f in paired]
-        abs_err = [abs(p - t) for p, t, _ in paired]
+        # ---------- absolute errors & success ----------
+        abs_err = [abs(p - t) for (_, p, t, _) in paired]
+        finals = [f for (_, _, _, f) in paired]
 
-        out["mae_to_target"] = sum(abs_err) / len(abs_err)
-        out["rmse_to_target"] = math.sqrt(sum(e * e for e in abs_err) / len(abs_err))
-        out["success@eps"] = 100.0 * sum(e <= eps for e in abs_err) / total_samples
-        out["final_success@eps"] = 100 * sum(1 for i, f in enumerate(fs) if f and abs_err[i] <= eps) / total_samples
+        out["valid"]["mae_to_target"] = sum(abs_err) / den
+        out["valid"]["rmse_to_target"] = math.sqrt(sum(e * e for e in abs_err) / den)
+        out["valid"]["success_at_eps_pct"] = 100.0 * sum(e <= eps for e in abs_err) / den
+        out["valid"]["final_success_at_eps_pct"] = (
+            100.0 * sum((e <= eps) and f for e, f in zip(abs_err, finals, strict=False)) / den
+        )
 
-        # --- uniqueness/novelty overall ---
+        # ---------- uniqueness / novelty over *valid* ----------
         valid_canon = [canonical_key(m) for m, v in zip(mols, valid, strict=False) if v]
         valid_canon = [c for c in valid_canon if c is not None]
-        uniq_overall = 100.0 * len(set(valid_canon)) / n_valid if n_valid else 0.0
-        novel_overall = 100.0 * len(set(valid_canon) - self.T) / n_valid if n_valid else 0.0
-        out.update({"uniqueness": uniq_overall, "novelty": novel_overall})
+        if valid_canon:
+            uniq = 100.0 * len(set(valid_canon)) / len(valid_canon)
+            novel = 100.0 * len(set(valid_canon) - self.T) / len(valid_canon)
+            out["valid"]["uniqueness_pct"] = uniq
+            out["valid"]["novelty_pct"] = novel
 
-        # --- hits-only ---
-        hit_indices = [i for i, (p, t, f) in enumerate(paired) if abs(p - t) <= eps]
-        if hit_indices:
-            hit_keys = []
-            j = -1
-            for i, v in enumerate(valid):
-                if not v:
-                    continue
-                j += 1
-                if j in hit_indices and j < len(valid_canon) and valid_canon[j] is not None:
-                    hit_keys.append(valid_canon[j])
-            if hit_keys:
-                out["uniqueness_hits"] = 100.0 * len(set(hit_keys)) / len(hit_indices)
-                out["novelty_hits"] = 100.0 * len(set(hit_keys) - self.T) / len(hit_indices)
+        # ---------- hit subset (|prop-target| <= eps) ----------
+        hit_paired = [(vidx, p) for (vidx, p, _, _) in paired if abs(p - tgt) <= eps]
+        out["hits"]["n_hits"] = len(hit_paired)
+        if not hit_paired:
+            return out
 
-            if compute_diversity and len(hit_keys) >= 2:
-                hit_mols = [mols[i] for i, v in enumerate(valid) if v][: len(hit_indices)]
-                fps = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=2048) for m in hit_mols]
-                sims = [
-                    DataStructs.TanimotoSimilarity(fps[i], fps[j])
-                    for i in range(len(fps))
-                    for j in range(i + 1, len(fps))
-                ]
-                if sims:
-                    out["diversity_hits"] = 100.0 * (1.0 - (sum(sims) / len(sims)))
+        # map hit valid indices back to canonical keys / mols
+        hit_valid_idx = [vidx for (vidx, _) in hit_paired]
+        hit_keys = []
+        # valid_canon is in the same order as valid==True items; indices match vidx
+        for vidx in hit_valid_idx:
+            if 0 <= vidx < len(valid_canon):
+                k = valid_canon[vidx]
+                if k is not None:
+                    hit_keys.append(k)
+
+        if hit_keys:
+            n_hits = len(hit_paired)
+            out["hits"]["uniqueness_hits_pct"] = 100.0 * len(set(hit_keys)) / n_hits
+            out["hits"]["novelty_hits_pct"] = 100.0 * len(set(hit_keys) - self.T) / n_hits
+
+        if compute_diversity and len(hit_valid_idx) >= 2:
+            # rebuild list of *valid* mol indices to map vidx -> original mol index
+            valid_orig_idx = [i for i, v in enumerate(valid) if v]
+            hit_orig_idx = [valid_orig_idx[vidx] for vidx in hit_valid_idx]
+            hit_mols = [mols[i] for i in hit_orig_idx]
+            fps = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=2048) for m in hit_mols]
+            sims = [
+                DataStructs.TanimotoSimilarity(fps[i], fps[j]) for i in range(len(fps)) for j in range(i + 1, len(fps))
+            ]
+            if sims:
+                out["hits"]["diversity_hits_pct"] = 100.0 * (1.0 - (sum(sims) / len(sims)))
 
         return out
 
