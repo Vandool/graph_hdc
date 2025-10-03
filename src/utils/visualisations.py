@@ -1,4 +1,5 @@
 import contextlib
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -473,27 +474,36 @@ def plot_logp_kde(
     )
 
     # Title / header
-    title = "Conditional LogP Generation"
+    title = dataset
     if description:
         title += f" - {description}"
     ax.set_title(title, fontsize=13, pad=12)
 
     # Add evals
-    def getf(k, dflt=np.nan):
+    def getf(k, dflt=None):
         return evals.get(k, dflt)
 
-    table_rows = (
-        [
-            ("validity", f"{getf('validity'):.3f}"),
-            ("final_success@eps", f"{getf('final_success@eps'):.3f}"),
-            ("mae_to_target", f"{getf('mae_to_target'):.3f}"),
-            ("uniq_overall", f"{getf('uniqueness_overall'):.3f}"),
-            ("novelty_overall", f"{getf('novelty_overall'):.3f}"),
-            ("diversity_hits", f"{getf('diversity_hits'):.3f}"),
-        ]
-        if evals
-        else []
-    )
+    metrics_pct = ["validity", "final_success@eps", "uniq_overall", "novelty_overall", "diversity_hits"]
+
+    table_rows = []
+    if evals:
+        mae = getf("mae_to_target")
+        table_rows.append(
+            (
+                "mae_to_target",
+                "-" if mae is None or (isinstance(mae, float) and math.isnan(mae)) else f"{float(mae):.3f}",
+            )
+        )
+
+        for m in metrics_pct:
+            v = getf(m)
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                table_rows.append((m, "-"))
+            else:
+                f = float(v)
+                if 0.0 <= f <= 1.0:
+                    f *= 100.0
+                table_rows.append((m, f"{f:.0f}%"))
 
     # Stats box (bottom-left inside plot)
     box_lines = [
