@@ -112,8 +112,8 @@ class GenerationEvaluator:
             "mae_to_target": float("nan"),
             "rmse_to_target": float("nan"),
             "corr_spearman": float("nan"),
-            "uniqueness_overall": 0.0,
-            "novelty_overall": 0.0,
+            "uniqueness": 0.0,  # among valids
+            "novelty": 0.0,  # among valids
             "uniqueness_hits": 0.0,
             "novelty_hits": 0.0,
             "diversity_hits": 0.0,
@@ -160,7 +160,7 @@ class GenerationEvaluator:
         valid_canon = [c for c in valid_canon if c is not None]
         uniq_overall = 100.0 * len(set(valid_canon)) / n_valid if n_valid else 0.0
         novel_overall = 100.0 * len(set(valid_canon) - self.T) / n_valid if n_valid else 0.0
-        out.update({"uniqueness_overall": uniq_overall, "novelty_overall": novel_overall})
+        out.update({"uniqueness": uniq_overall, "novelty": novel_overall})
 
         # --- hits-only ---
         hit_indices = [i for i, (p, t, f) in enumerate(paired) if abs(p - t) <= eps]
