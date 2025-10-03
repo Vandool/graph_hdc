@@ -482,12 +482,18 @@ class PairsDataModule(pl.LightningDataModule):
         log(
             f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}"
         )
+        dev_tag = "_dev" if self.is_dev else ""
 
         # Precompute validation indices (fixed selection); loaders are built in *_dataloader()
-        self._valid_indices = balanced_indices_for_validation(ds=self.valid_full, seed=cfg.seed)
+        valid_idx_cache_path = self.train_full.cache_dir / f"valid_idx_seed{cfg.seed}{dev_tag}.npy"
+        if valid_idx_cache_path.exists():
+            log("[PairsDataModule] stratified valid idx found in cache")
+            self._valid_indices = np.load(valid_idx_cache_path).tolist()
+        else:
+            log("[PairsDataModule] stratified valid idx is being computed")
+            self._valid_indices = balanced_indices_for_validation(ds=self.valid_full, seed=cfg.seed)
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
-        dev_tag = "_dev" if self.is_dev else ""
         cache_path = self.train_full.cache_dir / f"pairs_cache{dev_tag}.npz"
         pkl_path = self.train_full.cache_dir / f"pairs_cache{dev_tag}.pkl"
 
