@@ -8,11 +8,11 @@ from optuna_integration import BoTorchSampler
 from src.exp.cond_gen_hpo.cond_generation_hpo import run_qm9_cond_gen
 
 SPACE = {
-    "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
+    "lr": optuna.distributions.FloatDistribution(5e-5, 5e-3, log=True),
     "steps": optuna.distributions.FloatDistribution(50, 1500, log=True),
     "scheduler": optuna.distributions.CategoricalDistribution(["cosine", "two-phase", "linear"]),
-    "lambda_lo": optuna.distributions.FloatDistribution(1e-4, 5e-3, log=True),
-    "lambda_hi": optuna.distributions.FloatDistribution(5e-3, 1e-2, log=True),
+    "lambda_lo": optuna.distributions.FloatDistribution(1e-5, 5e-3, log=True),
+    "lambda_hi": optuna.distributions.FloatDistribution(5e-3, 5e-2, log=True),
 }
 DIRECTION = "maximize"
 
@@ -107,11 +107,12 @@ if __name__ == "__main__":
         # "nvp_qm9_f14_hid512_lr0.000514306_wd0.0001_bs58_smf5.76312_smi0.1_smw14_an",
     ]:
         for classifier in [
-            # "gin-f_baseline_qm9_resume",
+            "gin-f_baseline_qm9_resume",
             # "MLP_Lightning_qm9",
             # "BAH_large_qm9",
             # "BAH_med_qm9",
             "SIMPLE_VOTER",
+            "BAH_med_hardpool_qm9"
         ]:
             # args = argparse.Namespace(
             #     dataset="qm9",

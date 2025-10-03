@@ -223,7 +223,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     # n, g = gen_model.split(hdc)
 
     decoder_settings = {
-        "beam_size": 128,
+        "beam_size": 4,
         "use_pair_feasibility": True,
         "expand_on_n_anchors": 9,
     }
@@ -314,7 +314,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
 def run_qm9_cond_gen(trial: optuna.Trial):
     cfg = {
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
-        "steps": trial.suggest_int("steps", 50, 1000),
+        "steps": trial.suggest_int("steps", 50, 1500),
         "scheduler": trial.suggest_categorical("scheduler", ["cosine", "two-phase", "linear"]),
         "lambda_lo": trial.suggest_float("lambda_lo", 1e-4, 5e-3, log=True),
         "lambda_hi": trial.suggest_float("lambda_hi", 5e-3, 1e-2, log=True),
