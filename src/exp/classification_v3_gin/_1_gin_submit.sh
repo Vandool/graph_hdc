@@ -58,10 +58,6 @@ FILM_UNITS="${FILM_UNITS:-128}"
 CONV_UNITS="${CONV_UNITS:-64,64,64}"
 PRED_HEAD_UNITS="${PRED_HEAD_UNITS:-256,64,1}"
 
-# Oracle evals
-ORACLE_NUM_EVALS="${ORACLE_NUM_EVALS:-100}"
-ORACLE_BEAM_SIZE="${ORACLE_BEAM_SIZE:-16}"
-
 HV_DIM="${HV_DIM:-1600}"
 VSA="${VSA:-HRR}"
 DATASET="${DATASET:-QM9_SMILES_HRR_1600}"
@@ -100,9 +96,6 @@ PY_ARGS=(
   --film_units "$FILM_UNITS"
   --conv_units "$CONV_UNITS"
   --pred_head_units "$PRED_HEAD_UNITS"
-
-  --oracle_num_evals "$ORACLE_NUM_EVALS"
-  --oracle_beam_size "$ORACLE_BEAM_SIZE"
 
   --hv_dim "$HV_DIM"
   --vsa "$VSA"
