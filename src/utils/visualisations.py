@@ -483,7 +483,7 @@ def plot_logp_kde(
     def getf(k, dflt=None):
         return evals.get(k, dflt)
 
-    metrics_pct = ["validity", "final_success@eps", "uniq_overall", "novelty_overall", "diversity_hits"]
+    metrics_pct = ["validity", "final_success@eps", "uniqueness_overall", "novelty_overall", "diversity_hits"]
 
     table_rows = []
     if evals:

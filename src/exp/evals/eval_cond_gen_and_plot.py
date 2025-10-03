@@ -23,7 +23,7 @@ from src.generation.generation import Generator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
 from src.utils.visualisations import plot_logp_kde
 
 # keep it modest to avoid oversubscription; tune if needed
@@ -37,8 +37,8 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 
 seed = 42
 seed_everything(seed)
-device = pick_device()
-# device = torch.device("cpu")
+# device = pick_device()
+device = torch.device("cpu")
 EVALUATOR = None
 HDC_Y_REUSE: dict[tuple[str, float], Any] = {}
 
@@ -315,9 +315,6 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
     pprint(results)
 
     mols, valid_flags = EVALUATOR.get_mols_and_valid_flags()
-    logp_gen_list = np.array(
-        [rdkit_logp(mol) for mol, valid in zip(mols, valid_flags, strict=False) if valid], dtype=float
-    )
 
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
@@ -327,6 +324,9 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
     base_dir.mkdir(parents=True, exist_ok=True)
 
     # Save for later re-plotting
+    logp_gen_list = np.array(
+        [rdkit_logp(mol) for mol, valid in zip(mols, valid_flags, strict=False) if valid], dtype=float
+    )
     np.save(base_dir / f"{target:.3f}.npy", logp_gen_list)
     (base_dir / f"results_target_{target:.3f}.json").write_text(json.dumps(results, indent=4))
 
@@ -418,12 +418,12 @@ if __name__ == "__main__":
                 "scheduler": model_configs[gen_model]["scheduler"],
                 "lambda_lo": model_configs[gen_model]["lambda_lo"],
                 "lambda_hi": model_configs[gen_model]["lambda_hi"],
-                "draw": False,
-                "n_samples": samples,
                 "base_dataset": dataset,
-                "plot": True,
+                "n_samples": samples,
                 "target": logp_stats[dataset]["mean"] * target_multiplier,
                 "epsilon": 0.25 * logp_stats[dataset]["std"],
+                "draw": True,
+                "plot": True,
             }
             os.environ["GEN_MODEL"] = gen_model
             os.environ["CLASSIFIER"] = classifier
