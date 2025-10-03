@@ -147,8 +147,6 @@ class GenerationEvaluator:
         if not paired:
             return out
 
-        ps = [p for p, _, _ in paired]
-        ts = [t for _, _, t in paired]
         fs = [f for _, _, f in paired]
         abs_err = [abs(p - t) for p, t, _ in paired]
 

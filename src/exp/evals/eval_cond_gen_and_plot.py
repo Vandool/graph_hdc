@@ -1,6 +1,7 @@
+import argparse
+import json
 import math
 import os
-import time
 from collections.abc import Callable
 from pathlib import Path
 from pprint import pprint
@@ -11,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 from matplotlib import pyplot as plt
+from matplotlib.lines import Line2D
 from pytorch_lightning import seed_everything
 from tqdm.auto import tqdm
 
@@ -38,7 +40,8 @@ seed = 42
 seed_everything(seed)
 device = pick_device()
 # device = torch.device("cpu")
-evaluator = GenerationEvaluator(base_dataset="qm9", device=device)
+EVALUATOR = None
+HDC_Y_REUSE: dict[tuple[str, float], Any] = {}
 
 
 def stats(arr):
@@ -154,11 +157,14 @@ def get_lpr(hint: str) -> Path | None:
     return None
 
 
-def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
-    assert os.getenv("GEN_MODEL") is not None
+def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa: PLR0915
+    global EVALUATOR  # noqa: PLW0603
+    global HDC_Y_REUSE
+    gen_model_hint = os.getenv("GEN_MODEL")
+    assert gen_model_hint is not None
     assert os.getenv("CLASSIFIER") is not None
 
-    gen_ckpt_path = get_gen_model(hint=os.getenv("GEN_MODEL"))
+    gen_ckpt_path = get_gen_model(hint=gen_model_hint)
     print(f"Generator Checkpoint: {gen_ckpt_path}")
     ## Retrieve the model
     model_type_gen = get_model_type(gen_ckpt_path)
@@ -186,48 +192,51 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     base_dataset = cfg.get("base_dataset", "qm9")
     n_samples = cfg.get("n_samples", 100)
     latent_dim = gen_model.flat_dim
-    target = 0.0
+    target = cfg.get("target")
     lambda_hi = cfg.get("lambda_hi", 1e-2)
     lambda_lo = cfg.get("lambda_lo", 1e-4)
     steps = cfg.get("steps", 300)
     lr = cfg.get("lr", 1e-3)
-    epsilon = 0.2  # success@epsilon threshold for logP
+    epsilon = cfg.get("epsilon", 0.02)
 
-    t0_gen = time.perf_counter()
-    # ---- Initialize latents ----
-    base = nf.distributions.DiagGaussian(latent_dim, trainable=False).to(device)
-    z = base.sample(n_samples)
-    z = z.detach().requires_grad_(True)
-    opt = torch.optim.Adam([z], lr=lr)
+    if HDC_Y_REUSE.get((gen_model_hint, target)):
+        hdc = HDC_Y_REUSE[(gen_model_hint, target)]["hdc"]
+        y_pred = HDC_Y_REUSE[(gen_model_hint, target)]["y_pred"]
+    else:
+        base = nf.distributions.DiagGaussian(latent_dim, trainable=False).to(device)
+        z = base.sample(n_samples)
+        z = z.detach().requires_grad_(True)
+        opt = torch.optim.Adam([z], lr=lr)
 
-    sched, sched_name = schedulers[cfg.get("scheduler")](steps=steps, lam_hi=lambda_hi, lam_lo=lambda_lo), "cosine"
+        sched, sched_name = schedulers[cfg.get("scheduler")](steps=steps, lam_hi=lambda_hi, lam_lo=lambda_lo), "cosine"
 
-    min_loss = float("inf")
-    # ---- Guidance loop ----
-    pbar = tqdm(range(steps), desc="Steps", unit="step")
-    for s in pbar:
-        hdc = gen_model.decode_from_latent(z)  # needs grad
-        y_hat = logp_regressor.gen_forward(hdc)
+        min_loss = float("inf")
+        # ---- Guidance loop ----
+        pbar = tqdm(range(steps), desc="Steps", unit="step")
+        for s in pbar:
+            hdc = gen_model.decode_from_latent(z)  # needs grad
+            y_hat = logp_regressor.gen_forward(hdc)
 
-        lam = sched(s)  # <-- annealed prior weight
-        target_tensor = torch.full_like(y_hat, float(target))
-        loss = ((y_hat - target_tensor) ** 2).mean() + lam * z.pow(2).mean()
+            lam = sched(s)  # <-- annealed prior weight
+            target_tensor = torch.full_like(y_hat, float(target))
+            loss = ((y_hat - target_tensor) ** 2).mean() + lam * z.pow(2).mean()
 
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
 
-        min_loss = min(min_loss, loss.item())
+            min_loss = min(min_loss, loss.item())
 
-        # update tqdm display
-        pbar.set_postfix({"loss": f"{loss.item():.4f}", "λ_prior": f"{lam:.2e}"})
+            # update tqdm display
+            pbar.set_postfix({"loss": f"{loss.item():.4f}", "λ_prior": f"{lam:.2e}"})
 
-    # ---- Decode once more and take the results ----
-    with torch.no_grad():
-        hdc = gen_model.decode_from_latent(z)
-        y_pred = logp_regressor.gen_forward(hdc)
+        # ---- Decode once more and take the results ----
+        with torch.no_grad():
+            hdc = gen_model.decode_from_latent(z)
+            y_pred = logp_regressor.gen_forward(hdc)
 
-    t_gen = time.perf_counter() - t0_gen
+        HDC_Y_REUSE[(gen_model_hint, target)] = {"hdc": hdc, "y_pred": y_pred}
+
     # ---- Success@epsilon (using model's prediction; replace with RDKit eval if you want) ----
     hits = (y_pred - target).abs() <= epsilon
     success_rate = hits.float().mean().item()
@@ -237,11 +246,6 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     n, g = gen_model.split(torch.stack(hits))
     # n, g = gen_model.split(hdc)
 
-    decoder_settings = {
-        "beam_size": 64,
-        "use_pair_feasibility": True,
-        "expand_on_n_anchors": 9,
-    }
     if os.getenv("CLASSIFIER") == "SIMPLE_VOTER":
         oracle = SimpleVoterOracle(
             model_paths=[
@@ -289,10 +293,8 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         "gen_model": str(gen_ckpt_path.parent.parent.stem),
         "logp_regressor": str(lpr_path.parent.parent.stem),
         "n_samples": n_samples,
-        "gen_time_per_sample": t_gen / n_samples,
-        "target": 0.0,
-        "min_gda_loss": min_loss,
-        "lambda_scheduler": sched_name,
+        "target": cfg.get("target"),
+        "lambda_scheduler": cfg.get("scheduler"),
         "lambda_hi": lambda_hi,
         "lambda_low": lambda_lo,
         "steps": steps,
@@ -304,37 +306,47 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     }
 
     # results.update(evaluator.evaluate(samples=nx_graphs, final_flags=final_flag, sims=sims))
-    evals = evaluator.evaluate_conditional(
+    if EVALUATOR is None:
+        EVALUATOR = GenerationEvaluator(base_dataset=base_dataset, device=device)
+
+    evals = EVALUATOR.evaluate_conditional(
         samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples
     )
     results.update({f"eval_{k}": v for k, v in evals.items()})
     pprint(results)
 
+    mols, valid_flags = EVALUATOR.get_mols_and_valid_flags()
+    logp_gen_list = np.array(
+        [rdkit_logp(mol) for mol, valid in zip(mols, valid_flags, strict=False) if valid], dtype=float
+    )
+
+    base_dir = (
+        GLOBAL_ARTEFACTS_PATH
+        / "cond_generation"
+        / f"{base_dataset}_{os.getenv('GEN_MODEL')}_{os.getenv('CLASSIFIER')}_{n_samples}-samples"
+    )
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save for later re-plotting
+    np.save(base_dir / f"{target:.3f}.npy", logp_gen_list)
+    (base_dir / f"results_target_{target:.3f}.json").write_text(json.dumps(results, indent=4))
+
     if cfg.get("draw", False):
-        base_dir = GLOBAL_ARTEFACTS_PATH / "cond_generation" / f"drawings_valid_target_{target:.1f}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags = evaluator.get_mols_and_valid_flags()
         for i, (mol, valid) in enumerate(zip(mols, valid_flags, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)
                 if abs(logp - target) > epsilon:
-                    out = (
-                        base_dir
-                        / f"{gen_ckpt_path.parent.parent.stem}__{os.getenv('CLASSIFIER')}__logp{logp:.3f}{i}.png"
-                    )
+                    out = base_dir / f"LogP_{logp:.3f}_{i}.png"
                     draw_mol(mol=mol, save_path=out, fmt="png")
 
     if cfg.get("plot", False):
         # --- dataset stats ---
-        import numpy as np
 
         dataset = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
         logp_list = np.array([d.logp.item() for d in dataset], dtype=float)
         ds_summary = stats(logp_list)
 
-        # --- generated stats ---
-        mols, valid_flags = evaluator.get_mols_and_valid_flags()
-        logp_gen_list = np.array([rdkit_logp(mol) for mol in mols], dtype=float)
         gen_summary = (
             stats(logp_gen_list) if logp_gen_list.size else {"min": 0, "max": 0, "mean": 0.0, "median": 0.0, "std": 0.0}
         )
@@ -407,10 +419,11 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         ax.set_xlim(xmin, xmax)
         ax.set_ylabel("Density")
         ax.set_xlabel("cLogP (RDKit)")
-        ax.set_title(f"cLogP Distribution — {base_dataset.upper()} vs Generated (n={len(logp_gen_list)})")
+        ax.set_title(
+            f"cLogP Distribution — {base_dataset.upper()} vs Generated - {os.getenv('CLASSIFIER')} (n={len(logp_gen_list)})"
+        )
 
         # Legend via proxies (avoid patch legend bugs)
-        from matplotlib.lines import Line2D
 
         legend_handles = [
             Line2D([0], [0], linewidth=1.5, linestyle="-", label=f"{base_dataset.upper()} train (smoothed)"),
@@ -424,6 +437,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         getf = lambda k, dflt=np.nan: evals.get(k, dflt)
         table_rows = [
             ("validity", f"{getf('validity'):.3f}"),
+            ("epsilon", f"{getf('epsilon'):.3f}"),
             ("success@eps", f"{getf('success@eps'):.3f}"),
             ("final_success@eps", f"{getf('final_success@eps'):.3f}"),
             ("mae_to_target", f"{getf('mae_to_target'):.3f}"),
@@ -448,81 +462,84 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         table.scale(1.0, 1.1)
 
         # Save + show
-        out_dir = GLOBAL_ARTEFACTS_PATH / "cond_generation"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"logp_overlay_{base_dataset}_{int(time.time())}.png"
+        out_path = base_dir / f"logp_overlay_{target:.3f}.png"
         plt.tight_layout()
         plt.savefig(out_path, dpi=150)
         plt.show()
-
-        # Combined normalized histogram: dataset vs generated
-        if len(logp_list) and logp_gen_list.size:
-            import numpy as np
-            from matplotlib.lines import Line2D
-
-            # common range & bins
-            xmin = float(min(np.min(logp_list), np.min(logp_gen_list)))
-            xmax = float(max(np.max(logp_list), np.max(logp_gen_list)))
-            bins = np.linspace(xmin, xmax, 51)  # 50 bins, shared
-
-            fig = plt.figure(figsize=(8, 5))
-            ax = fig.add_subplot(1, 1, 1)
-
-            # plot (exclude from legend to avoid patch quirks)
-            ax.hist(logp_list, bins=bins, density=True, histtype="step", linewidth=1.5, label="_nolegend_")
-            ax.hist(logp_gen_list, bins=bins, density=True, histtype="step", linewidth=2.0, label="_nolegend_")
-
-            ax.set_title("Dataset vs Generated — normalized cLogP")
-            ax.set_xlabel("cLogP (RDKit)")
-            ax.set_ylabel("density")
-
-            # proxy legend (stable)
-            handles = [
-                Line2D([0], [0], linestyle="-", linewidth=1.5, label=f"{base_dataset.upper()}"),
-                Line2D([0], [0], linestyle="-", linewidth=2.0, label="Generated"),
-            ]
-            ax.legend(handles=handles, loc="upper right")
-
-            plt.tight_layout()
-            plt.show()
-        elif len(logp_list):
-            # fallback: only dataset available
-            fig = plt.figure(figsize=(8, 5))
-            ax = fig.add_subplot(1, 1, 1)
-            ax.hist(logp_list, bins=50, density=True, histtype="step", linewidth=1.5)
-            ax.set_title(f"{base_dataset.upper()} – logP distribution (normalized)")
-            ax.set_xlabel("cLogP (RDKit)")
-            ax.set_ylabel("density")
-            plt.tight_layout()
-            plt.show()
-        elif logp_gen_list.size:
-            # fallback: only generated available
-            fig = plt.figure(figsize=(8, 5))
-            ax = fig.add_subplot(1, 1, 1)
-            ax.hist(logp_gen_list, bins=50, density=True, histtype="step", linewidth=2.0)
-            ax.set_title("Generated – logP distribution (normalized)")
-            ax.set_xlabel("cLogP (RDKit)")
-            ax.set_ylabel("density")
-            plt.tight_layout()
-            plt.show()
 
     return results
 
 
 if __name__ == "__main__":
-    cfg = {
-        "lr": 0.0001535528683888,
-        # "lr": 0.001,
-        "steps": 1429,
-        # "steps": 1000,
-        "scheduler": "cosine",
-        "lambda_lo": 0.0001840899208055,
-        "lambda_hi": 0.0052054096619994,
-        "draw": False,
-        "n_samples": 500,
-        "base_dataset": "qm9",
-        "plot": True,
+    p = argparse.ArgumentParser(description="Real NVP V2 - HPO")
+    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
+    p.add_argument("--n_samples", type=int, default=1000)
+    args = p.parse_args()
+    logp_stats = {
+        "qm9": {
+            "max": 3,
+            "mean": 0.30487121410781287,
+            "median": 0.27810001373291016,
+            "min": -5,
+            "std": 0.9661976604136703,
+        },
+        "zinc": {"max": 8, "mean": 2.457799800788871, "median": 2.60617995262146, "min": -6, "std": 1.4334213538628746},
     }
-    os.environ["GEN_MODEL"] = "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an"
-    os.environ["CLASSIFIER"] = "SIMPLE_VOTER"
-    res = eval_cond_gen(cfg=cfg)
+    model_configs = {
+        "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an": {
+            "lr": 0.0001535528683888,
+            "steps": 1492,
+            "scheduler": "cosine",
+            "lambda_lo": 0.0001840899208055,
+            "lambda_hi": 0.0052054096619994,
+        }
+    }
+    decoder_settings = {
+        "beam_size": 512,
+        "use_pair_feasibility": True,
+        "expand_on_n_anchors": 9,
+    }
+    n_samples = args.n_samples
+    dataset = args.dataset
+    for target_multiplier in [1, 2, 3, 4]:
+        for (
+            dataset,
+            gen_model,
+            classifier,
+            samples,
+        ) in [
+            (
+                dataset,
+                "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
+                "BAH_med_hardpool_qm9",
+                n_samples,
+            ),
+            (
+                dataset,
+                "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
+                "SIMPLE_VOTER",
+                n_samples,
+            ),
+            (
+                dataset,
+                "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
+                "gin-f_baseline_qm9_resume",
+                n_samples,
+            ),
+        ]:
+            cfg = {
+                "lr": model_configs[gen_model]["lr"],
+                "steps": model_configs[gen_model]["steps"],
+                "scheduler": model_configs[gen_model]["scheduler"],
+                "lambda_lo": model_configs[gen_model]["lambda_lo"],
+                "lambda_hi": model_configs[gen_model]["lambda_hi"],
+                "draw": False,
+                "n_samples": samples,
+                "base_dataset": dataset,
+                "plot": True,
+                "target": logp_stats[dataset]["mean"] * target_multiplier,
+                "epsilon": 0.25 * logp_stats[dataset]["std"],
+            }
+            os.environ["GEN_MODEL"] = gen_model
+            os.environ["CLASSIFIER"] = classifier
+            res = eval_cond_gen(cfg=cfg, decoder_settings=decoder_settings)

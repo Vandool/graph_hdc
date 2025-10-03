@@ -1694,10 +1694,11 @@ class ConditionalGINLateFiLM(pl.LightningModule):
 
         :returns: Loss value for the current training step
         """
-        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
-        target = batch.y.float()  # [B]
+        g, _, k, idx = batch
+        logits = self(g)["graph_prediction"].squeeze(-1).float()  # [B]
+        target = g.y.float()  # [B]
         loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
-        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
+        batch_size = int(getattr(g, "num_graphs", g.y.size(0)))
         self.log(
             "loss",
             loss,
@@ -1707,13 +1708,20 @@ class ConditionalGINLateFiLM(pl.LightningModule):
             logger=True,
             batch_size=batch_size,
         )
-        return loss
+        return {
+            "loss": loss,
+            "logits": logits.detach(),
+            "y": target,
+            "k": None if k is None else torch.as_tensor(k),
+            "idx": None if idx is None else torch.as_tensor(idx),
+        }
 
     def validation_step(self, batch, batch_idx):
-        logits = self(batch)["graph_prediction"].squeeze(-1).float()  # [B]
-        target = batch.y.float()  # [B]
+        g, _, _, _= batch
+        logits = self(g)["graph_prediction"].squeeze(-1).float()  # [B]
+        target = g.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
-        batch_size = int(getattr(batch, "num_graphs", batch.y.size(0)))
+        batch_size = int(getattr(g, "num_graphs", g.y.size(0)))
         self.log("val_loss", val_loss, prog_bar=True, logger=True, batch_size=batch_size, on_epoch=True)
         return val_loss
 

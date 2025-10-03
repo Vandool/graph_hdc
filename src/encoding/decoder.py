@@ -803,6 +803,7 @@ def greedy_oracle_decoder_voter_oracle(
     strict: bool = True,
     use_pair_feasibility: bool = False,
     activate_guard: bool = True,
+    oracle_threshold: float | None = None,  # noqa: ARG001
 ) -> tuple[list[nx.Graph], bool]:
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)

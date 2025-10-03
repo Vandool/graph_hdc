@@ -115,7 +115,7 @@ class Generator:
         def _row_norm(x: torch.Tensor, dim: int, eps: float = 1e-8) -> torch.Tensor:
             return x / (x.norm(dim=dim, keepdim=True) + eps)
 
-        # --- important: iterate by requested index, not dict.values() ---
+        # --- important: iterate by requested index---
         for i in range(n_samples):
             full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
             if full_ctr is None or sum(full_ctr.values()) == 0:
