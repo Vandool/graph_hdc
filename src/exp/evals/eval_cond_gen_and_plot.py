@@ -11,8 +11,6 @@ import normflows as nf
 import numpy as np
 import pandas as pd
 import torch
-from matplotlib import pyplot as plt
-from matplotlib.lines import Line2D
 from pytorch_lightning import seed_everything
 from tqdm.auto import tqdm
 
@@ -26,6 +24,7 @@ from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
+from src.utils.visualisations import plot_logp_kde
 
 # keep it modest to avoid oversubscription; tune if needed
 num = max(1, min(8, os.cpu_count() or 1))
@@ -341,139 +340,25 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
                     draw_mol(mol=mol, save_path=out, fmt="png")
 
     if cfg.get("plot", False):
+        ds = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
+        lp = np.array(ds.logp.tolist())
         # --- dataset stats ---
-
-        dataset = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
-        logp_list = np.array([d.logp.item() for d in dataset], dtype=float)
-        ds_summary = stats(logp_list)
-
-        gen_summary = (
-            stats(logp_gen_list) if logp_gen_list.size else {"min": 0, "max": 0, "mean": 0.0, "median": 0.0, "std": 0.0}
+        plot_logp_kde(
+            dataset=base_dataset,
+            lp=lp,
+            lg=logp_gen_list,
+            evals=evals,
+            out=(base_dir / f"logp_overlay_{target:.3f}.png"),
+            description=f"Classifier ({os.getenv('CLASSIFIER')}",
         )
-
-        # --- histogram settings (aligned bins, density) ---
-        # Extend range slightly so edges aren't cramped
-        xmin = float(min(logp_list.min(), logp_gen_list.min() if logp_gen_list.size else logp_list.min())) - 0.25
-        xmax = float(max(logp_list.max(), logp_gen_list.max() if logp_gen_list.size else logp_list.max())) + 0.25
-
-        n_bins_ds = 100
-        n_bins_gen = 50
-        bins_ds = np.linspace(xmin, xmax, n_bins_ds + 1)
-        bins_gen = np.linspace(xmin, xmax, n_bins_gen + 1)
-
-        # --- simple Gaussian smoothing for prettier curves (no extra deps) ---
-        def smooth_hist(y, sigma_bins=2.0):
-            if len(y) < 3:
-                return y
-            # discrete Gaussian kernel over bin indices
-            radius = int(max(1, round(3 * sigma_bins)))
-            xk = np.arange(-radius, radius + 1)
-            kernel = np.exp(-0.5 * (xk / float(sigma_bins)) ** 2)
-            kernel /= kernel.sum()
-            return np.convolve(y, kernel, mode="same")
-
-        # compute densities
-        ds_counts, ds_edges = np.histogram(logp_list, bins=bins_ds, density=True)
-        ds_centers = 0.5 * (ds_edges[:-1] + ds_edges[1:])
-        ds_smooth = smooth_hist(ds_counts, sigma_bins=2.0)
-
-        if logp_gen_list.size:
-            gen_counts, gen_edges = np.histogram(logp_gen_list, bins=bins_gen, density=True)
-            gen_centers = 0.5 * (gen_edges[:-1] + gen_edges[1:])
-            gen_smooth = smooth_hist(gen_counts, sigma_bins=1.5)
-        else:
-            gen_counts = np.array([])
-            gen_centers = np.array([])
-            gen_smooth = np.array([])
-
-        # --- figure layout: bigger plot area, compact table below ---
-        fig = plt.figure(figsize=(11, 6))
-        gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[7, 2], hspace=0.28)
-        ax = fig.add_subplot(gs[0, 0])
-
-        # Background dataset: soft fill + smooth curve
-        ax.hist(
-            logp_list, bins=bins_ds, density=True, histtype="stepfilled", alpha=0.25, label="_nolegend_"
-        )  # exclude from legend
-        ax.plot(ds_centers, ds_smooth, linewidth=1.5, label="_nolegend_")  # dataset smooth
-
-        # Generated overlay: step bars + smooth curve
-        if logp_gen_list.size:
-            ax.hist(logp_gen_list, bins=bins_gen, density=True, histtype="step", linewidth=2.0, label="_nolegend_")
-            ax.plot(gen_centers, gen_smooth, linewidth=2.0, label="_nolegend_")
-
-        # Target band (±epsilon)
-        ax.axvspan(target - epsilon, target + epsilon, alpha=0.10, label="_nolegend_")
-        # annotate target beneath x-axis for clarity
-        ax.annotate(
-            f"target={target:.2f} ± {epsilon:.2f}",
-            xy=(target, 0),
-            xycoords=("data", "axes fraction"),
-            xytext=(0, -20),
-            textcoords="offset points",
-            ha="center",
-            va="top",
-        )
-
-        # Labels & limits
-        ax.set_xlim(xmin, xmax)
-        ax.set_ylabel("Density")
-        ax.set_xlabel("cLogP (RDKit)")
-        ax.set_title(
-            f"cLogP Distribution — {base_dataset.upper()} vs Generated - {os.getenv('CLASSIFIER')} (n={len(logp_gen_list)})"
-        )
-
-        # Legend via proxies (avoid patch legend bugs)
-
-        legend_handles = [
-            Line2D([0], [0], linewidth=1.5, linestyle="-", label=f"{base_dataset.upper()} train (smoothed)"),
-            Line2D([0], [0], linewidth=2.0, linestyle="-", label="Generated (smoothed)"),
-        ]
-        if logp_gen_list.size:
-            ax.legend(handles=legend_handles, loc="upper right")
-
-        # --- selective table (no clutter) ---
-        # Pull key eval metrics (fall back gracefully if missing)
-        getf = lambda k, dflt=np.nan: evals.get(k, dflt)
-        table_rows = [
-            ("validity", f"{getf('validity'):.3f}"),
-            ("epsilon", f"{getf('epsilon'):.3f}"),
-            ("success@eps", f"{getf('success@eps'):.3f}"),
-            ("final_success@eps", f"{getf('final_success@eps'):.3f}"),
-            ("mae_to_target", f"{getf('mae_to_target'):.3f}"),
-            ("uniq_overall", f"{getf('uniqueness_overall'):.3f}"),
-            ("novelty_overall", f"{getf('novelty_overall'):.3f}"),
-            ("diversity_hits", f"{getf('diversity_hits'):.3f}"),
-            ("gen_mean±std", f"{gen_summary['mean']:.2f} ± {gen_summary['std']:.2f}"),
-            ("dataset_mean±std", f"{ds_summary['mean']:.2f} ± {ds_summary['std']:.2f}"),
-            ("n_samples", f"{int(getf('n_samples', len(logp_gen_list)))}"),
-        ]
-
-        ax_tbl = fig.add_subplot(gs[1, 0])
-        ax_tbl.axis("off")
-        table = ax_tbl.table(
-            cellText=[(k, v) for k, v in table_rows],
-            colLabels=["Metric", "Value"],
-            loc="center",
-            cellLoc="left",
-        )
-        table.auto_set_font_size(False)
-        table.set_fontsize(9)
-        table.scale(1.0, 1.1)
-
-        # Save + show
-        out_path = base_dir / f"logp_overlay_{target:.3f}.png"
-        plt.tight_layout()
-        plt.savefig(out_path, dpi=150)
-        plt.show()
 
     return results
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Real NVP V2 - HPO")
+    p = argparse.ArgumentParser(description="Generate conditional samples from a trained model with plots.")
     p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=10)
     args = p.parse_args()
     logp_stats = {
         "qm9": {

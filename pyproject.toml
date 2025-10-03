@@ -52,6 +52,7 @@ optuna-integration = "*"
 botorch            = "*"
 gpytorch           = "*"
 setuptools         = "*"
+altair-all         = "*"
 
 [tool.pixi.pypi-dependencies]
 graph_hdc        = { path = ".", editable = true }

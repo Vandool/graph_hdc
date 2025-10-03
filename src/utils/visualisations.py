@@ -1,10 +1,15 @@
+import contextlib
 from collections.abc import Sequence
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 
 import matplotlib.pyplot as plt
 import networkx as nx
-import contextlib
+import numpy as np
+import seaborn as sns
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 # ──────────────────────────────────────────────────────────────────────────────
 ATOM_TYPES = ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"]
@@ -398,6 +403,123 @@ def draw_nx_with_atom_colorings(
     if created_fig:
         plt.tight_layout()
     return ax
+
+
+def plot_logp_kde(
+    dataset: str,
+    lp: np.ndarray,
+    lg: np.ndarray,
+    out: Path,
+    description: str | None = None,
+    *,
+    bw_adjust: float = 0.9,
+    figsize: tuple = (8, 5.5),
+    evals: dict | None = None,
+) -> None:
+    """
+    Plot KDEs of dataset logP and generated logP with μ/±σ markers, and shade μ(gen)±ε
+    where ε = 0.25 * std(dataset). Saves figure to 'out' and returns None.
+    """
+    # stats
+    mean_ds, std_ds = lp.mean(), lp.std(ddof=1)
+    mean_gen, std_gen = lg.mean(), lg.std(ddof=1)
+    eps = 0.25 * std_ds
+    low, high = mean_gen - eps, mean_gen + eps
+    pct_in_band = np.logical_and(lg >= low, lg <= high).mean() * 100.0
+
+    # style
+    sns.set_style("ticks")
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # KDEs
+    sns.kdeplot(lp, fill=True, color="lightgrey", alpha=0.55, linewidth=0, bw_adjust=bw_adjust, ax=ax)
+    sns.kdeplot(lg, fill=True, color="steelblue", alpha=0.85, linewidth=0, bw_adjust=bw_adjust, ax=ax)
+
+    # dataset μ (no ±σ lines)
+    ax.axvline(mean_ds, color="grey", linestyle="--", linewidth=1.4, zorder=5)
+
+    # generated μ and ±σ
+    ax.axvline(mean_gen, color="steelblue", linestyle="--", linewidth=1.8, zorder=6)
+    ax.axvline(mean_gen - std_gen, color="steelblue", linestyle=":", linewidth=1.2, zorder=6)
+    ax.axvline(mean_gen + std_gen, color="steelblue", linestyle=":", linewidth=1.2, zorder=6)
+
+    # ε-band around μ(gen)
+    ax.axvspan(low, high, color="steelblue", alpha=0.18, zorder=4)
+
+    # labels
+    ax.set_xlabel("logP", fontsize=12)
+    ax.set_ylabel("Density", fontsize=12)
+    sns.despine()
+    fig.tight_layout()
+
+    # legend (concise but informative)
+    legend_elements = [
+        Patch(facecolor="lightgrey", edgecolor="none", alpha=0.55, label=f"{dataset} KDE (n={lp.size})"),
+        Patch(facecolor="steelblue", edgecolor="none", alpha=0.85, label=f"Generated KDE (n={lg.size})"),
+        Line2D([0], [0], color="grey", linestyle="--", linewidth=1.4, label=f"μ {dataset} = {mean_ds:.2f}"),
+        Line2D([0], [0], color="steelblue", linestyle="--", linewidth=1.8, label=f"μ gen = {mean_gen:.2f}"),
+        Line2D([0], [0], color="steelblue", linestyle=":", linewidth=1.2, label=f"±σ gen (σ={std_gen:.2f})"),
+        Patch(facecolor="steelblue", alpha=0.18, label=f"μ(gen)±ε, ε=0.25·σ({dataset})={eps:.2f}"),
+    ]
+
+    ax.legend(
+        handles=legend_elements,
+        frameon=False,
+        ncol=1,  # single column
+        fontsize=10,
+        loc="upper left",  # position in plot
+        bbox_to_anchor=(0.01, 0.99),  # anchor inside figure
+        borderaxespad=0.5,
+    )
+
+    # Title / header
+    title = "Conditional LogP Generation"
+    if description:
+        title += f" - {description}"
+    ax.set_title(title, fontsize=13, pad=12)
+
+    # Add evals
+    def getf(k, dflt=np.nan):
+        return evals.get(k, dflt)
+
+    table_rows = (
+        [
+            ("validity", f"{getf('validity'):.3f}"),
+            ("final_success@eps", f"{getf('final_success@eps'):.3f}"),
+            ("mae_to_target", f"{getf('mae_to_target'):.3f}"),
+            ("uniq_overall", f"{getf('uniqueness_overall'):.3f}"),
+            ("novelty_overall", f"{getf('novelty_overall'):.3f}"),
+            ("diversity_hits", f"{getf('diversity_hits'):.3f}"),
+        ]
+        if evals
+        else []
+    )
+
+    # Stats box (bottom-left inside plot)
+    box_lines = [
+        f"{dataset}:    μ={mean_ds:.2f}, σ={std_ds:.2f}",
+        f"gen:  μ={mean_gen:.2f}, σ={std_gen:.2f}",
+        f"in μ(gen)±ε:  {pct_in_band:.1f}%",
+        "",  # blank line before metrics
+    ]
+    box_lines += [f"{k}: {v}" for k, v in table_rows]
+
+    ax.text(
+        0.02,
+        0.05,
+        "\n".join(box_lines),
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=10,
+        color="steelblue",
+        bbox={"facecolor": "white", "edgecolor": "steelblue", "boxstyle": "round,pad=0.35", "alpha": 0.85},
+    )
+
+    # save
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
