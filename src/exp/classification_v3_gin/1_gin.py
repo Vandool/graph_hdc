@@ -4,6 +4,7 @@ import enum
 import itertools
 import json
 import os
+import pickle
 import random
 import shutil
 import string
@@ -38,7 +39,7 @@ from sklearn.metrics import (
 from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Batch, Data
 from torch_geometric.loader import DataLoader as GeoDataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 # === BEGIN NEW ===
 from src.datasets.qm9_pairs import QM9Pairs
@@ -312,17 +313,25 @@ class EpochResamplingSampler(Sampler[int]):
 
     def __iter__(self):
         seed = self.base_seed + self._epoch
+
         if self._epoch == 0 or self.dm.p_target_k is None:
-            # epoch 0 (or before callback fires): your original per-parent policy
-            idxs = stratified_per_parent_indices_with_type_mix(
-                ds=self.ds,
-                pos_per_parent=self.p,
-                neg_per_parent=self.n,
-                type_mix=self.type_mix,
-                balance_k2=self.balance_k2,
-                exclude_neg_types=self.exclude,
-                seed=seed,
-            )
+            # First check the cache, if we already have the indices for this setup, then skip the rest
+            cache_path = self.ds.cache_dir / f"indices_p{self.p}-n{self.n}-seed{seed}.npy"
+            if cache_path.exists():
+                print(f"[EpochResampling Cache Hit] Loading indices from {cache_path}")
+                idxs = np.load(cache_path).tolist()
+            else:
+                idxs = stratified_per_parent_indices_with_type_mix(
+                    ds=self.ds,
+                    pos_per_parent=self.p,
+                    neg_per_parent=self.n,
+                    type_mix=self.type_mix,
+                    balance_k2=self.balance_k2,
+                    exclude_neg_types=self.exclude,
+                    seed=seed,
+                )
+                np.save(cache_path, np.array(idxs, dtype=np.int32))
+                print(f"[EpochResampling] Saved indices: {cache_path!s}")
         else:
             log(f"Resampling from hard poll with alpha: {self.dm.alpha} - prob. of sampling from the hard pool")
             idxs = self._sample_k_stratified_indices(seed=seed)
@@ -465,19 +474,11 @@ class PairsDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         log("Loading pair datasets …")
         if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
-            if self.is_dev:
-                self.train_full = QM9Pairs(split="test", base_dataset=QM9Smiles(split="test"))
-                self.valid_full = self.train_full
-            else:
-                self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)
-                self.valid_full = QM9Pairs(split="valid", base_dataset=QM9Smiles(split="valid"), dev=self.is_dev)
+            self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)
+            self.valid_full = QM9Pairs(split="valid", base_dataset=QM9Smiles(split="valid"), dev=self.is_dev)
         elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
-            if self.is_dev:
-                self.train_full = ZincPairsV3(split="test", base_dataset=ZincSmiles(split="test"))
-                self.valid_full = self.train_full
-            else:
-                self.train_full = ZincPairsV3(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
-                self.valid_full = ZincPairsV3(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
+            self.train_full = ZincPairsV3(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
+            self.valid_full = ZincPairsV3(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
         log(
             f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}"
         )
@@ -486,18 +487,42 @@ class PairsDataModule(pl.LightningDataModule):
         self._valid_indices = balanced_indices_for_validation(ds=self.valid_full, seed=cfg.seed)
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
-        # Iterate train_full once (no encoding) to record k and y cheaply
-        for idx in tqdm(range(len(self.train_full)), desc="Indexing train_full"):
-            item = self.train_full[idx]
-            k = int(item.k.view(-1)[0].item())
-            y = int(item.y.view(-1)[0].item())
-            self.base_counts_k[k] += 1
-            self.base_index_by_k_label[(k, y)].append(idx)
+        dev_tag = "_dev" if self.is_dev else ""
+        cache_path = self.train_full.cache_dir / f"pairs_cache{dev_tag}.npz"
+        pkl_path = self.train_full.cache_dir / f"pairs_cache{dev_tag}.pkl"
 
-        self.y_by_idx = np.zeros(len(self.train_full), dtype=np.int8)
-        for idx in range(len(self.train_full)):
-            item = self.train_full[idx]
-            self.y_by_idx[idx] = int(item.y.view(-1)[0].item())
+        if cache_path.exists() and pkl_path.exists():
+            log(f"Loading cached indexing from {cache_path}")
+            self.y_by_idx = np.load(cache_path)["y_by_idx"]
+            with pkl_path.open("rb") as f:
+                data = pickle.load(f)
+            self.base_counts_k = data["base_counts_k"]
+            self.base_index_by_k_label = defaultdict(list, data["base_index_by_k_label"])
+
+        else:
+            log("Indexing train_full (first run, this will take a while)…")
+            self.base_counts_k = Counter()
+            self.base_index_by_k_label = defaultdict(list)
+            self.y_by_idx = np.zeros(len(self.train_full), dtype=np.int8)
+
+            for idx in tqdm(range(len(self.train_full)), desc="Indexing train_full"):
+                item = self.train_full[idx]
+                k = int(item.k.view(-1)[0].item())
+                y = int(item.y.view(-1)[0].item())
+                self.base_counts_k[k] += 1
+                self.base_index_by_k_label[(k, y)].append(idx)
+                self.y_by_idx[idx] = y
+
+            # save results
+            np.savez(cache_path, y_by_idx=self.y_by_idx)
+            with pkl_path.open("wb") as f:
+                pickle.dump(
+                    {
+                        "base_counts_k": self.base_counts_k,
+                        "base_index_by_k_label": self.base_index_by_k_label,
+                    },
+                    f,
+                )
 
         # targets updated by HardMiningCallback
         self.hard_pool = None
@@ -517,7 +542,7 @@ class PairsDataModule(pl.LightningDataModule):
             p_per_parent=self.cfg.p_per_parent,
             n_per_parent=self.cfg.n_per_parent,
             exclude_neg_types=self.cfg.exclude_negs,
-            base_seed=self.cfg.seed + hash(self.cfg.exp_dir_name) % 100,
+            base_seed=self.cfg.seed,
         )
 
         return GeoDataLoader(
@@ -1298,8 +1323,8 @@ if __name__ == "__main__":
             pin_memory=True,
             continue_from=None,
             resume_retrain_last_epoch=False,
-            p_per_parent=1,
-            n_per_parent=1,
+            p_per_parent=20,
+            n_per_parent=20,
             resample_training_data_on_batch=True,
         )
     else:

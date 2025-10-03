@@ -17,7 +17,6 @@ import random
 from collections.abc import Sequence
 from pathlib import Path
 
-
 import networkx as nx
 import torch
 from torch import Tensor
@@ -27,7 +26,7 @@ from tqdm.auto import tqdm
 
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.decoder import is_induced_subgraph_by_features
-from src.utils.utils import DataTransformer, GLOBAL_DATASET_PATH
+from src.utils.utils import GLOBAL_DATASET_PATH, DataTransformer
 
 
 # ────────────────────────────── utilities (graph I/O) ─────────────────────────
@@ -108,7 +107,6 @@ def is_induced_subgraph_feature_aware_cheap(G_small: nx.Graph, G_big: nx.Graph) 
     nm = lambda a, b: a["label"] == b["label"]
     GM = nx.algorithms.isomorphism.GraphMatcher(G_big, G_small, node_match=nm)
     return GM.subgraph_is_isomorphic()
-
 
 
 def node_label(G: nx.Graph, v: int) -> tuple[int, ...]:
@@ -287,12 +285,15 @@ def sample_connected_kset_with_anchor(
     # All attempts failed: either unlucky sampling or anchor's component < k.
     return None
 
+
 # ---------- helpers for k==2 (feature-pair reps) ----------
 def _feat_tuple(G: nx.Graph, n: int) -> tuple[int, int, int, int]:
     return G.nodes[n]["label"]
 
+
 def _norm_pair(a: tuple, b: tuple) -> tuple[tuple, tuple]:
     return (a, b) if a <= b else (b, a)
+
 
 def distinct_edge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tuple[int, int]]:
     rep = {}
@@ -301,6 +302,7 @@ def distinct_edge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tuple[
         if key not in rep:
             rep[key] = (u, v)
     return rep
+
 
 def distinct_nonedge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tuple[int, int]]:
     # nodes grouped by feature
@@ -312,6 +314,7 @@ def distinct_nonedge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tup
 
     out = {}
     from itertools import combinations_with_replacement
+
     for fa, fb in combinations_with_replacement(feat_list, 2):
         key = _norm_pair(fa, fb)
         if key in edge_keys:
@@ -326,14 +329,18 @@ def distinct_nonedge_feature_pairs(G: nx.Graph) -> dict[tuple[tuple, tuple], tup
                 for j in range(i + 1, len(A)):
                     u, v = A[i], A[j]
                     if not G.has_edge(u, v):
-                        found = (u, v); break
-                if found: break
+                        found = (u, v)
+                        break
+                if found:
+                    break
         else:
             for u in A:
                 for v in B:
                     if not G.has_edge(u, v):
-                        found = (u, v); break
-                if found: break
+                        found = (u, v)
+                        break
+                if found:
+                    break
         if found:
             out[key] = found
     return out
@@ -380,8 +387,8 @@ class ZincPairV3Config:
     # budgets (k > 2)
     pos_per_k_main = 4
     neg_per_pos_main = 5  # ↑ was 2
-    pos_per_k_tail = 2 # Not relvant for QM9
-    neg_per_pos_tail = 3 # Not relevant for QM9
+    pos_per_k_tail = 2  # Not relvant for QM9
+    neg_per_pos_tail = 3  # Not relevant for QM9
 
     # enable families
     neg_forbidden_add = True
@@ -413,6 +420,7 @@ class ZincPairV3Config:
 
 
 from enum import IntEnum
+
 
 class PairType(IntEnum):
     r"""
@@ -457,6 +465,7 @@ class PairType(IntEnum):
 
 # Optional: convenient reverse lookup for logging/summaries.
 NEG_TYPE_NAME = {t.value: t.name for t in PairType}
+
 
 class ZincPairsV3(Dataset):
     """
@@ -513,6 +522,12 @@ class ZincPairsV3(Dataset):
 
         # LRU cache for shard tensors
         self._cache = collections.OrderedDict()
+
+    @property
+    def cache_dir(self) -> Path:
+        cache_dir = Path(self.root / "cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
 
     @property
     def raw_file_names(self):
@@ -875,7 +890,7 @@ class ZincPairsV3(Dataset):
             for k in k_iter:
                 if k == 2:
                     # ---- POSITIVES: one per distinct edge feature-pair ----
-                    pos_map = distinct_edge_feature_pairs(G)   # {featpair: (u,v)}
+                    pos_map = distinct_edge_feature_pairs(G)  # {featpair: (u,v)}
                     pos_keys = sorted(pos_map.keys())
                     num_pos = 0
                     for key in pos_keys:
@@ -917,7 +932,7 @@ class ZincPairsV3(Dataset):
                                 neg_type=torch.tensor([PairType.NEGATIVE_EDGE], dtype=torch.long),
                                 parent_idx=torch.tensor([parent_idx], dtype=torch.long),
                             )
-                        continue # k == 2 over
+                        continue  # k == 2 over
 
                 # -------- pick budgets for this k (main vs tail) --------
                 is_tail = k > k_cap

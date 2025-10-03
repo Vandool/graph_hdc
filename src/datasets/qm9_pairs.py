@@ -510,6 +510,12 @@ class QM9Pairs(Dataset):
         self._cache = collections.OrderedDict()
 
     @property
+    def cache_dir(self) -> Path:
+        cache_dir = Path(self.root / "cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    @property
     def raw_file_names(self):
         return [f"depends_on_{type(self.base).__name__}.marker"]
 
