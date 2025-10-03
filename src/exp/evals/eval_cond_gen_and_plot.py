@@ -367,7 +367,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Generate conditional samples from a trained model with plots.")
     p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=10)
+    p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
     logp_stats = {
         "qm9": {
@@ -382,7 +382,7 @@ if __name__ == "__main__":
     model_configs = {
         "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an": {
             "lr": 0.0001535528683888,
-            "steps": 100,
+            "steps": 1492,
             "scheduler": "cosine",
             "lambda_lo": 0.0001840899208055,
             "lambda_hi": 0.0052054096619994,
@@ -394,7 +394,6 @@ if __name__ == "__main__":
         "expand_on_n_anchors": 9,
     }
     n_samples = args.n_samples
-    dataset = args.dataset
     for target_multiplier in [1, 2, 3, 4]:
         for (
             dataset,
@@ -403,19 +402,19 @@ if __name__ == "__main__":
             samples,
         ) in [
             (
-                dataset,
+                args.dataset,
                 "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
                 "BAH_med_hardpool_qm9",
                 n_samples,
             ),
             (
-                dataset,
+                args.dataset,
                 "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
                 "SIMPLE_VOTER",
                 n_samples,
             ),
             (
-                dataset,
+                args.dataset,
                 "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
                 "gin-f_baseline_qm9_resume",
                 n_samples,
