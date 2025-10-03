@@ -223,7 +223,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     # n, g = gen_model.split(hdc)
 
     decoder_settings = {
-        "beam_size": 4,
+        "beam_size": 512,
         "use_pair_feasibility": True,
         "expand_on_n_anchors": 9,
     }
