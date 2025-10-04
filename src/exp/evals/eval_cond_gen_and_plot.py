@@ -23,7 +23,7 @@ from src.generation.generation import Generator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
 from src.utils.visualisations import plot_logp_kde
 
 # keep it modest to avoid oversubscription; tune if needed
@@ -37,8 +37,8 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 
 seed = 42
 seed_everything(seed)
-# device = pick_device()
-device = torch.device("cpu")
+device = pick_device()
+# device = torch.device("cpu")
 EVALUATOR = None
 HDC_Y_REUSE: dict[tuple[str, float], Any] = {}
 
@@ -389,12 +389,18 @@ if __name__ == "__main__":
         }
     }
     decoder_settings = {
-        "beam_size": 512,
+        "beam_size": 128,
         "use_pair_feasibility": True,
         "expand_on_n_anchors": 9,
+        "trace_back_settings": {
+            "beam_size_multiplier": 2,
+            "trace_back_attempts": 3,
+            "trace_back_to_last_nth_iter": 1,
+            "agitated_rounds": 1,  # how many rounds after applying trace back keep the beam size larger
+        },
     }
     n_samples = args.n_samples
-    for target_multiplier in [0, 1, 2, 3, 4]:
+    for target_multiplier in [0, 1, -1, 2, -2, 3, -3]:
         for (
             dataset,
             gen_model,

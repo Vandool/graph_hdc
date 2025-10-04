@@ -164,7 +164,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     lpr_path = get_lpr(
         hint="lpr_zinc_h768-768-128_actsilu_nmbn_dp0.181982_bs288_lr0.000102926_wd0.0001_dep3_h1768_h2768_h3128_h4160"
     )
-    print(lpr_path)
+    print(f"LPR Checkpoint: {lpr_path}")
     logp_regressor = LogPRegressor.load_from_checkpoint(lpr_path, map_location=device, strict=True)
 
     gen_model.eval()
