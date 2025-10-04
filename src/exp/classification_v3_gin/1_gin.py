@@ -52,7 +52,7 @@ from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hyp
 from src.encoding.the_types import VSAModel
 from src.utils.registery import ModelType, resolve_model
 from src.utils.sampling import balanced_indices_for_validation, stratified_per_parent_indices_with_type_mix
-from src.utils.utils import GLOBAL_MODEL_PATH, pick_device, str2bool
+from src.utils.utils import GLOBAL_MODEL_PATH, str2bool
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
@@ -198,6 +198,7 @@ class EpochResamplingSampler(Sampler[int]):
         p_per_parent,
         n_per_parent,
         type_mix=None,
+        batch_size: int,
         exclude_neg_types=(),
         base_seed=42,
         balance_k2=True,
@@ -210,6 +211,7 @@ class EpochResamplingSampler(Sampler[int]):
         self.exclude = {int(t) for t in exclude_neg_types}
         self.base_seed = base_seed
         self.balance_k2 = balance_k2
+        self.batch_size = batch_size
         self._epoch = 0
         self._last_len = 0
 
@@ -308,7 +310,7 @@ class EpochResamplingSampler(Sampler[int]):
                 break
             out.append(v)
 
-        # keep order random; no sorting; also no de-dup needed since we pop w/o replacement
+        out.sort()
         return out
 
     def __iter__(self):
@@ -335,6 +337,8 @@ class EpochResamplingSampler(Sampler[int]):
         else:
             log(f"Resampling from hard poll with alpha: {self.dm.alpha} - prob. of sampling from the hard pool")
             idxs = self._sample_k_stratified_indices(seed=seed)
+            # idxs = bucketize_by_size(self.ds, idxs, bucket_width=8)
+
             pos = int(sum(self.dm.y_by_idx[i] for i in idxs))
             total = len(idxs)
             neg = total - pos
@@ -549,6 +553,7 @@ class PairsDataModule(pl.LightningDataModule):
             n_per_parent=self.cfg.n_per_parent,
             exclude_neg_types=self.cfg.exclude_negs,
             base_seed=self.cfg.seed,
+            batch_size=self.cfg.batch_size,
         )
 
         return GeoDataLoader(
