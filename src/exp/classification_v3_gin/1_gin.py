@@ -52,7 +52,7 @@ from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hyp
 from src.encoding.the_types import VSAModel
 from src.utils.registery import ModelType, resolve_model
 from src.utils.sampling import balanced_indices_for_validation, stratified_per_parent_indices_with_type_mix
-from src.utils.utils import GLOBAL_MODEL_PATH, str2bool
+from src.utils.utils import GLOBAL_MODEL_PATH, pick_device, str2bool
 
 with contextlib.suppress(RuntimeError):
     mp.set_sharing_strategy("file_system")
