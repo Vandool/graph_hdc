@@ -8,8 +8,9 @@ import networkx as nx
 import torch
 from networkx import Graph
 from torch_geometric.data import Batch
+from tqdm.auto import tqdm
 
-from src.encoding.configs_and_constants import DatasetConfig, QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG, DatasetConfig
 from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
@@ -119,7 +120,7 @@ class Generator:
             return x / (x.norm(dim=dim, keepdim=True) + eps)
 
         # --- important: iterate by requested index---
-        for i in range(n_samples):
+        for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
             full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
             if full_ctr is None or sum(full_ctr.values()) == 0:
                 print("[WARNING] full ctr is None or empty.")
