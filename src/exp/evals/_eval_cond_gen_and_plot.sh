@@ -44,7 +44,7 @@ EXP_NAME="Cond Gen and Plot ${DATASET}"
 PY_ARGS=(
   "$SCRIPT"
   --dataset "$DATASET"
-  --n_samples "N_SAMPLES"
+  --n_samples "$N_SAMPLES"
 )
 
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
