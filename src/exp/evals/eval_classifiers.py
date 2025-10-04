@@ -11,7 +11,7 @@ from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import SupportedDataset
 from src.encoding.decoder import (
-    greedy_oracle_decoder_trace_back_dyname_beam_size,
+    greedy_oracle_decoder_faster,
     is_induced_subgraph_by_features,
 )
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
@@ -71,7 +71,7 @@ def is_final_graph(G_small: nx.Graph, G_big: nx.Graph) -> bool:
 
 
 start = 0
-end = 100
+end = 10
 batch_size = end - start
 seed = 42
 seed_everything(seed)
@@ -80,7 +80,9 @@ use_best_threshold = True
 
 results: dict[str, str] = {}
 # Iterate all the checkpoints
-files = list(find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "zinc")))
+files = list(
+    find_files(start_dir=GLOBAL_MODEL_PATH, prefixes=("epoch",), skip_substrings=("nvp", "lpr", "hypernet", "qm9"))
+)
 print(f"Found {len(files)} checkpoints.")
 for ckpt_path in files:
     print(f"File Name: {ckpt_path}")
@@ -95,7 +97,7 @@ for ckpt_path in files:
     last = epoch_metrics.iloc[-1].add_suffix("_last")
 
     oracle_setting = {
-        "beam_size": 8,
+        "beam_size": 4,
         "oracle_threshold": best["val_best_thr_best"] if use_best_threshold else 0.5,
         "strict": False,
         "use_pair_feasibility": False,
@@ -150,6 +152,7 @@ for ckpt_path in files:
     correct_decoded = []
     print(f"Starting oracle decoding... for {ckpt_path}\n\tDataset: {ds.value}")
     start_t = time.perf_counter()
+    reached_the_ends = 0
     for i, batch in enumerate(dataloader):
         # Encode the whole graph in one HV
         encoded_data = hypernet.forward(batch)
@@ -164,16 +167,26 @@ for ckpt_path in files:
             # print("================================================")
             full_graph_nx = DataTransformer.pyg_to_nx(data=datas[g])
             node_multiset = DataTransformer.get_node_counter_from_batch(batch=g, data=batch)
-            nx_GS, _ = greedy_oracle_decoder_trace_back_dyname_beam_size(
+            tb_settings = {
+                "beam_size_multiplier": 2,
+                "trace_back_attempts": 3,
+                "trace_back_to_last_nth_iter": 1,
+                "agitated_rounds": 1,  # how many rounds after applying trace back keep the beam size larger
+            }
+            nx_GS, reached_the_end = greedy_oracle_decoder_faster(
                 node_multiset=node_multiset,
                 oracle=oracle,
                 full_g_h=graph_terms_hd[g],
+                skip_n_nodes=15 if dataset_base == "qm9" else 70,
+                trace_back_settings=tb_settings,
                 **oracle_setting,
             )
             nx_GS = list(filter(None, nx_GS))
             if len(nx_GS) == 0:
                 y.append(0)
                 continue
+
+            reached_the_ends += int(reached_the_end)
 
             sub_g_ys = [0]
             for i, g in enumerate(nx_GS):
@@ -195,11 +208,11 @@ for ckpt_path in files:
     run_metrics = {
         "path": "/".join(ckpt_path.parts[-4:]),
         "model_type": f"{model_type}",
-        "back_tracing": True,
+        "back_tracing": tb_settings.get("trace_back_attempts") > 0,
         "dataset": ds.value,
         "num_eval_samples": batch_size,
         "time_per_sample": (time.perf_counter() - start_t) / batch_size,
-        **oracle_setting,
+        "reached_the_end": 100 * (reached_the_ends / batch_size),
         "oracle_acc": acc,
         **best.to_dict(),
         **last.to_dict(),

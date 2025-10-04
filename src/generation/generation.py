@@ -9,7 +9,7 @@ import torch
 from networkx import Graph
 from torch_geometric.data import Batch
 
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
+from src.encoding.configs_and_constants import DatasetConfig, QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
@@ -28,8 +28,8 @@ class Generator:
         self,
         gen_model: AbstractNFModel,
         oracle: Oracle | SimpleVoterOracle,
-        ds_config,
         decoder_settings: dict,
+        ds_config: DatasetConfig,
         device=None,
     ):
         device = torch.device("cpu") if device is None else device
@@ -45,6 +45,8 @@ class Generator:
             if isinstance(oracle, SimpleVoterOracle)
             else greedy_oracle_decoder_faster
         )
+        base_dataset = "zinc" if "zinc" in ds_config.name else "qm9"
+        self.decode_skip_n_nodes_threshold = 70 if base_dataset == "zinc" else 15
 
     def generate_all(
         self,
@@ -85,6 +87,7 @@ class Generator:
                 oracle=self.oracle,
                 full_g_h=graph_terms_hd[i],
                 strict=only_final_graphs,
+                skip_n_nodes=self.decode_skip_n_nodes_threshold,
                 **self.decoder_settings,
             )
             graphs_per_sample.append(candidates)

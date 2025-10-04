@@ -13,7 +13,7 @@ import torch
 from pytorch_lightning import seed_everything
 from tqdm.auto import tqdm
 
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import Generator
@@ -34,8 +34,19 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 seed = 42
 seed_everything(seed)
 device = pick_device()
-evaluator = GenerationEvaluator(base_dataset="qm9", device=device)
+# device = torch.device("cpu")
+EVALUATOR = None
 
+logp_stats = {
+    "qm9": {
+        "max": 3,
+        "mean": 0.30487121410781287,
+        "median": 0.27810001373291016,
+        "min": -5,
+        "std": 0.9661976604136703,
+    },
+    "zinc": {"max": 8, "mean": 2.457799800788871, "median": 2.60617995262146, "min": -6, "std": 1.4334213538628746},
+}
 
 def get_model_type(path: Path | str) -> registery.ModelType:
     res: registery.ModelType = "MLP"
@@ -105,7 +116,6 @@ def get_gen_model(hint: str) -> Path | None:
         start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2",
         prefixes=("epoch",),
         desired_ending=".ckpt",
-        skip_substrings=("zinc",),
     )
     for p in gen_paths:
         if hint in str(p):
@@ -118,7 +128,7 @@ def get_classifier(hint: str) -> Path | None:
         start_dir=GLOBAL_MODEL_PATH,
         prefixes=("epoch",),
         desired_ending=".ckpt",
-        skip_substrings=("zinc", "nvp"),
+        skip_substrings=("nvp", "lpr"),
     )
     for p in paths:
         if hint in str(p):
@@ -131,7 +141,6 @@ def get_lpr(hint: str) -> Path | None:
         start_dir=GLOBAL_MODEL_PATH / "lpr",
         prefixes=("epoch",),
         desired_ending=".ckpt",
-        skip_substrings=("zinc",),
     )
     for p in paths:
         if hint in str(p):
@@ -152,7 +161,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     )
 
     lpr_path = get_lpr(
-        hint="lpr_qm9_h1280-128-448_actlrelu_nmnone_dp0.00331757_bs480_lr0.000102482_wd3e-6_dep4_h11280_h2128_h3448_h496"
+        hint="lpr_zinc_h768-768-128_actsilu_nmbn_dp0.181982_bs288_lr0.000102926_wd0.0001_dep3_h1768_h2768_h3128_h4160"
     )
     print(lpr_path)
     logp_regressor = LogPRegressor.load_from_checkpoint(lpr_path, map_location=device, strict=True)
@@ -168,10 +177,10 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     logp_regressor.to(device)
 
     # ---- Hyperparams ----
-    base_dataset = cfg.get("base_dataset", "qm9")
+    base_dataset = cfg.get("base_dataset", "zinc")
     n_samples = cfg.get("n_samples", 100)
     latent_dim = gen_model.flat_dim
-    target = 0.0
+    target = logp_stats[base_dataset]["mean"] - logp_stats[base_dataset]["std"]
     lambda_hi = cfg.get("lambda_hi", 1e-2)
     lambda_lo = cfg.get("lambda_lo", 1e-4)
     steps = cfg.get("steps", 300)
@@ -185,7 +194,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     z = z.detach().requires_grad_(True)
     opt = torch.optim.Adam([z], lr=lr)
 
-    sched, sched_name = schedulers[cfg.get("scheduler")](steps=steps, lam_hi=lambda_hi, lam_lo=lambda_lo), "cosine"
+    sched = schedulers[cfg.get("scheduler")](steps=steps, lam_hi=lambda_hi, lam_lo=lambda_lo)
 
     min_loss = float("inf")
     # ---- Guidance loop ----
@@ -223,14 +232,20 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     # n, g = gen_model.split(hdc)
 
     decoder_settings = {
-        "beam_size": 512,
+        "beam_size": 4,
         "use_pair_feasibility": True,
-        "expand_on_n_anchors": 9,
+        "expand_on_n_anchors": 8,
+        "trace_back_settings": {
+            "beam_size_multiplier": 2,
+            "trace_back_attempts": 3,
+            "trace_back_to_last_nth_iter": 1,
+            "agitated_rounds": 1,  # how many rounds after applying trace back keep the beam size larger
+        },
     }
-    if os.getenv("CLASSIFIER") == "SIMPLE_VOTER":
+    if os.getenv("CLASSIFIER") == "SIMPLE_VOTER" and base_dataset == "qm9":  # not available for ZINC
         oracle = SimpleVoterOracle(
             model_paths=[
-                GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt",
+                GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc_resume_3/models/epoch18-val0.2083.ckpt",
                 GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt",
                 GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt",
             ]
@@ -261,7 +276,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     generator = Generator(
         gen_model=gen_model,
         oracle=oracle,
-        ds_config=QM9_SMILES_HRR_1600_CONFIG,
+        ds_config=QM9_SMILES_HRR_1600_CONFIG if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG,
         decoder_settings=decoder_settings,
         device=device,
     )
@@ -276,7 +291,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         "gen_time_per_sample": t_gen / n_samples,
         "target": 0.0,
         "min_gda_loss": min_loss,
-        "lambda_scheduler": sched_name,
+        "lambda_scheduler": cfg.get("scheduler"),
         "lambda_hi": lambda_hi,
         "lambda_low": lambda_lo,
         "steps": steps,
@@ -288,16 +303,22 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     }
 
     # results.update(evaluator.evaluate(samples=nx_graphs, final_flags=final_flag, sims=sims))
-    evals = evaluator.evaluate_conditional(
+    global EVALUATOR  # noqa: PLW0603
+    if EVALUATOR is None:
+        EVALUATOR = GenerationEvaluator(base_dataset=base_dataset, device=device)
+    evals = EVALUATOR.evaluate_conditional(
         samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples
     )
-    results.update({f"eval_{k}": v for k, v in evals.items()})
+    # Flatten the evals
+    results.update(
+        {f"{section}_{metric}": val for section, metrics in evals.items() for metric, val in metrics.items()}
+    )
     pprint(results)
 
     if cfg.get("draw", False):
         base_dir = GLOBAL_ARTEFACTS_PATH / "cond_generation" / f"drawings_valid_target_{target:.1f}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags = evaluator.get_mols_and_valid_flags()
+        mols, valid_flags = EVALUATOR.get_mols_and_valid_flags()
         for i, (mol, valid) in enumerate(zip(mols, valid_flags, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)
@@ -316,11 +337,27 @@ def run_qm9_cond_gen(trial: optuna.Trial):
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
         "steps": trial.suggest_int("steps", 50, 1500),
         "scheduler": trial.suggest_categorical("scheduler", ["cosine", "two-phase", "linear"]),
-        "lambda_lo": trial.suggest_float("lambda_lo", 1e-4, 5e-3, log=True),
-        "lambda_hi": trial.suggest_float("lambda_hi", 5e-3, 1e-2, log=True),
+        "lambda_lo": trial.suggest_float("lambda_lo", 1e-5, 5e-3, log=True),
+        "lambda_hi": trial.suggest_float("lambda_hi", 5e-3, 5e-2, log=True),
+        "draw": False,
+        "n_samples": 5,
+        "base_dataset": "zinc",
+    }
+    pprint(cfg)
+
+    return eval_cond_gen(cfg=cfg)
+
+
+def run_zinc_cond_gen(trial: optuna.Trial):
+    cfg = {
+        "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
+        "steps": trial.suggest_int("steps", 50, 1500),
+        "scheduler": trial.suggest_categorical("scheduler", ["cosine", "two-phase", "linear"]),
+        "lambda_lo": trial.suggest_float("lambda_lo", 1e-5, 5e-3, log=True),
+        "lambda_hi": trial.suggest_float("lambda_hi", 5e-3, 5e-2, log=True),
         "draw": False,
         "n_samples": 100,
-        "base_dataset": "qm9",
+        "base_dataset": "zinc",
     }
     pprint(cfg)
 

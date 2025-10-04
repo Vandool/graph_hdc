@@ -5,7 +5,7 @@ import optuna
 import pandas as pd
 from optuna_integration import BoTorchSampler
 
-from src.exp.cond_gen_hpo.cond_generation_hpo import run_qm9_cond_gen
+from src.exp.cond_gen_hpo.cond_generation_hpo import run_qm9_cond_gen, run_zinc_cond_gen
 
 SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 5e-3, log=True),
@@ -90,47 +90,35 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 
 if __name__ == "__main__":
-    # p = argparse.ArgumentParser(description="Real NVP V2 - HPO")
-    # p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    # p.add_argument("--gen_model", type=str)
-    # p.add_argument("--classifier", type=str)
-    # p.add_argument("--n_trials", type=int, default=5)
-    # args = p.parse_args()
-    base_objective = run_qm9_cond_gen
+    base_dataset = "zinc"
+    base_objective = run_qm9_cond_gen if base_dataset == "qm9" else run_zinc_cond_gen
     for gen_model in [
-        # "nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an",
-        # "nvp_qm9_f10_hid1344_lr0.00051444_wd0.0001_bs45_smf5.55412_smi0.730256_smw11_an",
-        # "nvp_qm9_f10_hid1472_lr0.000512756_wd0.0001_bs54_smf5.60543_smi2.9344_smw15_an",
-        # "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd1e-4_an",
-        "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
-        # "nvp_qm9_f10_hid1472_lr0.000513196_wd0.0001_bs56_smf5.41974_smi1.39839_smw15_an",
-        # "nvp_qm9_f14_hid512_lr0.000514306_wd0.0001_bs58_smf5.76312_smi0.1_smw14_an",
+        "nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd1e-4_an",
+        "nvp_zinc_h7744_f12_hid384_s42_lr1e-3_wd0.0_an",
+        "nvp_zinc_h7744_f8_hid512_s42_lr5e-4_wd0.0_an",
+        "nvp_zinc_h7744_f8_hid512_s42_lr1e-3_wd0.0_noan",
+        "nvp_zinc_h7744_f6_hid512_s42_lr1e-3_wd0.0_an",
+        "nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd0.0_an",
+        "nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd0.0_an",
+        "nvp_zinc_f11_hid1152_lr0.000218409_wd0_bs64_smf5.99998_smi1.00004_smw15_an",
+        "nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd1e-4_an",
+        "nvp_zinc_h7744_f12_hid1280_s42_lr5e-4_wd0.0_an",
+        "nvp_zinc_f10_hid1152_lr7.61217e-5_wd0_bs64_smf6.00085_smi0.999514_smw15_an",
+        "nvp_zinc_h7744_f12_hid768_s42_lr1e-3_wd1e-4_an",
     ]:
         for classifier in [
-            "gin-f_baseline_qm9_resume",
-            # "MLP_Lightning_qm9",
-            # "BAH_large_qm9",
-            # "BAH_med_qm9",
-            "SIMPLE_VOTER",
-            "BAH_med_hardpool_qm9"
+            "gin-f_baseline_zinc_resume_3",
         ]:
-            # args = argparse.Namespace(
-            #     dataset="qm9",
-            #     gen_model=gen,
-            #     classifier=classifier,
-            #     n_trials=5,
-            # )
-
             # Paths (per-dataset DB + CSV)
             here = pathlib.Path(__file__).parent
             # study_base = here.parent.name
-            study_name = f"{gen_model}_{classifier}_qm9"
-            db_path = here / f"{gen_model}_{classifier}_qm9.db"
-            csv = here / f"trials_{gen_model}_{classifier}_qm9.csv"
+            study_name = f"{gen_model}_{classifier}_{base_dataset}"
+            db_path = here / f"{gen_model}_{classifier}_{base_dataset}.db"
+            csv = here / f"trials_{gen_model}_{classifier}_{base_dataset}.csv"
 
             # Rebuild if DB missing, else load
             if not db_path.exists():
-                study = rebuild_study_from_csv(study_name=study_name, dataset="qm9", csv=csv, db_path=db_path)
+                study = rebuild_study_from_csv(study_name=study_name, dataset=base_dataset, csv=csv, db_path=db_path)
                 if study is None:
                     study = load_study(study_name=study_name, sqlite_path=str(db_path))
             else:
@@ -149,10 +137,10 @@ if __name__ == "__main__":
                     trial.set_user_attr(key=k, value=v)
 
                 # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
-                return res["eval_success@eps"] * res["eval_validity"]
+                return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
 
             # Run optimization
-            study.optimize(objective, n_trials=40)
+            study.optimize(objective, n_trials=30)
 
             # Export canonical CSV (with exp_dir_name)
-            export_trials(study_name=study_name, db_path=db_path, dataset="qm9", csv=csv)
+            export_trials(study_name=study_name, db_path=db_path, dataset=base_dataset, csv=csv)

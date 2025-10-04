@@ -1,6 +1,7 @@
+import copy
 import itertools
 import logging
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Sequence
 from itertools import chain, combinations
 
@@ -576,15 +577,24 @@ def greedy_oracle_decoder_faster(
     oracle_threshold: float = 0.5,
     strict: bool = True,
     use_pair_feasibility: bool = False,
-    activate_guard: bool = True,
+    skip_n_nodes: int = 0,
+    trace_back_settings: dict[str, int] | None = None,
 ) -> tuple[list[nx.Graph], bool]:
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
 
     ## Guard the decoder
-    if (activate_guard and total_nodes > 15) or total_edges > 20:
+    if (skip_n_nodes and total_nodes > skip_n_nodes) or total_edges > skip_n_nodes:
         return [nx.Graph()], False
+
+    # By default no trace back
+    trace_back_setting = trace_back_settings or {
+        "beam_size_multiplier": 1,
+        "trace_back_attempts": 0,
+        "trace_back_to_last_nth_iter": 0,
+        "agitated_rounds": 0,  # how many rounds after applying trace back keep the beam size larger
+    }
 
     # -- local helpers --
     def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
@@ -706,6 +716,21 @@ def greedy_oracle_decoder_faster(
     # 2) Iterative expansion
     # ---------------------------
 
+    # Track back settings
+    beam_size_growth_factor = trace_back_setting["beam_size_multiplier"]
+    trace_back_to_last_nth_iter = trace_back_setting["trace_back_to_last_nth_iter"]
+    trace_back_attempts_left_max = trace_back_setting["trace_back_attempts"]
+    initial_agitated_rounds = trace_back_setting["agitated_rounds"]
+    agitated_rounds = 0
+    initial_beam_size = beam_size
+
+    keep_history = trace_back_attempts_left_max > 0
+    history = deque(maxlen=total_nodes)
+    # Worst case history size, so we cap it
+    history_cap = (2**trace_back_attempts_left_max) * beam_size + beam_size
+    trace_back_attempts_left = trace_back_attempts_left_max
+    is_back_tracing = False
+
     population = healthy_pop
     # loop until we place all nodes; guard with max_iters to avoid infinite loops
     max_iters = total_nodes
@@ -774,20 +799,60 @@ def greedy_oracle_decoder_faster(
             if not children:
                 return _generate_response(population)
 
-            accepted: list[nx.Graph] = []
             oracle_results, sorted_idx = _call_oracle(children)
-
-            kept = 0
-            for idx in sorted_idx[:beam_size]:
-                if oracle_results[idx] >= oracle_threshold:
-                    accepted.append(children[idx])
-                    kept += 1
+            accepted: list[nx.Graph] = [children[idx] for idx in sorted_idx if oracle_results[idx] >= oracle_threshold]
 
             if not accepted:
+                if trace_back_attempts_left:
+                    is_back_tracing = True
+                    beam_size = initial_beam_size
+                    agitated_rounds = initial_agitated_rounds
+                    trace_back_attempts_left -= 1
+
+                    # pick previous iteration (or N back)
+                    k = trace_back_to_last_nth_iter
+                    if len(history) <= k:
+                        # not enough history -> abort gracefully
+                        return _generate_response(population)
+
+                    # history[-1] is the most recent completed iteration
+                    tb_iter_idx, tb_population_full = history[-(k + 1)]
+
+                    # optional slicing window on that older population
+                    slice_start = beam_size
+                    slice_end = slice_start + beam_size_growth_factor * beam_size
+                    population = tb_population_full[slice_start:slice_end]
+
+                    # move the logical counter back to that iteration index
+                    curr_nodes = tb_iter_idx
+
+                    # tqdm: show traceback phase + move bar backward
+                    pbar.n = curr_nodes
+                    pbar.set_postfix_str("TRACEBACK")
+                    pbar.refresh()
+                    continue
+
+                # No lives left (default path)
                 return _generate_response(population)
 
-            population = accepted
+            if is_back_tracing:
+                is_back_tracing = False
+                print(f"BACK TRACING SUCCEEDED -> New healthy population: {len(accepted)}")
+
+            # store snapshot of the *accepted* population for this completed iteration
+            if keep_history:
+                history.append((curr_nodes, copy.deepcopy(accepted[:history_cap])))
+
+            if agitated_rounds > 0:
+                beam_size = initial_beam_size * beam_size_growth_factor
+                pbar.set_postfix_str("AGITATED FORWARD")
+                agitated_rounds -= 1
+            else:
+                pbar.set_postfix_str("FORWARD")
+
+            population = accepted[:beam_size]
             curr_nodes += 1
+            pbar.refresh()
             pbar.update(1)
 
     return _generate_response(population)
@@ -802,15 +867,22 @@ def greedy_oracle_decoder_voter_oracle(
     expand_on_n_anchors: int | None = None,
     strict: bool = True,
     use_pair_feasibility: bool = False,
-    activate_guard: bool = True,
-    oracle_threshold: float | None = None,  # noqa: ARG001
+    skip_n_nodes: int = 0,
+    trace_back_setting: dict[str, int] | None = None,
 ) -> tuple[list[nx.Graph], bool]:
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
 
+    # By default no trace back
+    trace_back_setting = trace_back_setting or {
+        "beam_size_multiplier": 1,
+        "trace_back_attempts": 0,
+        "trace_back_to_last_nth_iter": 0,
+    }
+
     ## Guard the decoder
-    if (activate_guard and total_nodes > 15) or total_edges > 20:
+    if (skip_n_nodes and total_nodes > skip_n_nodes) or total_edges > skip_n_nodes:
         return [nx.Graph()], False
 
     # -- local helpers --
@@ -931,6 +1003,15 @@ def greedy_oracle_decoder_voter_oracle(
     # ---------------------------
     # 2) Iterative expansion
     # ---------------------------
+
+    # Track back settings
+    beam_size_growth_factor = trace_back_setting["beam_size_multiplier"]
+    trace_back_to_last_nth_iter = trace_back_setting["trace_back_to_last_nth_iter"]
+    trace_back_attempts_left_max = trace_back_setting["trace_back_attempts"]
+
+    history = deque(maxlen=total_nodes)
+    trace_back_attempts_left = trace_back_attempts_left_max
+    is_back_tracing = False
 
     population = healthy_pop
     # loop until we place all nodes; guard with max_iters to avoid infinite loops
