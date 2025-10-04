@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from pprint import pprint
@@ -285,13 +286,16 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
         device=device,
     )
 
+    t0_decode = time.perf_counter()
     nx_graphs, final_flags, sims = generator.decode(node_terms=n, graph_terms=g)
+    t_decode = time.perf_counter() - t0_decode
     # nx_graphs, final_flag, sims = generator.generate_most_similar(n_samples=n_samples, only_final_graphs=False)
 
     results = {
         "gen_model": str(gen_ckpt_path.parent.parent.stem),
         "logp_regressor": str(lpr_path.parent.parent.stem),
         "n_samples": n_samples,
+        "t_decode_per_sample": t_decode / len(hits),
         "target": cfg.get("target"),
         "lambda_scheduler": cfg.get("scheduler"),
         "lambda_hi": lambda_hi,
