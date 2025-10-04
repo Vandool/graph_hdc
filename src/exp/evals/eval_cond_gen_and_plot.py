@@ -381,11 +381,11 @@ if __name__ == "__main__":
     }
     model_configs = {
         "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an": {
-            "lr": 0.0001535528683888,
-            "steps": 1492,
-            "scheduler": "cosine",
-            "lambda_lo": 0.0001840899208055,
-            "lambda_hi": 0.0052054096619994,
+            "lr": 0.0006237800411858,
+            "steps": 1104,
+            "scheduler": "two-phase",
+            "lambda_lo": 0.0001,
+            "lambda_hi": 0.0061834838894459,
         }
     }
     decoder_settings = {
@@ -404,18 +404,6 @@ if __name__ == "__main__":
             (
                 args.dataset,
                 "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
-                "BAH_med_hardpool_qm9",
-                n_samples,
-            ),
-            (
-                args.dataset,
-                "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
-                "SIMPLE_VOTER",
-                n_samples,
-            ),
-            (
-                args.dataset,
-                "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
                 "gin-f_baseline_qm9_resume",
                 n_samples,
             ),
@@ -430,7 +418,7 @@ if __name__ == "__main__":
                 "n_samples": samples,
                 "target": logp_stats[dataset]["mean"] * target_multiplier,
                 "epsilon": 0.25 * logp_stats[dataset]["std"],
-                "draw": True,
+                "draw": False,
                 "plot": True,
             }
             os.environ["GEN_MODEL"] = gen_model
