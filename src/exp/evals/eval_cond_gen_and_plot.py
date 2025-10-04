@@ -394,7 +394,7 @@ if __name__ == "__main__":
         "expand_on_n_anchors": 9,
     }
     n_samples = args.n_samples
-    for target_multiplier in [1, 2, 3, 4]:
+    for target_multiplier in [0, 1, 2, 3, 4]:
         for (
             dataset,
             gen_model,
@@ -416,7 +416,7 @@ if __name__ == "__main__":
                 "lambda_hi": model_configs[gen_model]["lambda_hi"],
                 "base_dataset": dataset,
                 "n_samples": samples,
-                "target": logp_stats[dataset]["mean"] * target_multiplier,
+                "target": logp_stats[dataset]["mean"] + target_multiplier * logp_stats[dataset]["std"],
                 "epsilon": 0.25 * logp_stats[dataset]["std"],
                 "draw": False,
                 "plot": True,
