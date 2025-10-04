@@ -48,6 +48,7 @@ logp_stats = {
     "zinc": {"max": 8, "mean": 2.457799800788871, "median": 2.60617995262146, "min": -6, "std": 1.4334213538628746},
 }
 
+
 def get_model_type(path: Path | str) -> registery.ModelType:
     res: registery.ModelType = "MLP"
     if "bah" in str(path):

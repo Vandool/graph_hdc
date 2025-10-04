@@ -46,7 +46,7 @@ class Generator:
             if isinstance(oracle, SimpleVoterOracle)
             else greedy_oracle_decoder_faster
         )
-        base_dataset = "zinc" if "zinc" in ds_config.name else "qm9"
+        base_dataset = "zinc" if "zinc" in ds_config.name.lower() else "qm9"
         self.decode_skip_n_nodes_threshold = 70 if base_dataset == "zinc" else 15
 
     def generate_all(
@@ -135,6 +135,7 @@ class Generator:
                 oracle=self.oracle,
                 full_g_h=graph_terms_hd[i],
                 strict=only_final_graphs,
+                skip_n_nodes=self.decode_skip_n_nodes_threshold,
                 **self.decoder_settings,
             )
             are_final_flags.append(bool(is_final))
