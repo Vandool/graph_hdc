@@ -491,11 +491,12 @@ class ZincPairsV3(Dataset):
         transform=None,
         pre_transform=None,
         pre_filter=None,
-        shard_size=25_000,
-        cache_shards=2,
+        shard_size=50_000,
+        cache_shards=4,
         *,
         force_reprocess=False,
         dev: bool = False,
+        edge_only: bool = False,
     ):
         # --- set everything process() will need BEFORE super().__init__ ---
         self.base = base_dataset
@@ -504,9 +505,14 @@ class ZincPairsV3(Dataset):
         self.shard_size = shard_size
         self.cache_shards = cache_shards
         self._rng = random.Random(self.cfg.seed)
+        self.edge_only = edge_only
+
+        if self.edge_only:
+            root = root / f"{root.stem}EdgeOnly"
 
         if dev:
-            root = GLOBAL_DATASET_PATH / "ZincPairsV3DEV"
+            root = root / f"{root.stem}DEV"
+
         # idx_path must exist for process() to use
         self.idx_path = Path(root) / "processed" / f"index_{split}.pt"
 
@@ -933,6 +939,9 @@ class ZincPairsV3(Dataset):
                                 parent_idx=torch.tensor([parent_idx], dtype=torch.long),
                             )
                         continue  # k == 2 over
+
+                if self.edge_only:
+                    break
 
                 # -------- pick budgets for this k (main vs tail) --------
                 is_tail = k > k_cap

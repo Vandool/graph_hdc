@@ -1,4 +1,3 @@
-import argparse
 from collections import Counter
 
 import torch
@@ -169,14 +168,11 @@ def print_sanity_summary(stats_by_split: dict[str, dict]) -> None:
 
 
 def build_qm9_pairs_for_split(
-        split: str,
-        *,
-        cfg: QM9PairConfig | None = None,
-        force_reprocess: bool = False,
-        debug: bool = False,
-        is_dev: bool = False,
-        n: int | None = None,
-        sanity_limit: int | None = None,
+    split: str,
+    *,
+    cfg: QM9PairConfig | None = None,
+    debug: bool = False,
+    is_dev: bool = False,
 ) -> tuple[QM9Pairs, dict]:
     """
     Build ONE split and sanity-check it. Returns (dataset, stats).
@@ -185,22 +181,15 @@ def build_qm9_pairs_for_split(
     assert split in {"train", "valid", "test"}
 
     # Defaults: small dev slice; full otherwise
-    if n is None:
-        n = {"train": 200, "valid": 20, "test": 20}[split] if is_dev else None
-    if sanity_limit is None:
-        sanity_limit = {"train": 1_000_000, "valid": 100_000, "test": 100_000}[split] if is_dev else None
+    n = {"train": 200, "valid": 20, "test": 20}[split] if is_dev else None
+    sanity_limit = {"train": 1_000_000, "valid": 100_000, "test": 100_000}[split]
 
     print(f"\n=== Building pairs for split='{split}' n={n} dev={is_dev} ===")
     base_full = QM9Smiles(split=split)
     base = base_full[:n] if n is not None else base_full
 
     pairs = QM9Pairs(
-        base_dataset=base,
-        split=split,
-        cfg=cfg or QM9PairConfig(),
-        dev=is_dev,
-        debug=debug,
-        force_reprocess=force_reprocess,
+        base_dataset=base, split=split, cfg=cfg or QM9PairConfig(), dev=is_dev, debug=debug, edge_only=True
     )
 
     print(f"  base graphs: {len(base)}")
@@ -213,35 +202,29 @@ def build_qm9_pairs_for_split(
 
 
 def main():
-    p = argparse.ArgumentParser(description="Generate QM9Pairs for a single split.")
-    p.add_argument("--split", required=True, choices=["train", "valid", "test"])
-    p.add_argument("--dev", action="store_true", help="Use small dev sizes (train=200, valid=20, test=20).")
-    p.add_argument("--n", type=int, default=None, help="Number of base molecules (overrides --dev default).")
-    p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
-    args = p.parse_args()
+    # p = argparse.ArgumentParser(description="Generate QM9Pairs for a single split.")
+    # p.add_argument("--split", required=True, choices=["train", "valid", "test"])
+    # p.add_argument("--dev", action="store_true", help="Use small dev sizes (train=200, valid=20, test=20).")
+    # p.add_argument("--n", type=int, default=None, help="Number of base molecules (overrides --dev default).")
+    # p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
+    # args = p.parse_args()
 
     cfg = QM9PairConfig()
     seed_everything(cfg.seed)
-
+    split = "test"
     _, stats = build_qm9_pairs_for_split(
-        split=args.split,
+        split=split,
         cfg=cfg,
-        force_reprocess=False,
         debug=False,
         is_dev=True,
-        n=args.n,
-        sanity_limit=args.sanity_limit,
     )
 
-    # _, stats = build_qm9_pairs_for_split(
-    #     split=args.split,
-    #     cfg=cfg,
-    #     force_reprocess=False,
-    #     debug=False,
-    #     is_dev=False,
-    #     n=args.n,
-    #     sanity_limit=args.sanity_limit,
-    # )
+    _, stats = build_qm9_pairs_for_split(
+        split=split,
+        cfg=cfg,
+        debug=False,
+        is_dev=False,
+    )
 
 
 if __name__ == "__main__":

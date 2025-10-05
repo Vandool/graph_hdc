@@ -1,4 +1,3 @@
-import argparse
 from collections import Counter
 
 import torch
@@ -6,7 +5,7 @@ from torch_geometric import seed_everything
 from torch_geometric.data import Data
 from tqdm.auto import tqdm
 
-from src.datasets.zinc_pairs_v3 import PairData, PairType, ZincPairV3Config, ZincPairsV3
+from src.datasets.zinc_pairs_v3 import PairData, PairType, ZincPairsV3, ZincPairV3Config
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.decoder import is_induced_subgraph_by_features
 from src.utils.utils import DataTransformer
@@ -172,10 +171,8 @@ def build_zinc_pairs_for_split(
     split: str,
     *,
     cfg: ZincPairV3Config | None = None,
-    force_reprocess: bool = False,
     is_dev: bool = False,
-    n: int | None = None,
-    sanity_limit: int | None = None,
+    edge_only: bool = False,
 ) -> tuple[ZincPairsV3, dict]:
     """
     Build ONE split and sanity-check it. Returns (dataset, stats).
@@ -184,10 +181,8 @@ def build_zinc_pairs_for_split(
     assert split in {"train", "valid", "test"}
 
     # Defaults: small dev slice; full otherwise
-    if n is None:
-        n = {"train": 200, "valid": 20, "test": 20}[split] if is_dev else None
-    if sanity_limit is None:
-        sanity_limit = {"train": 1_000_000, "valid": 100_000, "test": 100_000}[split] if is_dev else None
+    n = {"train": 200, "valid": 20, "test": 20}[split] if is_dev else None
+    sanity_limit = {"train": 1_000_000, "valid": 100_000, "test": 100_000}[split] if is_dev else None
 
     print(f"\n=== Building pairs for split='{split}' n={n} dev={is_dev} ===")
     base_full = ZincSmiles(split=split)
@@ -198,7 +193,7 @@ def build_zinc_pairs_for_split(
         split=split,
         cfg=cfg or ZincPairV3Config(),
         dev=is_dev,
-        force_reprocess=force_reprocess,
+        edge_only=edge_only,
     )
 
     print(f"  base graphs: {len(base)}")
@@ -220,24 +215,14 @@ def main():
 
     cfg = ZincPairV3Config()
     seed_everything(42)
+    split = "test"
+    _, stats = build_zinc_pairs_for_split(split=split, cfg=cfg, is_dev=True, edge_only=True)
 
     _, stats = build_zinc_pairs_for_split(
-        split="test",
+        split=split,
         cfg=cfg,
-        force_reprocess=False,
-        is_dev=True,
-        n=None,
-        sanity_limit=20,
+        is_dev=False,
     )
-
-    # _, stats = build_zinc_pairs_for_split(
-    #     split=args.split,
-    #     cfg=cfg,
-    #     force_reprocess=False,
-    #     is_dev=False,
-    #     n=args.n,
-    #     sanity_limit=args.sanity_limit,
-    # )
 
 
 if __name__ == "__main__":

@@ -470,17 +470,18 @@ class QM9Pairs(Dataset):
         self,
         base_dataset,
         split="train",
-        root=GLOBAL_DATASET_PATH / "QM9Pairs",
+        root: Path = GLOBAL_DATASET_PATH / "QM9Pairs",
         cfg=None,
         transform=None,
         pre_transform=None,
         pre_filter=None,
-        shard_size=25_000,
-        cache_shards=2,
+        shard_size=50_000,
+        cache_shards=4,
         *,
         force_reprocess=False,
         dev: bool = False,
         debug: bool = False,
+        edge_only: bool = False,
     ):
         # --- set everything process() will need BEFORE super().__init__ ---
         self.base = base_dataset
@@ -490,9 +491,14 @@ class QM9Pairs(Dataset):
         self.cache_shards = cache_shards
         self._rng = random.Random(self.cfg.seed)
         self.debug = debug
+        self.edge_only = edge_only
+
+        if self.edge_only:
+            root = root / f"{root.stem}EdgeOnly"
 
         if dev:
-            root = GLOBAL_DATASET_PATH / "QM9PairsDEV"
+            root = root / f"{root.stem}DEV"
+
         # idx_path must exist for process() to use
         self.idx_path = Path(root) / "processed" / f"index_{split}.pt"
 
@@ -919,6 +925,9 @@ class QM9Pairs(Dataset):
                                 parent_idx=torch.tensor([parent_idx], dtype=torch.long),
                             )
                         continue  # k == 2 over
+
+                if self.edge_only:
+                    break
 
                 # -------- pick budgets for this k (main vs tail) --------
                 is_tail = k > k_cap
