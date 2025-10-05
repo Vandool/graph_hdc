@@ -234,7 +234,7 @@ if __name__ == "__main__":
             },
         },
         "zinc": {
-            "beam_size": 4,
+            "beam_size": 8,
             "use_pair_feasibility": True,
             "expand_on_n_anchors": 8,
             "trace_back_settings": {
