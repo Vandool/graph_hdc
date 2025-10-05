@@ -21,7 +21,7 @@ from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import Generator
 from src.utils import registery
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
 from src.utils.visualisations import plot_logp_kde
 
 # keep it modest to avoid oversubscription; tune if needed
@@ -35,8 +35,8 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 
 seed = 42
 seed_everything(seed)
-# device = pick_device()
-device = torch.device("cpu")
+device = pick_device()
+# device = torch.device("cpu")
 EVALUATOR = None
 
 
@@ -279,6 +279,6 @@ if __name__ == "__main__":
             gen_mod_hint=g,
             classifier_hint=c,
             decoder_setting=decoder_setting,
-            draw=False,
+            draw=True,
             plot=True,
         )
