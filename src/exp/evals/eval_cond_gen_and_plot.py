@@ -318,7 +318,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
     results.update({f"eval_{k}": v for k, v in evals.items()})
     pprint(results)
 
-    mols, valid_flags = EVALUATOR.get_mols_and_valid_flags()
+    mols, valid_flags, sims = EVALUATOR.get_mols_and_valid_flags()
 
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
@@ -336,11 +336,11 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
 
     if cfg.get("draw", False):
         base_dir.mkdir(parents=True, exist_ok=True)
-        for i, (mol, valid) in enumerate(zip(mols, valid_flags, strict=False)):
+        for i, (mol, valid, sim) in enumerate(zip(mols, valid_flags, sims, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)
                 if abs(logp - target) > epsilon:
-                    out = base_dir / f"LogP_{logp:.3f}_{i}.png"
+                    out = base_dir / f"Sim_{sim:.3f}__LogP_{logp:.3f}_{i}.png"
                     draw_mol(mol=mol, save_path=out, fmt="png")
 
     if cfg.get("plot", False):

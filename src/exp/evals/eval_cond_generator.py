@@ -79,21 +79,21 @@ for gen_ckpt_path in gen_paths:
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an/models/epoch50-val-4308.1338.ckpt",
         "0_real_nvp_v2/nvp_qm9_f10_hid1536_lr0.000513397_wd0.0001_bs55_smf5.54071_smi1.94859_smw15_an/models/epoch79-val-4466.5771.ckpt",
         "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000513196_wd0.0001_bs56_smf5.41974_smi1.39839_smw15_an/models/epoch75-val-4311.4238.ckpt",
-        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd1e-4_an/models/epoch12-val-1689.4788.ckpt", #TOP
+        "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd1e-4_an/models/epoch12-val-1689.4788.ckpt",  # TOP
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd0.0_an/models/epoch12-val-2198.1746.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid768_s42_lr1e-3_wd1e-4_an/models/epoch13-val-2190.4648.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr5e-4_wd0.0_an/models/epoch41-val-3322.6777.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f12_hid512_s42_lr1e-3_wd0.0_an/models/epoch19-val-2442.2910.ckpt",  # 30 / 100
         "0_real_nvp_v2/nvp_qm9_h1600_f8_hid512_s42_lr1e-3_wd0.0_an/models/epoch25-val-2071.7695.ckpt",
-        "0_real_nvp_v2/nvp_qm9_f11_hid1408_lr0.000512915_wd0.0001_bs53_smf7.2233_smi2.25368_smw15_an/models/epoch25-val-3257.9829.ckpt", #TOP
+        "0_real_nvp_v2/nvp_qm9_f11_hid1408_lr0.000512915_wd0.0001_bs53_smf7.2233_smi2.25368_smw15_an/models/epoch25-val-3257.9829.ckpt",  # TOP
         "0_real_nvp_v2/nvp_qm9_f11_hid832_lr0.000518923_wd0.0001_bs64_smf5.99953_smi0.999355_smw15_an/models/epoch53-val-4126.5376.ckpt",
-        "0_real_nvp_v2/nvp_qm9_f13_hid896_lr0.000513923_wd0.0001_bs56_smf6.10179_smi0.778424_smw18_an/models/epoch24-val-3298.2949.ckpt", #TOP
+        "0_real_nvp_v2/nvp_qm9_f13_hid896_lr0.000513923_wd0.0001_bs56_smf6.10179_smi0.778424_smw18_an/models/epoch24-val-3298.2949.ckpt",  # TOP
         "0_real_nvp_v2/nvp_qm9_f14_hid512_lr0.000514306_wd0.0001_bs58_smf5.76312_smi0.1_smw14_an/models/epoch36-val-3579.4844.ckpt",
         "0_real_nvp_v2/nvp_qm9_h1600_f6_hid1024_s42_lr1e-3_wd1e-4_an/models/epoch126-val-2239.6909.ckpt",
-        "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000512529_wd0.0001_bs55_smf4.08773_smi0.880154_smw15_an/models/epoch41-val-3605.5576.ckpt", #TOP
-        "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000509395_wd0.0001_bs57_smf5.74707_smi0.1_smw15_an/models/epoch27-val-3149.5359.ckpt", #TOP
-        "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000512756_wd0.0001_bs54_smf5.60543_smi2.9344_smw15_an/models/epoch45-val-3927.9780.ckpt", #TOP
-        "0_real_nvp_v2/nvp_qm9_f10_hid1344_lr0.00051444_wd0.0001_bs45_smf5.55412_smi0.730256_smw11_an/models/epoch19-val-2999.3181.ckpt", #TOP
+        "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000512529_wd0.0001_bs55_smf4.08773_smi0.880154_smw15_an/models/epoch41-val-3605.5576.ckpt",  # TOP
+        "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000509395_wd0.0001_bs57_smf5.74707_smi0.1_smw15_an/models/epoch27-val-3149.5359.ckpt",  # TOP
+        "0_real_nvp_v2/nvp_qm9_f10_hid1472_lr0.000512756_wd0.0001_bs54_smf5.60543_smi2.9344_smw15_an/models/epoch45-val-3927.9780.ckpt",  # TOP
+        "0_real_nvp_v2/nvp_qm9_f10_hid1344_lr0.00051444_wd0.0001_bs45_smf5.55412_smi0.730256_smw11_an/models/epoch19-val-2999.3181.ckpt",  # TOP
         # ZINC TOP
         # "0_real_nvp_v2/nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd1e-4_an/models/epoch16-val-2940.8835.ckpt",
         # "0_real_nvp_v2/nvp_zinc_h7744_f12_hid384_s42_lr1e-3_wd0.0_an/models/epoch13-val-14633.5537.ckpt",
@@ -189,8 +189,8 @@ for gen_ckpt_path in gen_paths:
     latent_dim = gen_model.flat_dim
     target = 0.0
     # lambda_prior = 1e-2  # strength of N(0,I) prior pull on z
-    lambda_hi = 1e-2 # [5e-3, 1e-2]
-    lambda_lo = 1e-4 # [1e-4, 1e-3]
+    lambda_hi = 1e-2  # [5e-3, 1e-2]
+    lambda_lo = 1e-4  # [1e-4, 1e-3]
     steps = 50
     lr = 1e-3
     epsilon = 0.2  # success@epsilon threshold for logP
@@ -322,11 +322,14 @@ for gen_ckpt_path in gen_paths:
     if draw:
         base_dir = GLOBAL_ARTEFACTS_PATH / generation / f"drawings_valid_strict-decoder-{strict_decoder}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags = evaluator.get_mols_and_valid_flags()
-        for i, (mol, valid) in enumerate(zip(mols, valid_flags, strict=False)):
+        mols, valid_flags, sims = evaluator.get_mols_and_valid_flags()
+        for i, (mol, valid, sim) in enumerate(zip(mols, valid_flags, sims, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)
-                out = base_dir / f"{gen_ckpt_path.parent.parent.stem}__{evals_dir.parent.stem}__logp{logp:.3f}{i}.png"
+                out = (
+                    base_dir
+                    / f"{gen_ckpt_path.parent.parent.stem}__{evals_dir.parent.stem}__sim{sim:.3f}__logp{logp:.3f}{i}.png"
+                )
                 draw_mol(mol=mol, save_path=out, fmt="png")
 
     # --- new code starts here ---

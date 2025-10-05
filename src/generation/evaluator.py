@@ -29,6 +29,7 @@ class GenerationEvaluator:
 
         self.mols: list[Chem.Mol | None] | None = None
         self.valid_flags: list[bool] | None = None
+        self.sims: list[bool] | None = None
 
     def _to_mols_and_valid(self, samples: list[nx.Graph]) -> tuple[list[Chem.Mol | None], list[bool]]:
         mols: list[Chem.Mol | None] = []
@@ -67,6 +68,7 @@ class GenerationEvaluator:
         mols, valid_flags = self._to_mols_and_valid(samples)
         self.mols = mols
         self.valid_flags = valid_flags
+        self.sims = [max(s) for s in sims]
 
         n_valid = sum(valid_flags)
         validity = 100.0 * n_valid / n_samples if n_samples else 0.0
@@ -96,6 +98,7 @@ class GenerationEvaluator:
         samples,  # list[nx.Graph]
         target: float,  # single float target
         final_flags: list[bool],
+        sims: list[list[float]],
         prop_fn: Callable = rdkit_logp,
         eps: float = 0.2,
         compute_diversity: bool = True,
@@ -144,6 +147,7 @@ class GenerationEvaluator:
         mols, valid = self._to_mols_and_valid(samples)
         self.mols = mols
         self.valid_flags = valid
+        self.sims = [max(s) for s in sims]
 
         n_valid = int(sum(valid))
         out["valid"]["n_valid"] = n_valid
@@ -229,4 +233,4 @@ class GenerationEvaluator:
         return out
 
     def get_mols_and_valid_flags(self):
-        return self.mols, self.valid_flags
+        return self.mols, self.valid_flags, self.sims

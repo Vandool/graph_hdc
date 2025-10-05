@@ -211,10 +211,10 @@ for gen_ckpt_path in gen_paths:
     if draw:
         base_dir = GLOBAL_ARTEFACTS_PATH / generation / f"drawings_valid_strict-decoder-{strict_decoder}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags = evaluator.get_mols_and_valid_flags()
-        for i, (mol, mask, final) in enumerate(zip(mols, valid_flags, final_flags, strict=False)):
+        mols, valid_flags, sims = evaluator.get_mols_and_valid_flags()
+        for i, (mol, mask, final, sim) in enumerate(zip(mols, valid_flags, final_flags, sims, strict=False)):
             if mask:
-                out = base_dir / f"{gen_path.replace('/', '-')!s}-{final}-{i}.png"
+                out = base_dir / f"{gen_path.replace('/', '-')!s}-{final}-sim{sim:.3f}-{i}.png"
                 draw_mol(mol=mol, save_path=out, fmt="png")
 
     # --- new code starts here ---

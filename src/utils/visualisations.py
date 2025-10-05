@@ -414,7 +414,7 @@ def plot_logp_kde(
     lp: np.ndarray,  # dataset logP
     lg: np.ndarray,  # generated logP
     out: Path,  # output file path
-    target: float,  # target logP (vertical line)
+    target: float | None = None,  # target logP (vertical line)
     description: str | None = None,
     *,
     bw_adjust: float = 0.9,
@@ -433,10 +433,6 @@ def plot_logp_kde(
     mean_gen, std_gen = lg.mean(), lg.std(ddof=1)
     eps = epsilon if epsilon is not None else 0.25 * std_ds
 
-    # band around TARGET (for conditional eval parity)
-    low, high = float(target) - eps, float(target) + eps
-    pct_in_band = np.logical_and(lg >= low, lg <= high).mean() * 100.0
-
     # --- style/axes ---
     sns.set_style("ticks")
     fig, ax = plt.subplots(figsize=figsize)
@@ -454,10 +450,14 @@ def plot_logp_kde(
     ax.axvline(mean_gen + std_gen, color="steelblue", linestyle=":", linewidth=1.2, zorder=6)
 
     # target
-    ax.axvline(float(target), color="black", linestyle="-", linewidth=1.6, zorder=7)
 
-    # ε-band around TARGET
-    ax.axvspan(low, high, color="steelblue", alpha=0.18, zorder=4)
+    if target:
+        # band around TARGET (for conditional eval parity)
+        low, high = float(target) - eps, float(target) + eps
+        pct_in_band = np.logical_and(lg >= low, lg <= high).mean() * 100.0
+        # ε-band around TARGET
+        ax.axvline(float(target), color="black", linestyle="-", linewidth=1.6, zorder=7)
+        ax.axvspan(low, high, color="steelblue", alpha=0.18, zorder=4)
 
     # labels
     ax.set_xlabel("logP", fontsize=12)
@@ -466,7 +466,6 @@ def plot_logp_kde(
     fig.tight_layout()
 
     # --- legend ---
-    band_label = f"target±ε (ε={eps:.2f}; 0.25·σ({dataset}))" if epsilon is None else f"target±ε (ε={eps:.2f})"
     legend_elements = [
         Patch(facecolor="lightgrey", edgecolor="none", alpha=0.55, label=f"{dataset} KDE (n={lp.size})"),
         Patch(facecolor="steelblue", edgecolor="none", alpha=0.85, label=f"Generated KDE (n={lg.size})"),
@@ -480,9 +479,22 @@ def plot_logp_kde(
         ),
         Line2D([0], [0], color="steelblue", linestyle="--", linewidth=1.8, label=f"μ gen = {mean_gen:.2f}"),
         Line2D([0], [0], color="steelblue", linestyle=":", linewidth=1.2, label=f"±σ gen (σ={std_gen:.2f})"),
-        Line2D([0], [0], color="black", linestyle="-", linewidth=1.6, label=f"target = {float(target):.2f}"),
-        Patch(facecolor="steelblue", edgecolor="none", alpha=0.18, label=band_label),
     ]
+
+    if target:
+        legend_elements.extend(
+            [
+                Line2D([0], [0], color="black", linestyle="-", linewidth=1.6, label=f"target = {float(target):.2f}"),
+                Patch(
+                    facecolor="steelblue",
+                    edgecolor="none",
+                    alpha=0.18,
+                    label=f"target±ε (ε={eps:.2f}; 0.25·σ({dataset}))"
+                    if epsilon is None
+                    else f"target±ε (ε={eps:.2f})",
+                ),
+            ]
+        )
     ax.legend(
         handles=legend_elements,
         frameon=False,
@@ -498,33 +510,34 @@ def plot_logp_kde(
     ax.set_title(title, fontsize=13, pad=12)
 
     # --- metric panels: stacked bottom-left (TOTAL above, VALID below) ---
-    lines_total = ["TOTAL"]
-    if evals_total:
-        for k, v in evals_total.items():
-            lines_total.append(f"{k}: {v}")
+    if target:
+        lines_total = ["TOTAL"]
+        if evals_total:
+            for k, v in evals_total.items():
+                lines_total.append(f"{k}: {v}")
 
-    lines_valid = ["VALID"]
-    if evals_valid:
-        for k, v in evals_valid.items():
-            lines_valid.append(f"{k}: {v}")
+        lines_valid = ["VALID"]
+        if evals_valid:
+            for k, v in evals_valid.items():
+                lines_valid.append(f"{k}: {v}")
 
-    box_kwargs = {
-        "transform": ax.transAxes,
-        "ha": "left",
-        "va": "bottom",
-        "fontsize": 10,
-        "color": "steelblue",
-        "bbox": {"facecolor": "white", "edgecolor": "steelblue", "boxstyle": "round,pad=0.35", "alpha": 0.90},
-    }
+        box_kwargs = {
+            "transform": ax.transAxes,
+            "ha": "left",
+            "va": "bottom",
+            "fontsize": 10,
+            "color": "steelblue",
+            "bbox": {"facecolor": "white", "edgecolor": "steelblue", "boxstyle": "round,pad=0.35", "alpha": 0.90},
+        }
 
-    # Draw VALID at the bottom
-    y0 = 0.05
-    ax.text(0.02, y0, "\n".join(lines_valid), **box_kwargs)
+        # Draw VALID at the bottom
+        y0 = 0.05
+        ax.text(0.02, y0, "\n".join(lines_valid), **box_kwargs)
 
-    # Draw TOTAL above VALID
-    line_h = 0.045  # approx line height in axes coords
-    y1 = y0 + line_h * max(3, len(lines_valid)) + 0.02  # small vertical gap
-    ax.text(0.02, y1, "\n".join(lines_total), **box_kwargs)
+        # Draw TOTAL above VALID
+        line_h = 0.045  # approx line height in axes coords
+        y1 = y0 + line_h * max(3, len(lines_valid)) + 0.02  # small vertical gap
+        ax.text(0.02, y1, "\n".join(lines_total), **box_kwargs)
 
     # save
     out.parent.mkdir(parents=True, exist_ok=True)

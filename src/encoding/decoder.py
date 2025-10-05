@@ -575,24 +575,23 @@ def greedy_oracle_decoder_faster(
     beam_size: int = 32,
     expand_on_n_anchors: int | None = None,
     oracle_threshold: float = 0.5,
-    strict: bool = True,
+    strict: bool = False,
     use_pair_feasibility: bool = False,
     skip_n_nodes: int = 0,
     trace_back_settings: dict[str, int] | None = None,
-) -> tuple[list[nx.Graph], bool]:
+) -> tuple[list[nx.Graph], list[bool]]:
     full_ctr: Counter = node_multiset.copy()
     total_edges = total_edges_count(full_ctr)
     total_nodes = sum(full_ctr.values())
 
     ## Guard the decoder
     if (skip_n_nodes and total_nodes > skip_n_nodes) or total_edges > skip_n_nodes:
-        return [nx.Graph()], False
+        return [nx.Graph()], [False]
 
     # By default no trace back
     trace_back_setting = trace_back_settings or {
         "beam_size_multiplier": 1,
         "trace_back_attempts": 0,
-        "trace_back_to_last_nth_iter": 0,
         "agitated_rounds": 0,  # how many rounds after applying trace back keep the beam size larger
     }
 
@@ -627,18 +626,13 @@ def greedy_oracle_decoder_faster(
         residual_condition = sum(residuals(G).values()) == 0 or True
         return node_condition and edge_condition and leftover_condition and residual_condition
 
-    def _apply_strict_filter(population: list[nx.Graph]) -> tuple[list[nx.Graph], bool]:
-        final_graphs = [g for g in population if _is_valid_final_graph(g)]
-        are_final = len(final_graphs) > 0
-        if not are_final:
-            final_graphs.append(nx.Graph())
-        return final_graphs, are_final
-
-    def _generate_response(population: list[nx.Graph]) -> tuple[list[nx.Graph], bool]:
-        final_graphs, are_final = _apply_strict_filter(population=population)
+    def _generate_response(population: list[nx.Graph]) -> tuple[list[nx.Graph], list[bool]]:
+        final_flags = [_is_valid_final_graph(g) for g in population]
         if strict:
-            return final_graphs, are_final
-        return population, are_final
+            if sum(final_flags) == 0:
+                return [nx.Graph()], [False]
+            return [g for g, final in zip(population, final_flags, strict=True) if final], [True] * sum(final_flags)
+        return population, final_flags
 
     # Cache: from a 2-node test we can learn if an edge between two feature types is plausible.
     # Key is an ordered pair of feature tuples (t_small, t_big) with t_small <= t_big.
@@ -657,7 +651,7 @@ def greedy_oracle_decoder_faster(
     if total_nodes == 1 and len(feat_types) == 1:
         G = nx.Graph()
         add_node_with_feat(G, Feat.from_tuple(feat_types[0]))
-        return [G], True
+        return [G], [True]
 
     # Trivial case 2
     if total_nodes == 2:
@@ -667,8 +661,8 @@ def greedy_oracle_decoder_faster(
         n2 = add_node_with_feat(G, Feat.from_tuple(nodes[1]))
         ok = add_edge_if_possible(G, n1, n2)
         if ok and _is_valid_final_graph(G):
-            return [G], True
-        return [nx.Graph()], False
+            return [G], [True]
+        return [nx.Graph()], [False]
 
     # build all distinct ordered pairs (i <= j) where at least one has residual > 0 (deg_idx > 0)
     first_pairs: list[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]] = []
@@ -710,7 +704,7 @@ def greedy_oracle_decoder_faster(
             healthy_pop.append(G)
 
     if not healthy_pop:
-        return [nx.Graph()], False
+        return [nx.Graph()], [False]
 
     # ---------------------------
     # 2) Iterative expansion
@@ -718,14 +712,13 @@ def greedy_oracle_decoder_faster(
 
     # Track back settings
     beam_size_growth_factor = trace_back_setting["beam_size_multiplier"]
-    trace_back_to_last_nth_iter = trace_back_setting["trace_back_to_last_nth_iter"]
     trace_back_attempts_left_max = trace_back_setting["trace_back_attempts"]
     initial_agitated_rounds = trace_back_setting["agitated_rounds"]
     agitated_rounds = 0
     initial_beam_size = beam_size
 
     keep_history = trace_back_attempts_left_max > 0
-    history = deque(maxlen=total_nodes)
+    history: list[tuple[int, list[nx.Graph]]] = []
     # Worst case history size, so we cap it
     history_cap = (2**trace_back_attempts_left_max) * beam_size + beam_size
     trace_back_attempts_left = trace_back_attempts_left_max
@@ -736,6 +729,7 @@ def greedy_oracle_decoder_faster(
     max_iters = total_nodes
     curr_nodes = 2
 
+    last_none_empty_pop = None
     with tqdm(total=max_iters - 2, desc="Iterations", unit="node") as pbar:
         while curr_nodes < max_iters:
             children: list[nx.Graph] = []
@@ -809,16 +803,24 @@ def greedy_oracle_decoder_faster(
                     agitated_rounds = initial_agitated_rounds
                     trace_back_attempts_left -= 1
 
-                    # pick previous iteration (or N back)
-                    k = trace_back_to_last_nth_iter
-                    if len(history) <= k:
+                    if len(history) <= 1:
                         # not enough history -> abort gracefully
                         return _generate_response(population)
 
                     # history[-1] is the most recent completed iteration
-                    tb_iter_idx, tb_population_full = history[-(k + 1)]
+                    # Find the latest history entry that has more than beam size population members,
+                    tb_iter_idx, tb_population_full = None, None
+                    # Skip the last one, because it's the current iteration!
+                    for i, p in reversed(history[:-1]):
+                        if len(p) >= beam_size:
+                            tb_iter_idx, tb_population_full = i, p
+                            break
+
+                    if tb_population_full is None:
+                        return _generate_response(population)
 
                     # optional slicing window on that older population
+                    last_none_empty_pop = population
                     slice_start = beam_size
                     slice_end = slice_start + beam_size_growth_factor * beam_size
                     population = tb_population_full[slice_start:slice_end]
@@ -833,6 +835,7 @@ def greedy_oracle_decoder_faster(
                     continue
 
                 # No lives left (default path)
+                population = population if len(population) > 1 else last_none_empty_pop
                 return _generate_response(population)
 
             if is_back_tracing:
@@ -865,7 +868,7 @@ def greedy_oracle_decoder_voter_oracle(
     *,
     beam_size: int = 32,
     expand_on_n_anchors: int | None = None,
-    strict: bool = True,
+    strict: bool = False,
     use_pair_feasibility: bool = False,
     skip_n_nodes: int = 0,
     trace_back_setting: dict[str, int] | None = None,

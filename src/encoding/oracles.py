@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module
 from torch_geometric.data import Batch, Data
-from torch_geometric.nn import MessagePassing, SumAggregation
+from torch_geometric.nn import MessagePassing
 from torch_geometric.nn.aggr import SumAggregation
 from torch_geometric.nn.conv import GATv2Conv
 
@@ -40,14 +40,23 @@ class Oracle:
     """
 
     def __init__(
-        self,
-        model: nn.Module | pl.LightningModule,
-        model_type: ModelType,
-        encoder: AbstractGraphEncoder | None = None,
+        self, model_path: Path, encoder: AbstractGraphEncoder | None = None, device: torch.device = pick_device()
     ):
-        self.model = model.eval()
+        self.model_type = registery.get_model_type(model_path)
+        self.model = (
+            retrieve_model(name=self.model_type)
+            .load_from_checkpoint(model_path, map_location="cpu", strict=True)
+            .to(device)
+            .eval()
+        )
+        # Read the metrics from training
+        evals_dir = model_path.parent.parent / "evaluations"
+        epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
+
+        val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
+        best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()]
+        self.model_threshold = best["val_best_thr"]
         self.encoder = encoder.eval() if encoder is not None else None
-        self.model_type = model_type
 
     @staticmethod
     def _ensure_graph_fields(g: Data) -> Data:
@@ -1132,7 +1141,7 @@ class ConditionalGIN(pl.LightningModule):
         }
 
     def validation_step(self, batch, batch_idx):
-        g, _, _, _= batch
+        g, _, _, _ = batch
         logits = self(g)["graph_prediction"].squeeze(-1).float()  # [B]
         target = g.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")
@@ -1717,7 +1726,7 @@ class ConditionalGINLateFiLM(pl.LightningModule):
         }
 
     def validation_step(self, batch, batch_idx):
-        g, _, _, _= batch
+        g, _, _, _ = batch
         logits = self(g)["graph_prediction"].squeeze(-1).float()  # [B]
         target = g.y.float()  # [B]
         val_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="mean")

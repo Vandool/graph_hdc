@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import networkx as nx
 import torch
+import torchhd
 from networkx import Graph
 from torch_geometric.data import Batch
 from tqdm.auto import tqdm
@@ -53,7 +54,7 @@ class Generator:
         self,
         n_samples: int = 16,
         *,
-        only_final_graphs: bool = True,
+        only_final_graphs: bool = False,
     ) -> tuple[list[list[Graph]], list[bool]]:
         """
         Generate candidates for each sample and return *all* graphs.
@@ -100,7 +101,7 @@ class Generator:
         self,
         n_samples: int = 16,
         *,
-        only_final_graphs: bool = True,
+        only_final_graphs: bool = False,
     ) -> tuple[list[Graph], list[bool], list[list[float]]]:
         node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
         return self.decode(node_terms, graph_terms, only_final_graphs=only_final_graphs)
@@ -116,9 +117,6 @@ class Generator:
         are_final_flags: list[bool] = []
         all_similarities: list[list[float]] = []
 
-        def _row_norm(x: torch.Tensor, dim: int, eps: float = 1e-8) -> torch.Tensor:
-            return x / (x.norm(dim=dim, keepdim=True) + eps)
-
         # --- important: iterate by requested index---
         for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
             full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
@@ -130,7 +128,7 @@ class Generator:
                 all_similarities.append([0])
                 continue
 
-            candidates, is_final = self.decoding_fn(
+            candidates, final_flags = self.decoding_fn(
                 node_multiset=full_ctr,
                 oracle=self.oracle,
                 full_g_h=graph_terms_hd[i],
@@ -138,21 +136,15 @@ class Generator:
                 skip_n_nodes=self.decode_skip_n_nodes_threshold,
                 **self.decoder_settings,
             )
-            are_final_flags.append(bool(is_final))
 
-            if not candidates:
-                best_graphs.append(nx.Graph())
+            if len(candidates) == 1 and candidates[0].number_of_nodes() == 0:
+                best_graphs.append(candidates[0])
+                are_final_flags.append(final_flags[0])
                 all_similarities.append([0])
                 continue
 
-            nonempty_idx = [k for k, g in enumerate(candidates) if g.number_of_nodes() > 0]
-            if not nonempty_idx:
-                best_graphs.append(nx.Graph())
-                all_similarities.append([0])
-                continue
-
-            data_list = [DataTransformer.nx_to_pyg(candidates[k]) for k in nonempty_idx]
-
+            assert all(c.number_of_nodes() > 0 for c in candidates)
+            data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
             try:
                 batch = Batch.from_data_list(data_list)
                 enc_out = self.encoder.forward(batch)
@@ -160,21 +152,16 @@ class Generator:
             except Exception:
                 best_graphs.append(nx.Graph())
                 all_similarities.append([0])
+                are_final_flags.append(False)
                 continue
 
             q = graph_terms_hd[i].to(g_terms.device, g_terms.dtype)  # [D]
-            g_norm = _row_norm(g_terms, dim=1)  # [B, D]
-            q_norm = q / (q.norm() + 1e-8)  # [D]
-            sims_t = g_norm @ q_norm  # [B]
-            sims = sims_t.tolist()
+            sims = torchhd.cos(q, g_terms).tolist()
 
-            full_sims = [-float("inf")] * len(candidates)
-            for pos, k in enumerate(nonempty_idx):
-                full_sims[k] = sims[pos]
-
-            all_similarities.append(full_sims)
-            best_idx = int(max(range(len(full_sims)), key=lambda j: full_sims[j]))
+            all_similarities.append(sims)
+            best_idx = sims.index(max(sims))
             best_graphs.append(candidates[best_idx])
+            are_final_flags.append(final_flags[best_idx])
 
         return best_graphs, are_final_flags, all_similarities
 

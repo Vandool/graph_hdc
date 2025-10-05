@@ -319,14 +319,14 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     if cfg.get("draw", False):
         base_dir = GLOBAL_ARTEFACTS_PATH / "cond_generation" / f"drawings_valid_target_{target:.1f}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags = EVALUATOR.get_mols_and_valid_flags()
-        for i, (mol, valid) in enumerate(zip(mols, valid_flags, strict=False)):
+        mols, valid_flags, sims = EVALUATOR.get_mols_and_valid_flags()
+        for i, (mol, valid, sim) in enumerate(zip(mols, valid_flags, sims, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)
                 if abs(logp - target) > epsilon:
                     out = (
                         base_dir
-                        / f"{gen_ckpt_path.parent.parent.stem}__{os.getenv('CLASSIFIER')}__logp{logp:.3f}{i}.png"
+                        / f"{gen_ckpt_path.parent.parent.stem}__{os.getenv('CLASSIFIER')}__sim{sim:.3f}__logp{logp:.3f}{i}.png"
                     )
                     draw_mol(mol=mol, save_path=out, fmt="png")
 
