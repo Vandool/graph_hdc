@@ -991,6 +991,7 @@ class ConditionalGIN(pl.LightningModule):
         self.condition_dim = condition_dim
         self.conv_units = conv_units
         self.learning_rate = learning_rate
+        self.weight_decay = cfg.weight_decay if hasattr(cfg, "weight_decay") else 0.0
 
         ## == LAYER DEFINITIONS ==
 
@@ -1158,7 +1159,7 @@ class ConditionalGIN(pl.LightningModule):
 
         :returns: The configured optimizer
         """
-        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        return torch.optim.AdamW(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
 
 
 @register_model("GIN-C")
@@ -1743,4 +1744,4 @@ class ConditionalGINLateFiLM(pl.LightningModule):
 
         :returns: The configured optimizer
         """
-        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        return torch.optim.AdamW(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)

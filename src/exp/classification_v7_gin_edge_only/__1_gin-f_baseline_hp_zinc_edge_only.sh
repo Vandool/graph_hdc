@@ -6,3 +6,4 @@ BATCH_SIZE=256 \
 LR=3e-4 \
 EPOCHS=20 \
 ./_1_gin_submit.sh
+

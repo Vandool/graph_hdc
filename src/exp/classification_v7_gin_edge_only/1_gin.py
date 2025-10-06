@@ -346,20 +346,18 @@ class EpochResamplingSampler(Sampler[int]):
             total_pos += n_take
             total_neg += n_take
 
-
-        # selected.sort()
-        shard_size = ds.shard_size
-        selected = np.array(selected, dtype=np.int32)
-        shard_id = selected // shard_size
-        keys = shard_id + np.random.Generator(a.size)
-        order = np.argsort(keys)
-        final = selected[order]
-
         print("=== Train sampling summary (k==2 only) ===", flush=True)
         print(f"[parents] {len(parents)} | pos/parent<= {pos_per_parent} | neg/parent<= {neg_per_parent}", flush=True)
         print(f"[selected] total={len(selected)}  pos={total_pos}  neg={total_neg}", flush=True)
 
-        return final
+        # group values by their shard and shuffle each shard and return the final shard order
+        # for faster I/O when reading data from the disk
+        shard_size = ds.shard_size
+        arr = np.array(selected, dtype=np.int32)
+        shard_id = arr // shard_size
+        keys = shard_id + np.random.default_rng(seed).random(size=arr.size)
+        order = np.argsort(keys)
+        return arr[order].tolist()
 
     def __iter__(self):
         seed = self.base_seed + self._epoch
@@ -1057,20 +1055,25 @@ if __name__ == "__main__":
         cfg: Config = Config(
             exp_dir_name="overfitting_batch_norm",
             seed=42,
-            epochs=4,
+            epochs=100,
             batch_size=8,
             model_name="GIN-F",
             hv_dim=88 * 88,
             vsa=VSAModel.HRR,
             dataset=SupportedDataset.ZINC_SMILES_HRR_7744,
             lr=1e-4,
-            weight_decay=0.0,
+            weight_decay=1e-5,
             num_workers=4,
             prefetch_factor=2,
             pin_memory=True,
             continue_from=None,
             resume_retrain_last_epoch=False,
             resample_training_data_on_batch=True,
+            cond_units=[64, 32],
+            cond_emb_dim=32,
+            film_units=[32],
+            conv_units=[16, 16, 16],
+            pred_head_units=[64, 16, 1],
         )
     else:
         log("Running in cluster ...")
