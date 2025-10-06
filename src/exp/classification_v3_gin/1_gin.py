@@ -497,6 +497,7 @@ class PairsDataModule(pl.LightningDataModule):
         else:
             log("[PairsDataModule] stratified valid idx is being computed")
             self._valid_indices = balanced_indices_for_validation(ds=self.valid_full, seed=cfg.seed)
+            np.save(valid_idx_cache_path, np.array(self._valid_indices, dtype=np.int32))
         log(f"Loaded {len(self._valid_indices)} validation pairs for validation")
 
         cache_path = self.train_full.cache_dir / f"pairs_cache{dev_tag}.npz"
