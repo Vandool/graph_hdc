@@ -943,8 +943,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         deterministic=False,
         precision=pick_precision(),
         num_sanity_val_steps=0,
-        limit_val_batches=1.0,
-        val_check_interval=0.1,
+        # limit_val_batches=1.0,
+        # val_check_interval=0.1,
     )
 
     # --- Train
