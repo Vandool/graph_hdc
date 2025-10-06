@@ -356,16 +356,17 @@ class EpochResamplingSampler(Sampler[int]):
 
     def __iter__(self):
         seed = self.base_seed + self._epoch
-
-        cache_path = self.ds.cache_dir / f"indices_p{self.p}-n{self.n}-seed{seed}.npy"
+        p = 2
+        n = 2
+        cache_path = self.ds.cache_dir / f"indices_p{p}-n{n}-seed{seed}.npy"
         if cache_path.exists():
             print(f"[EpochResampling Cache Hit] Loading indices from {cache_path}")
             idxs = np.load(cache_path).tolist()
         else:
             idxs = self.stratified_per_parent_indices_k2_only(
                 ds=self.ds,
-                pos_per_parent=2,
-                neg_per_parent=2,
+                pos_per_parent=p,
+                neg_per_parent=n,
                 seed=seed,
             )
             np.save(cache_path, np.array(idxs, dtype=np.int32))
