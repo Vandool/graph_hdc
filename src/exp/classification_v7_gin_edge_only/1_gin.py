@@ -35,14 +35,14 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeoDataLoader
 
 # === BEGIN NEW ===
 from src.datasets.qm9_pairs import QM9Pairs
 from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_pairs_v3 import ZincPairsV3
+from src.datasets.zinc_pairs_v3 import PairType, ZincPairsV3
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
@@ -240,6 +240,155 @@ class PairsGraphsEncodedDataset(Dataset):
         return g1, y, k, idx
 
 
+class EpochResamplingSampler(Sampler[int]):
+    """
+    Epoch 0: your existing per-parent/type sampler.
+    Epoch >=1: k-stratified, class-balanced sampling with a mixture
+               of base indices and hard-pool indices controlled by alpha.
+    """
+
+    def __init__(
+        self,
+        ds,
+        dm: "PairsDataModule",
+        *,
+        p_per_parent,
+        n_per_parent,
+        type_mix=None,
+        batch_size: int,
+        exclude_neg_types=(),
+        base_seed=42,
+        balance_k2=True,
+    ):
+        self.ds = ds
+        self.dm = dm
+        self.p = p_per_parent
+        self.n = n_per_parent
+        self.type_mix = type_mix
+        self.exclude = {int(t) for t in exclude_neg_types}
+        self.base_seed = base_seed
+        self.balance_k2 = balance_k2
+        self.batch_size = batch_size
+        self._epoch = 0
+        self._last_len = 0
+
+    def stratified_per_parent_indices_k2_only(
+        ds,
+        *,
+        pos_per_parent: int,
+        neg_per_parent: int,
+        seed: int = 42,
+        log_every_shards: int = 50,
+    ) -> list[int]:
+        r"""
+        Select per parent the same number of POSITIVE_EDGE and NEGATIVE_EDGE pairs.
+
+        The number taken for each parent is:
+            n_parent = min(pos_per_parent, neg_per_parent,
+                           available_positive_edge, available_negative_edge)
+
+        Returns sorted global indices.
+
+        :param ds: Dataset with internal shards and fields (y, parent_idx, neg_type).
+        :param pos_per_parent: Max POSITIVE_EDGE per parent.
+        :param neg_per_parent: Max NEGATIVE_EDGE per parent.
+        :param seed: RNG seed for shuffling within pools.
+        :param log_every_shards: Log progress after this many shards.
+        :returns: Sorted list of global indices.
+        """
+        rng = random.Random(seed)
+
+        pos_edge_by_parent = defaultdict(list)  # pid -> [idx]
+        neg_edge_by_parent = defaultdict(list)  # pid -> [idx]
+
+        # scan shards and collect pools
+        global_offset = 0
+        num_shards = len(ds._shards)
+
+        for shard_id in range(num_shards):
+            data, slices = ds._get_shard(shard_id)
+            m = int(slices["y"].shape[0] - 1)
+
+            y_all = data.y
+            pid_all = data.parent_idx
+            nt_all = data.neg_type
+
+            sy = slices["y"]
+            spid = slices["parent_idx"]
+            snt = slices["neg_type"]
+
+            for li in range(m):
+                gidx = global_offset + li
+                y = int(y_all[sy[li] : sy[li + 1]].item())
+                pid = int(pid_all[spid[li] : spid[li + 1]].item())
+                nt = int(nt_all[snt[li] : snt[li + 1]].item())
+
+                if y == 1 and nt == int(PairType.POSITIVE_EDGE):
+                    pos_edge_by_parent[pid].append(gidx)
+                elif y == 0 and nt == int(PairType.NEGATIVE_EDGE):
+                    neg_edge_by_parent[pid].append(gidx)
+
+            global_offset += m
+            if log_every_shards and (shard_id + 1) % log_every_shards == 0:
+                print(f"[sample/train] scanned shard {shard_id + 1}/{num_shards}", flush=True)
+
+        # pick the same number from each side per parent
+        selected: list[int] = []
+        parents = sorted(set(pos_edge_by_parent) | set(neg_edge_by_parent))
+
+        total_pos = total_neg = 0
+        for pid in parents:
+            p_pool = pos_edge_by_parent.get(pid, [])
+            n_pool = neg_edge_by_parent.get(pid, [])
+            if not p_pool or not n_pool:
+                continue
+
+            rng.shuffle(p_pool)
+            rng.shuffle(n_pool)
+
+            n_take = min(pos_per_parent, neg_per_parent, len(p_pool), len(n_pool))
+            if n_take <= 0:
+                continue
+
+            selected.extend(p_pool[:n_take])
+            selected.extend(n_pool[:n_take])
+            total_pos += n_take
+            total_neg += n_take
+
+        selected.sort()
+
+        print("=== Train sampling summary (k==2 only) ===", flush=True)
+        print(f"[parents] {len(parents)} | pos/parent<= {pos_per_parent} | neg/parent<= {neg_per_parent}", flush=True)
+        print(f"[selected] total={len(selected)}  pos={total_pos}  neg={total_neg}", flush=True)
+
+        return selected
+
+    def __iter__(self):
+        seed = self.base_seed + self._epoch
+
+        cache_path = self.ds.cache_dir / f"indices_p{self.p}-n{self.n}-seed{seed}.npy"
+        if cache_path.exists():
+            print(f"[EpochResampling Cache Hit] Loading indices from {cache_path}")
+            idxs = np.load(cache_path).tolist()
+        else:
+            idxs = self.stratified_per_parent_indices_k2_only(
+                ds=self.ds,
+                pos_per_parent=2,
+                neg_per_parent=2,
+                seed=seed,
+            )
+            np.save(cache_path, np.array(idxs, dtype=np.int32))
+            print(f"[EpochResampling] Saved indices: {cache_path!s}")
+
+        log(f"[epoch {self._epoch}] Resampled {len(idxs)} pairs.")
+        self._last_len = len(idxs)
+        self._epoch += 1
+        return iter(idxs)
+
+    def __len__(self):
+        return self._last_len if self._last_len else len(self.ds)
+
+
 class PairsDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -297,6 +446,15 @@ class PairsDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
+        sampler = EpochResamplingSampler(
+            ds=self.train_full,
+            dm=self,
+            p_per_parent=self.cfg.p_per_parent,
+            n_per_parent=self.cfg.n_per_parent,
+            exclude_neg_types=self.cfg.exclude_negs,
+            base_seed=self.cfg.seed,
+            batch_size=self.cfg.batch_size,
+        )
         return GeoDataLoader(
             dataset=PairsGraphsEncodedDataset(
                 base_dataset=self.base_dataset_train,
@@ -308,6 +466,7 @@ class PairsDataModule(pl.LightningDataModule):
             ),
             batch_size=self.cfg.batch_size,
             shuffle=True,
+            sampler=sampler,
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
             persistent_workers=cfg.num_workers > 0,
@@ -784,6 +943,8 @@ def run_experiment(cfg: Config, is_dev: bool = False):
         deterministic=False,
         precision=pick_precision(),
         num_sanity_val_steps=0,
+        limit_val_batches=1.0,
+        val_check_interval=0.1,
     )
 
     # --- Train
