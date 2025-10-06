@@ -356,8 +356,8 @@ class EpochResamplingSampler(Sampler[int]):
 
     def __iter__(self):
         seed = self.base_seed + self._epoch
-        p = 2
-        n = 2
+        p = 1
+        n = 1
         cache_path = self.ds.cache_dir / f"indices_e-{self._epoch}-p{p}-n{n}-seed{seed}.npy"
         if cache_path.exists():
             print(f"[EpochResampling Cache Hit] Loading indices from {cache_path}")
