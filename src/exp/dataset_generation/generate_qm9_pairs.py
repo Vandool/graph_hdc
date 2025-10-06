@@ -1,3 +1,4 @@
+import argparse
 from collections import Counter
 
 import torch
@@ -202,12 +203,12 @@ def build_qm9_pairs_for_split(
 
 
 def main():
-    # p = argparse.ArgumentParser(description="Generate QM9Pairs for a single split.")
-    # p.add_argument("--split", required=True, choices=["train", "valid", "test"])
+    p = argparse.ArgumentParser(description="Generate QM9Pairs for a single split.")
+    p.add_argument("--split", required=True, choices=["train", "valid", "test"])
     # p.add_argument("--dev", action="store_true", help="Use small dev sizes (train=200, valid=20, test=20).")
     # p.add_argument("--n", type=int, default=None, help="Number of base molecules (overrides --dev default).")
     # p.add_argument("--sanity-limit", type=int, default=None, help="VF2 check cap (overrides --dev default).")
-    # args = p.parse_args()
+    args = p.parse_args()
 
     cfg = QM9PairConfig()
     seed_everything(cfg.seed)
