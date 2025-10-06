@@ -346,13 +346,20 @@ class EpochResamplingSampler(Sampler[int]):
             total_pos += n_take
             total_neg += n_take
 
-        selected.sort()
+
+        # selected.sort()
+        shard_size = ds.shard_size
+        selected = np.array(selected, dtype=np.int32)
+        shard_id = selected // shard_size
+        keys = shard_id + np.random.Generator(a.size)
+        order = np.argsort(keys)
+        final = selected[order]
 
         print("=== Train sampling summary (k==2 only) ===", flush=True)
         print(f"[parents] {len(parents)} | pos/parent<= {pos_per_parent} | neg/parent<= {neg_per_parent}", flush=True)
         print(f"[selected] total={len(selected)}  pos={total_pos}  neg={total_neg}", flush=True)
 
-        return selected
+        return final
 
     def __iter__(self):
         seed = self.base_seed + self._epoch

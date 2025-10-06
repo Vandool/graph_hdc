@@ -183,7 +183,7 @@ def eval_cond_gen(
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
         / "generation_and_plots"
-        / f"{base_dataset}_{os.getenv('GEN_MODEL')}_{os.getenv('CLASSIFIER')}_{n_samples}-samples"
+        / f"{base_dataset}_{gen_mod_hint}_{classifier_hint}_{n_samples}-samples"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
 
