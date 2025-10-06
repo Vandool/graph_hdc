@@ -252,27 +252,18 @@ class EpochResamplingSampler(Sampler[int]):
         ds,
         dm: "PairsDataModule",
         *,
-        p_per_parent,
-        n_per_parent,
-        type_mix=None,
         batch_size: int,
-        exclude_neg_types=(),
         base_seed=42,
-        balance_k2=True,
     ):
         self.ds = ds
         self.dm = dm
-        self.p = p_per_parent
-        self.n = n_per_parent
-        self.type_mix = type_mix
-        self.exclude = {int(t) for t in exclude_neg_types}
         self.base_seed = base_seed
-        self.balance_k2 = balance_k2
         self.batch_size = batch_size
         self._epoch = 0
         self._last_len = 0
 
     def stratified_per_parent_indices_k2_only(
+        self,
         ds,
         *,
         pos_per_parent: int,
@@ -449,9 +440,6 @@ class PairsDataModule(pl.LightningDataModule):
         sampler = EpochResamplingSampler(
             ds=self.train_full,
             dm=self,
-            p_per_parent=self.cfg.p_per_parent,
-            n_per_parent=self.cfg.n_per_parent,
-            exclude_neg_types=self.cfg.exclude_negs,
             base_seed=self.cfg.seed,
             batch_size=self.cfg.batch_size,
         )
