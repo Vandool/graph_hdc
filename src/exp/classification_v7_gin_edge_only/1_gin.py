@@ -453,7 +453,7 @@ class PairsDataModule(pl.LightningDataModule):
                 add_edge_weights=True,
             ),
             batch_size=self.cfg.batch_size,
-            shuffle=True,
+            shuffle=False,
             sampler=sampler,
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
