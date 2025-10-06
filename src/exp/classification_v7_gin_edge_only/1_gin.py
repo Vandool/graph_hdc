@@ -358,7 +358,7 @@ class EpochResamplingSampler(Sampler[int]):
         seed = self.base_seed + self._epoch
         p = 2
         n = 2
-        cache_path = self.ds.cache_dir / f"indices_p{p}-n{n}-seed{seed}.npy"
+        cache_path = self.ds.cache_dir / f"indices_e-{self._epoch}-p{p}-n{n}-seed{seed}.npy"
         if cache_path.exists():
             print(f"[EpochResampling Cache Hit] Loading indices from {cache_path}")
             idxs = np.load(cache_path).tolist()
