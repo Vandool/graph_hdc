@@ -37,14 +37,13 @@ from sklearn.metrics import (
     roc_curve,
 )
 from torch.utils.data import Dataset, Sampler
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeoDataLoader
 from tqdm import tqdm
 
 # === BEGIN NEW ===
 from src.datasets.qm9_pairs import QM9Pairs
 from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_pairs_v2 import ZincPairsV2
 from src.datasets.zinc_pairs_v3 import ZincPairsV3
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import Features, SupportedDataset
@@ -366,13 +365,15 @@ class PairsGraphsEncodedDataset(Dataset):
 
     def __init__(
         self,
-        pairs_ds: ZincPairsV2,
+        base_dataset,
+        pairs_ds,
         *,
         encoder: AbstractGraphEncoder,
         device: torch.device,
         add_edge_attr: bool = True,
         add_edge_weights: bool = True,
     ):
+        self.base_dataset = base_dataset
         self.ds = pairs_ds
         self.encoder = encoder.eval()
         self.device = device
@@ -401,21 +402,12 @@ class PairsGraphsEncodedDataset(Dataset):
         g1 = Data(x=item.x1, edge_index=item.edge_index1)
         g1 = self._ensure_graph_fields(g1, add_edge_attr=self.add_edge_attr, add_edge_weights=self.add_edge_weights)
 
-        # g2 (condition) -> encode to cond
-        g2 = Data(x=item.x2, edge_index=item.edge_index2)
-
-        # Encode a single graph safely
-        batch_g2 = Batch.from_data_list([g2]).to(self.device)
-        h2 = self.encoder.forward(batch_g2)["graph_embedding"]  # [1, D] on device
-        cond = h2.detach().cpu()  # let PL move the whole Batch later
-        cond = cond.as_subclass(torch.Tensor)
-
         # target/meta
         y = float(item.y.view(-1)[0].item())
         parent_idx = int(item.parent_idx.view(-1)[0].item()) if hasattr(item, "parent_idx") else -1
 
         # Attach fields to g1
-        g1.cond = cond
+        g1.cond = self.base_dataset[parent_idx].graph_terms.detach().cpu().as_subclass(torch.Tensor).unsqueeze(0)
         g1.y = torch.tensor(y, dtype=torch.float32)
         g1.parent_idx = torch.tensor(parent_idx, dtype=torch.long)
 
@@ -475,14 +467,23 @@ class PairsDataModule(pl.LightningDataModule):
         self.valid_full = None
         self.valid_loader = None
 
+        self.base_dataset_train = None
+        self.base_dataset_valid = None
+
     def setup(self, stage=None):
         log("Loading pair datasets …")
         if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
-            self.train_full = QM9Pairs(split="train", base_dataset=QM9Smiles(split="train"), dev=self.is_dev)
-            self.valid_full = QM9Pairs(split="valid", base_dataset=QM9Smiles(split="valid"), dev=self.is_dev)
+            self.base_dataset_train = QM9Smiles(split="train", enc_suffix="HRR1600")
+            self.train_full = QM9Pairs(split="train", base_dataset=self.base_dataset_train, dev=self.is_dev)
+
+            self.base_dataset_valid = QM9Smiles(split="valid", enc_suffix="HRR1600")
+            self.valid_full = QM9Pairs(split="valid", base_dataset=self.base_dataset_valid, dev=self.is_dev)
         elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
-            self.train_full = ZincPairsV3(split="train", base_dataset=ZincSmiles(split="train"), dev=self.is_dev)
-            self.valid_full = ZincPairsV3(split="valid", base_dataset=ZincSmiles(split="valid"), dev=self.is_dev)
+            self.base_dataset_train = ZincSmiles(split="train", enc_suffix="HRR7744")
+            self.train_full = ZincPairsV3(split="train", base_dataset=self.base_dataset_train, dev=self.is_dev)
+
+            self.base_dataset_valid = ZincSmiles(split="valid", enc_suffix="HRR7744")
+            self.valid_full = ZincPairsV3(split="valid", base_dataset=self.base_dataset_valid, dev=self.is_dev)
         log(
             f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(self.train_full)} valid_pairs_full_size={len(self.valid_full)}"
         )
@@ -558,7 +559,12 @@ class PairsDataModule(pl.LightningDataModule):
 
         return GeoDataLoader(
             dataset=PairsGraphsEncodedDataset(
-                self.train_full, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+                base_dataset=self.base_dataset_train,
+                pairs_ds=self.train_full,
+                encoder=self.encoder,
+                device=self.device,
+                add_edge_attr=True,
+                add_edge_weights=True,
             ),
             batch_size=self.cfg.batch_size,
             sampler=sampler,
@@ -576,7 +582,12 @@ class PairsDataModule(pl.LightningDataModule):
             else self.valid_full
         )
         valid_ds = PairsGraphsEncodedDataset(
-            valid_base, encoder=self.encoder, device=self.device, add_edge_attr=True, add_edge_weights=True
+            base_dataset=self.base_dataset_valid,
+            pairs_ds=valid_base,
+            encoder=self.encoder,
+            device=self.device,
+            add_edge_attr=True,
+            add_edge_weights=True,
         )
         return GeoDataLoader(
             valid_ds,

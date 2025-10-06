@@ -494,10 +494,10 @@ class QM9Pairs(Dataset):
         self.edge_only = edge_only
 
         if self.edge_only:
-            root = root / f"{root.stem}EdgeOnly"
+            root = root.parent / f"{root.stem}EdgeOnly"
 
         if dev:
-            root = root / f"{root.stem}DEV"
+            root = root.parent / f"{root.stem}DEV"
 
         # idx_path must exist for process() to use
         self.idx_path = Path(root) / "processed" / f"index_{split}.pt"

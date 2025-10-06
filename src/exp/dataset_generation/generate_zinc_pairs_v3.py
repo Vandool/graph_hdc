@@ -215,14 +215,14 @@ def main():
 
     cfg = ZincPairV3Config()
     seed_everything(42)
-    split = "test"
+    split = "train"
     _, stats = build_zinc_pairs_for_split(split=split, cfg=cfg, is_dev=True, edge_only=True)
 
-    _, stats = build_zinc_pairs_for_split(
-        split=split,
-        cfg=cfg,
-        is_dev=False,
-    )
+    # _, stats = build_zinc_pairs_for_split(
+    #     split=split,
+    #     cfg=cfg,
+    #     is_dev=False,
+    # )
 
 
 if __name__ == "__main__":
