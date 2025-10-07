@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import torch
+import torchhd
 from networkx.algorithms.isomorphism import (
     GraphMatcher,
     categorical_edge_match,
@@ -18,10 +19,17 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
 )
+from torch_geometric.data import Batch
 from tqdm import tqdm
 
+from src.datasets.qm9_smiles_generation import QM9Smiles
+from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG
+from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.encoding.the_types import Feat
+from src.utils.chem import draw_mol
+from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, TupleIndexer
 from src.utils.visualisations import draw_nx_with_atom_colorings
 
 
@@ -288,7 +296,7 @@ def powerset(iterable):
     return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
 
 
-def wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
+def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
     """WL hash that respects `feat`."""
     H = G.copy()
     for n in H.nodes:
@@ -297,8 +305,8 @@ def wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
     return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
 
 
-def hash(G: nx.Graph) -> tuple[str, int, int]:
-    return wl_hash(G), G.number_of_nodes(), G.number_of_edges()
+def _hash(G: nx.Graph) -> tuple[str, int, int]:
+    return _wl_hash(G), G.number_of_nodes(), G.number_of_edges()
 
 
 def order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
@@ -1095,3 +1103,310 @@ def greedy_oracle_decoder_voter_oracle(
             pbar.update(1)
 
     return _generate_response(population)
+
+
+def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb):
+    ## First get the node multiset
+    num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in nodes_multiset.items()])
+
+    n_count = node_counter.total()
+    e_count = num_edges
+    print(n_count)
+    print(e_count)
+
+    node_idxs = node_idxer.get_idxs(node_tuples)
+    idx_tensor = torch.tensor(node_idxs, dtype=torch.long, device=device)
+    cb = nodes_cb[idx_tensor]
+    print(cb.shape)
+
+    residuals = {k: (k[1] + 1) * n * 2 for k, n in node_counter.items()}  # how much each node can spend on edges
+    edges_left = [(node_tuples[a], node_tuples[b]) for a, b in edge_tuples]
+    result = Counter()
+    print(f"ITERATIONS: {e_count}")
+    result_edge_index = []
+    black_list = set()
+    for i in range(e_count // 2):
+        edges = []
+        all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
+        for a, b in all_edges:
+            # if a == b: continue
+            idx_a = node_idxer.get_idx(a)
+            idx_b = node_idxer.get_idx(b)
+            hd_a = node_cb[idx_a]
+            hd_b = node_cb[idx_b]
+
+            # bind
+            edges.append(hd_a.bind(hd_b))
+
+        t = torch.stack(edges).as_subclass(torchhd.HRRTensor)
+        sims = torchhd.cos(edge_terms, t)
+        max = sims.max().item()
+        eps = 1e-9
+        # max_idxs = (sims >= sims.max() - eps).nonzero(as_tuple=True)[0]
+        idx_max = torch.argmax(sims).item()
+        a_found, b_found = all_edges[idx_max]
+        # for idx in max_idxs:
+        #     if idx in black_list:
+        #         continue
+        #     a_found, b_found = all_edges[idx]
+        #     if residuals[a_found] <= 0:
+        #         continue
+        #     if residuals[b_found] <= 0:
+        #         continue
+        #     if (a_found, b_found) not in edges_left:
+        #         print("ALARM")
+        #     break
+
+        if not a_found or not b_found:
+            print("Failed to decode")
+            break
+        edges_left.remove((a_found, b_found))
+        edges_left.remove((b_found, a_found))
+        hd_a_found = node_cb[node_idxer.get_idx(a_found)]
+        hd_b_found = node_cb[node_idxer.get_idx(b_found)]
+        edge_terms -= hd_a_found.bind(hd_b_found)
+        edge_terms -= hd_b_found.bind(hd_a_found)
+        result[(a_found, b_found)] += 1
+        result[(b_found, a_found)] += 1
+
+        residuals[a_found] -= 2
+        residuals[b_found] -= 2
+
+        result_edge_index.append((a_found, b_found))
+        result_edge_index.append((b_found, a_found))
+        print(f"Edge {i} done")
+        print(f"Sim max: {sims.max().item()}")
+
+    print(result.total())
+    print(result)
+    print(result_edge_index)
+    print("ENCODED")
+    e_c = Counter(result_edge_index)
+    print(sorted(e_c.items(), key=lambda x: x[1], reverse=True))
+    print("ACTUAL")
+    a_c = Counter([(node_tuples[a], node_tuples[b]) for a, b in edge_tuples])
+    print(sorted(a_c.items(), key=lambda x: x[1], reverse=True))
+
+    ## We have the multiset of nodes and the multiset of edges
+    first_pop: list[tuple[nx.Graph, list[tuple]]] = []
+    global_seen: set = set()
+    for k, (u_t, v_t) in enumerate(result_edge_index):
+        G = nx.Graph()
+        uid = add_node_with_feat(G, Feat.from_tuple(u_t))
+        ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=n_count) is not None
+        if not ok:
+            continue
+        key = _hash(G)
+        if key in global_seen:
+            continue
+        global_seen.add(key)
+        remaining_edges = result_edge_index.copy()
+        remaining_edges.remove((u_t, v_t))
+        remaining_edges.remove((v_t, u_t))
+        first_pop.append((G, remaining_edges))
+    print(len(first_pop))
+
+    # Start with a child with on satisfied node
+    selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 1]
+    population = selected if len(selected) >= 1 else first_pop
+    for _ in tqdm(range(2, n_count)):
+        children: list[tuple[nx.Graph, list[tuple]]] = []
+        local_seen: set = set()  # per-iteration dedup to keep branching under control
+
+        for gi, (G, edges_left) in enumerate(population):
+            leftovers_ctr = leftover_features(nodes_multiset, G)
+            if not leftovers_ctr:
+                continue
+
+            leftover_types = order_leftovers_by_degree_distinct(leftovers_ctr)
+            ancrs = anchors(G)
+            if not ancrs:
+                continue
+
+            # how many anchors we’ll actually use (slice semantics preserved)
+            for a, lo_t in list(itertools.product(ancrs, leftover_types)):
+                a_t = G.nodes[a]["feat"].to_tuple()
+                if (a_t, lo_t) not in edges_left:
+                    continue
+
+                C = G.copy()
+                nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=n_count)
+                if nid is None:
+                    continue
+                if C.number_of_edges() > e_count:
+                    continue
+
+                keyC = _hash(C)
+                if keyC in global_seen or keyC in local_seen:
+                    continue
+                remaining_edges = edges_left.copy()
+                remaining_edges.remove((a_t, lo_t))
+                remaining_edges.remove((lo_t, a_t))
+                global_seen.add(keyC)
+                local_seen.add(keyC)
+                children.append((C, remaining_edges))
+
+                ancrs_rest = [a_ for a_ in ancrs if a_ != a]
+
+                for subset in powerset(ancrs_rest):
+                    if len(subset) == 0:
+                        continue
+
+                    # Skip if subsets edges are not in the edge list
+                    all_new_connection = []
+                    nid_t = C.nodes[nid]["feat"].to_tuple()
+                    subset_ts = [C.nodes[s]["feat"].to_tuple() for s in subset]
+                    should_continue = False
+                    for st in subset_ts:
+                        ts = (nid_t, st)
+                        if ts not in remaining_edges:
+                            should_continue = True
+                            break
+                        all_new_connection.append(ts)
+
+                    if should_continue:
+                        continue
+
+                    all_new_counter = Counter(all_new_connection)
+                    # if both ends of an edge is the same tuple, it should be considered twice
+                    for k, v in all_new_counter.items():
+                        if k[0] == k[1]:
+                            all_new_counter[k] = 2 * v
+                    left_over_edges_counter = Counter(remaining_edges)
+                    for k, v in all_new_counter.items():
+                        if left_over_edges_counter[k] < v:
+                            should_continue = True
+                            break
+
+                    if should_continue:
+                        continue
+
+                    H = C.copy()
+                    new_nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=n_count)
+                    if new_nid is None:
+                        continue
+                    if H.number_of_edges() > e_count:
+                        continue
+
+                    keyH = _hash(H)
+                    if keyH in global_seen or keyH in local_seen:
+                        continue
+                    remaining_edges_ = remaining_edges.copy()
+                    for a_t, b_t in all_new_connection:
+                        try:
+                            remaining_edges_.remove((a_t, b_t))
+                            remaining_edges_.remove((b_t, a_t))
+                        except Exception as e:
+                            print(e)
+                            continue
+                    global_seen.add(keyH)
+                    local_seen.add(keyH)
+                    children.append((H, remaining_edges_))
+
+        ## Collect the children with highest number of edges
+        # edge_max = max([G.number_of_edges() for G, _ in children])
+        # children = [(G, l) for G, l in children if G.number_of_edges() >= edge_max]
+        population = sorted(children, key=lambda x: len(anchors(x[0])))[:64]
+
+    return zip(*population, strict=True)
+
+
+if __name__ == "__main__":
+    base_dataset = "qm9"
+    ds = ZincSmiles(split="test") if base_dataset == "zinc" else QM9Smiles(split="test")
+
+    data = ds[10]
+
+    nx_g = DataTransformer.pyg_to_nx(data)
+    mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset=base_dataset)
+
+    print(mol.GetNumAtoms())
+    print(mol.GetNumBonds())
+    print(nx_g.number_of_nodes())
+    print(nx_g.number_of_edges())
+    print(data.x)
+    print(data.edge_index)
+
+    # device = pick_device()
+    device = torch.device("cpu")
+    node_tuples = [tuple(i) for i in data.x.tolist()]
+    edge_tuples = [tuple(e) for e in data.edge_index.t().cpu().tolist()]
+
+    ds_config = ZINC_SMILES_HRR_7744_CONFIG
+    encoder = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
+    encoder.nodes_codebook = encoder.nodes_codebook.to(torch.float64).as_subclass(torchhd.HRRTensor)
+    node_cb = encoder.nodes_codebook
+    node_cb = node_cb.to(torch.float64).as_subclass(torchhd.HRRTensor)
+    print(node_cb.shape)
+    node_idxer: TupleIndexer = encoder.nodes_indexer
+
+    # Manually compute the edge terms
+    edge_terms_manul = None
+    edges = []
+    for a, b in edge_tuples:
+        idx_a = node_idxer.get_idx(node_tuples[a])
+        idx_b = node_idxer.get_idx(node_tuples[b])
+        hd_a = node_cb[idx_a]
+        hd_b = node_cb[idx_b]
+
+        # bind
+        edges.append(hd_a.bind(hd_b))
+
+    t = torch.stack(edges)
+    print(t.shape)
+    edge_terms_manul = torchhd.multibundle(t)
+    print(edge_terms_manul.shape)
+
+    edget_terms_m_copy = edge_terms_manul.clone()
+    # Now just reverse to see if you get 0
+    for a, b in edge_tuples:
+        idx_a = node_idxer.get_idx(node_tuples[a])
+        idx_b = node_idxer.get_idx(node_tuples[b])
+        hd_a = node_cb[idx_a]
+        hd_b = node_cb[idx_b]
+
+        # bind
+        edget_terms_m_copy -= hd_a.bind(hd_b)
+
+    zero_hd = torchhd.empty(1, 1600, "HRR")
+    sum_elements = edget_terms_m_copy.abs().sum().item()
+    print(sum_elements)
+    # prints 2.470420440658927e-05 <-- why not zero?
+    # with dtype float64 -> 4.542902902140598e-14 almost zero
+
+    # Compare the manually created one with the hypernet
+
+    batch = Batch.from_data_list([data])
+    forward = encoder.forward(batch)
+    edge_terms = forward["edge_terms"]
+    graph_terms = forward["graph_embedding"]
+
+    eps = 1e-9
+    ok_mask = (edge_terms - edge_terms_manul).abs() <= eps  # bool tensor
+    all_ok = ok_mask.all()  # << GOOD
+    print(all_ok.item())
+
+    draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
+    ## Now let's fucking decode the edges
+    node_counter = DataTransformer.get_node_counter_from_batch(0, batch)
+    candidates, edges_left = new_decoder(
+        nodes_multiset=node_counter, edge_terms=edge_terms, nodes_cb=node_cb
+    )
+    data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
+
+    batch = Batch.from_data_list(data_list)
+    enc_out = encoder.forward(batch)
+    g_terms = enc_out["graph_embedding"]  # [B, D]
+
+    q = graph_terms.to(g_terms.device, g_terms.dtype)  # [D]
+    sims_ = torchhd.cos(q, g_terms).tolist()[0]
+    print(sims_)
+    print(max(sims_))
+
+    best_idx = sims_.index(max(sims_))
+    best = candidates[best_idx]
+
+    draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
+    for i, c in enumerate(candidates):
+        best_mol, _ = DataTransformer.nx_to_mol_v2(c, dataset=base_dataset)
+        draw_mol(mol=best_mol, save_path=f"candidate-{i}-best-{best_idx}.png", fmt="png")

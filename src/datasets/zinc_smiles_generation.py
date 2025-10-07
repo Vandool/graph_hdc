@@ -22,7 +22,6 @@ Example
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -34,7 +33,7 @@ from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
 from src.utils.chem import eval_key_from_data
-from src.utils.utils import GLOBAL_DATASET_PATH, fit_stats, zscore
+from src.utils.utils import GLOBAL_DATASET_PATH
 
 
 # ─────────────────────────────── SMILES iterator ──────────────────────────────
@@ -233,6 +232,7 @@ def precompute_encodings(
 
         graph_terms = out["graph_embedding"].detach().cpu()
         node_terms = out["node_terms"].detach().cpu()
+        edge_terms = out["edge_terms"].detach().cpu()
 
         # Unbatch the underlying Data objects and attach encodings
         # `batch.to_data_list()` returns per-graph Data in batch order
@@ -240,8 +240,9 @@ def precompute_encodings(
         assert len(per_graph) == graph_terms.size(0)
         for i, d in enumerate(per_graph):
             d = d.clone()
+            d.node_terms = node_terms[i]  # [Dg]
+            d.edge_terms = edge_terms[i]  # [Dg]
             d.graph_terms = graph_terms[i]  # [Dg]
-            d.node_terms = node_terms[i]  # [Ni, Dn]
             aug.append(d)
 
     # Collate and save under a distinct processed filename

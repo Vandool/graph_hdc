@@ -6,6 +6,7 @@ from pathlib import Path
 import normflows as nf
 import pytorch_lightning as pl
 import torch
+from torch import Tensor
 
 from src.encoding.the_types import VSAModel
 from src.utils.registery import register_model
@@ -28,10 +29,14 @@ class AbstractNFModel(pl.LightningModule):
         z, logs = self.flow.sample(num_samples)
         return z, logs
 
-    def split(self, flat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # flat: [B, 2D] in data-space
+    def split(self, flat: torch.Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        # flat: [B, 3D] in data-space
         D = self.D
-        return flat[:, :D].contiguous(), flat[:, D:].contiguous()
+        return (
+            flat[:, :D].contiguous(),  # node terms
+            flat[:, D : 2 * D].contiguous(),  # edge terms
+            flat[:, 2 * D :].contiguous(),  # graph terms
+        )
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
@@ -84,20 +89,24 @@ class BoundedMLP(torch.nn.Module):
         self.last_pre = pre
         return torch.tanh(pre) * self.smax  # bound log-scale in [-smax, smax]
 
+
 @register_model("NVP")
 class RealNVPV2Lightning(AbstractNFModel):
     def __init__(self, cfg):
         super().__init__(cfg)
         D = int(cfg.hv_dim)
         self.D = D
-        self.flat_dim = 2 * D
+        dim_multiplier = 2 if not hasattr(cfg, "hv_count") else cfg.hv_count
+        self.flat_dim = dim_multiplier * D
 
         mask = (torch.arange(self.flat_dim) % 2).to(torch.float32)
         self.register_buffer("mask0", mask)
 
         # per-feature standardization params (fill later)
-        self.register_buffer("mu", torch.zeros(self.flat_dim))
-        self.register_buffer("log_sigma", torch.zeros(self.flat_dim))
+        default = torch.get_default_dtype()  # follows trainer precision if set early
+        self.register_buffer("mask0", (torch.arange(self.flat_dim) % 2).to(default))
+        self.register_buffer("mu", torch.zeros(self.flat_dim, dtype=default))
+        self.register_buffer("log_sigma", torch.zeros(self.flat_dim, dtype=default))
 
         self.s_modules = []  # keep handles for warmup/logging
         flows = []
@@ -121,9 +130,9 @@ class RealNVPV2Lightning(AbstractNFModel):
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
 
     def set_standardization(self, mu, sigma, eps=1e-6):
-        """Call once before training; mu/sigma are 1D tensors/lists length 2D."""
-        mu = torch.as_tensor(mu, dtype=torch.float32, device=self.device)
-        sigma = torch.as_tensor(sigma, dtype=torch.float32, device=self.device)
+        tgt_dtype = self.mu.dtype  # match buffer dtype (fp32/fp64)
+        mu = torch.as_tensor(mu, dtype=tgt_dtype, device=self.device)
+        sigma = torch.as_tensor(sigma, dtype=tgt_dtype, device=self.device)
         self.mu.copy_(mu)
         self.log_sigma.copy_(torch.log(torch.clamp(sigma, min=eps)))
 
@@ -138,7 +147,7 @@ class RealNVPV2Lightning(AbstractNFModel):
 
     def decode_from_latent(self, z_std):
         # z_std in standardized latent space -> x in data-space (differentiable)
-        x_std = self.flow.forward(z_std)      # normflows forward: z_std -> x_std
+        x_std = self.flow.forward(z_std)  # normflows forward: z_std -> x_std
         return self._posttransform(x_std)
 
     @torch.no_grad()
@@ -151,8 +160,8 @@ class RealNVPV2Lightning(AbstractNFModel):
         """
         z, _logs = self.sample(num_samples)  # standardized space
         x = self._posttransform(z)  # back to data space
-        node_terms, graph_terms = self.split(x)
-        return node_terms, graph_terms, _logs
+        node_terms, edge_terms, graph_terms = self.split(x)
+        return node_terms, edge_terms, graph_terms, _logs
 
     def nf_forward_kld(self, flat):
         """Example: exact NLL with pre-transform correction."""
@@ -200,12 +209,14 @@ class RealNVPV2Lightning(AbstractNFModel):
     def _flat_from_batch(self, batch) -> torch.Tensor:
         D = self.D
         B = batch.num_graphs
-        n, g = batch.node_terms, batch.graph_terms
+        n, e, g = batch.node_terms, batch.edge_terms, batch.graph_terms
         if n.dim() == 1:
             n = n.view(B, D)
+        if e.dim() == 1:
+            e = e.view(B, D)
         if g.dim() == 1:
             g = g.view(B, D)
-        return torch.cat([n, g], dim=-1)
+        return torch.cat([n, e, g], dim=-1)
 
     def training_step(self, batch, batch_idx):
         flat = self._flat_from_batch(batch)
@@ -244,3 +255,18 @@ class RealNVPV2Lightning(AbstractNFModel):
         val = float("nan") if obj.numel() == 0 else float(obj.mean().detach().cpu().item())
         self.log("val_loss", val, on_epoch=True, prog_bar=True, batch_size=flat.size(0))
         return torch.tensor(val, device=flat.device) if val == val else None  # return NaN-safe
+
+    def on_after_batch_transfer(self, batch, dataloader_idx: int):
+        # Cast floats to the module’s dtype (bf16/fp32/fp64 depending on Trainer precision)
+        return _cast_to_dtype(batch, self.dtype)
+
+
+def _cast_to_dtype(x, dtype):
+    if torch.is_tensor(x):
+        return x.to(dtype) if x.dtype.is_floating_point else x
+    if isinstance(x, dict):
+        return {k: _cast_to_dtype(v, dtype) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        t = type(x)
+        return t(_cast_to_dtype(v, dtype) for v in x)
+    return x

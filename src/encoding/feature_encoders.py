@@ -4,25 +4,28 @@ from typing import Any
 import torch
 import torchhd
 
+from src.encoding.the_types import VSAModel
 from src.utils.utils import TupleIndexer
 
 
 class AbstractFeatureEncoder(ABC):
     def __init__(
-            self,
-            dim: int,
-            vsa: str,
-            device: torch.device = torch.device("cpu"),
-            seed: int | None = None,
-            num_categories: int | None = None,
-            idx_offset: int = 0,
-            indexer=None
+        self,
+        dim: int,
+        vsa: str,
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        num_categories: int | None = None,
+        idx_offset: int = 0,
+        indexer=None,
+        dtype: str = "float32",
     ):
         self.dim = dim
         self.vsa = vsa
         self.device = device
         self.num_categories = num_categories
         self.idx_offset = idx_offset
+        self.dtype = dtype
         if seed is not None:
             torch.manual_seed(seed)
         self.codebook = self.generate_codebook()
@@ -53,20 +56,28 @@ class AbstractFeatureEncoder(ABC):
 
 class CategoricalOneHotEncoder(AbstractFeatureEncoder):
     def __init__(
-            self,
-            dim: int,
-            num_categories: int,
-            vsa: str = "MAP",
-            device: torch.device = torch.device("cpu"),
-            seed: int | None = None,
-            idx_offset: int = 0,
+        self,
+        dim: int,
+        num_categories: int,
+        vsa: str = "MAP",
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        idx_offset: int = 0,
+        dtype: str = "float32",
     ):
         super().__init__(
-            dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories, idx_offset=idx_offset
+            dim=dim,
+            vsa=vsa,
+            device=device,
+            seed=seed,
+            num_categories=num_categories,
+            idx_offset=idx_offset,
+            dtype=dtype,
         )
 
     def generate_codebook(self) -> torch.Tensor:
-        cb = torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device="cpu")
+        dtype = torch.float64 if self.dtype == "float64" else torch.float32
+        cb = torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device="cpu", dtype=dtype)
         return cb.to(self.device)
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
@@ -94,13 +105,14 @@ class CategoricalOneHotEncoder(AbstractFeatureEncoder):
 
 class CategoricalIntegerEncoder(AbstractFeatureEncoder):
     def __init__(
-            self,
-            dim: int,
-            num_categories: int,
-            vsa: str = "MAP",
-            device: torch.device = torch.device("cpu"),
-            seed: int | None = None,
-            idx_offset: int = 0,
+        self,
+        dim: int,
+        num_categories: int,
+        vsa: str = "MAP",
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        idx_offset: int = 0,
+        dtype: str = "float32",
     ):
         """
         :param dim: Dimensionality of the VSA hyper-vectors
@@ -110,11 +122,18 @@ class CategoricalIntegerEncoder(AbstractFeatureEncoder):
         :param seed: Optional RNG seed
         """
         super().__init__(
-            dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories, idx_offset=idx_offset
+            dim=dim,
+            vsa=vsa,
+            device=device,
+            seed=seed,
+            num_categories=num_categories,
+            idx_offset=idx_offset,
+            dtype=dtype,
         )
 
     def generate_codebook(self) -> torch.Tensor:
-        return torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device=self.device)
+        dtype = torch.float64 if self.dtype == "float64" else torch.float32
+        return torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device=self.device, dtype=dtype)
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         """
@@ -180,14 +199,15 @@ class CategoricalIntegerEncoder(AbstractFeatureEncoder):
 
 class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
     def __init__(
-            self,
-            dim: int,
-            num_categories: int,
-            indexer: TupleIndexer = TupleIndexer([28, 6]),
-            vsa: str = "MAP",
-            device: torch.device = torch.device("cpu"),
-            seed: int | None = None,
-            idx_offset: int = 0,
+        self,
+        dim: int,
+        num_categories: int,
+        indexer: TupleIndexer = TupleIndexer([28, 6]),
+        vsa: str = "MAP",
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        idx_offset: int = 0,
+        dtype: str = "float32",
     ):
         """
         :param dim: Dimensionality of the VSA hyper-vectors
@@ -197,12 +217,19 @@ class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
         :param seed: Optional RNG seed
         """
         super().__init__(
-            dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories, idx_offset=idx_offset
+            dim=dim,
+            vsa=vsa,
+            device=device,
+            seed=seed,
+            num_categories=num_categories,
+            idx_offset=idx_offset,
+            dtype=dtype,
         )
         self.indexer = indexer
 
     def generate_codebook(self) -> torch.Tensor:
-        cb =  torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device='cpu')
+        dtype = torch.float64 if self.dtype == "float64" else torch.float32
+        cb = torchhd.random(self.num_categories, self.dim, vsa=self.vsa, device="cpu", dtype=dtype)
         return cb.to(self.device)
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
@@ -220,6 +247,7 @@ class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
         """
         # Advanced indexing: each integer index pulls one row from codebook
         # make sure the last dim is just a singleton index
+        self.codebook = self.codebook.to(torch.float64).as_subclass(VSAModel(self.vsa).tensor_class)
         if data.shape[-1] == 1:
             msg = f"Expected last dim>1, got {data.shape[-1]}"
             raise ValueError(msg)
@@ -270,17 +298,19 @@ class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
 
 class TrueFalseEncoder(AbstractFeatureEncoder):
     def __init__(
-            self,
-            dim: int,
-            num_categories: int,  # noqa: ARG002
-            vsa: str = "MAP",
-            device: torch.device = torch.device("cpu"),
-            seed: int | None = None,
+        self,
+        dim: int,
+        num_categories: int,  # noqa: ARG002
+        vsa: str = "MAP",
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        dtype: str = "float32",
     ):
-        super().__init__(dim, vsa, device, seed, num_categories=1)
+        super().__init__(dim, vsa, device, seed, num_categories=1, dtype=dtype)
 
     def generate_codebook(self) -> torch.Tensor:
-        true = torchhd.random(1, self.dim, vsa=self.vsa, device=self.device)
+        dtype = torch.float64 if self.dtype == "float64" else torch.float32
+        true = torchhd.random(1, self.dim, vsa=self.vsa, device=self.device, dtype=dtype)
         false = true.inverse()
         return torch.stack([false, true])
 
@@ -318,12 +348,13 @@ class TrueFalseEncoder(AbstractFeatureEncoder):
 
 class CategoricalLevelEncoder(AbstractFeatureEncoder):
     def __init__(
-            self,
-            dim: int,
-            num_categories: int,
-            vsa: str = "MAP",
-            device: torch.device = torch.device("cpu"),
-            seed: int | None = None,
+        self,
+        dim: int,
+        num_categories: int,
+        vsa: str = "MAP",
+        device: torch.device = torch.device("cpu"),
+        seed: int | None = None,
+        dtype: str = "float32",
     ):
         """
         :param dim: Dimensionality of the VSA hyper-vectors
@@ -332,10 +363,11 @@ class CategoricalLevelEncoder(AbstractFeatureEncoder):
         :param device: Torch device
         :param seed: Optional RNG seed
         """
-        super().__init__(dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories)
+        super().__init__(dim=dim, vsa=vsa, device=device, seed=seed, num_categories=num_categories, dtype=dtype)
 
     def generate_codebook(self) -> torch.Tensor:
-        return torchhd.level(self.num_categories, self.dim, vsa=self.vsa, device=self.device)
+        dtype = torch.float64 if self.dtype == "float64" else torch.float32
+        return torchhd.level(self.num_categories, self.dim, vsa=self.vsa, device=self.device, dtype=dtype)
 
     def encode(self, data: torch.Tensor) -> torch.Tensor:
         """

@@ -18,7 +18,7 @@ ACTS = {
 }
 
 NORMS = {
-    "batch_norm": nn.BatchNorm1d,
+    # "batch_norm": nn.BatchNorm1d, # Batch norm performed the worst in the previous runs
     "lay_norm": nn.LayerNorm,  # as specified
     "none": None,
 }
@@ -63,7 +63,7 @@ class LogPRegressor(pl.LightningModule):
 
     def __init__(
         self,
-        input_dim: int = 3200,
+        input_dim: int = 3 * 1600,
         hidden_dims: Iterable[int] = (1024, 256, 64),
         *,
         activation: str = "gelu",
@@ -102,12 +102,18 @@ class LogPRegressor(pl.LightningModule):
     def _flat_from_batch(self, batch) -> torch.Tensor:
         D = self.hparams.input_dim // 2
         B = batch.num_graphs
-        n, g = batch.node_terms.as_subclass(torch.Tensor), batch.graph_terms.as_subclass(torch.Tensor)
+        n, e, g = (
+            batch.node_terms.as_subclass(torch.Tensor),
+            batch.edge_terms.as_sublcass(torch.Tensor),
+            batch.graph_terms.as_subclass(torch.Tensor),
+        )
         if n.dim() == 1:
             n = n.view(B, D)
         if g.dim() == 1:
             g = g.view(B, D)
-        return torch.cat([n, g], dim=-1)
+        if g.dim() == 1:
+            g = g.view(B, D)
+        return torch.cat([n, e, g], dim=-1)
 
     def forward(self, batch) -> torch.Tensor:
         # batch.node_terms: [B*D], batch.graph_terms: [B*D]
@@ -135,10 +141,10 @@ class LogPRegressor(pl.LightningModule):
             self.log("train_r2", self.train_r2, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         elif stage == "val":
             self.val_r2.update(y_hat.detach(), y.detach())
-            self.log("val_r2", self.val_r2, on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+            self.log("val_r2", self.val_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         elif stage == "test":
             self.test_r2.update(y_hat.detach(), y.detach())
-            self.log("test_r2", self.test_r2, on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+            self.log("test_r2", self.test_r2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return loss
 

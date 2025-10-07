@@ -13,7 +13,13 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.utils import scatter
 
 from graph_hdc.utils import shallow_dict_equal
-from src.encoding.configs_and_constants import DatasetConfig, Features, IndexRange
+from src.encoding.configs_and_constants import (
+    QM9_SMILES_HRR_1600_CONFIG,
+    QM9_SMILES_HRR_1600_CONFIG_F64,
+    DatasetConfig,
+    Features,
+    IndexRange,
+)
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -23,7 +29,7 @@ from src.encoding.feature_encoders import (
     TrueFalseEncoder,
 )
 from src.encoding.the_types import VSAModel
-from src.utils.utils import TupleIndexer, cartesian_bind_tensor, flatten_counter, scatter_hd
+from src.utils.utils import GLOBAL_MODEL_PATH, TupleIndexer, cartesian_bind_tensor, flatten_counter, scatter_hd
 
 # === HYPERDIMENSIONAL MESSAGE PASSING NETWORKS ===
 
@@ -267,6 +273,7 @@ class HyperNet(AbstractGraphEncoder):
                     idx_offset=cfg.idx_offset,
                     device=self._cfg_device,
                     indexer=TupleIndexer(sizes=cfg.bins) if cfg.bins else TupleIndexer(sizes=[28, 6, config.nha_bins]),
+                    dtype=config.dtype,
                 ),
                 cfg.index_range,
             )
@@ -280,6 +287,7 @@ class HyperNet(AbstractGraphEncoder):
                     vsa=config.vsa.value,
                     idx_offset=cfg.idx_offset,
                     device=self._cfg_device,
+                    dtype=config.dtype,
                 ),
                 cfg.index_range,
             )
@@ -293,6 +301,7 @@ class HyperNet(AbstractGraphEncoder):
                     vsa=config.vsa.value,
                     idx_offset=cfg.idx_offset,
                     device=self._cfg_device,
+                    dtype=config.dtype,
                 ),
                 cfg.index_range,
             )
@@ -415,7 +424,7 @@ class HyperNet(AbstractGraphEncoder):
             slices.append(encoder.encode(feat))  # [..., N?, D]
 
         if not slices:
-            return torch.zeros(fallback_count, self.hv_dim, device=tensor.device)
+            return torch.zeros(fallback_count, self.hv_dim, device=tensor.device, dtype=tensor.dtype)
 
         # stack on new “property” axis and bind
         stacked = torch.stack(slices, dim=0)  # [P, N, D]
@@ -1496,17 +1505,29 @@ class HyperNet(AbstractGraphEncoder):
 def load_or_create_hypernet(
     path: Path, cfg: DatasetConfig, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
+    dtype_sfx = "-f64" if cfg.dtype == "float64" else ""
     path = (
         path
-        / f"hypernet_{cfg.name}_{cfg.vsa.value}_dim{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}.pt"
+        / f"hypernet_{cfg.name}_{cfg.vsa.value}_dim{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}{dtype_sfx}.pt"
     )
     if path.exists():
         print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet.load(path=path)
     else:
         print("Creating new HyperNet instance.")
+        dtype = torch.float64 if cfg.dtype == "float64" else torch.float32
         encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
         encoder.populate_codebooks()
         encoder.save_to_path(path)
         print(f"Saved new HyperNet to {path}")
     return encoder
+
+
+if __name__ == "__main__":
+    hn64 = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=QM9_SMILES_HRR_1600_CONFIG_F64, use_edge_codebook=False)
+    hn32_load = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=QM9_SMILES_HRR_1600_CONFIG, use_edge_codebook=False)
+
+    h64_load = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=QM9_SMILES_HRR_1600_CONFIG_F64, use_edge_codebook=False)
+
+    assert h64_load.nodes_codebook.dtype == torch.float64
+    assert hn32_load.nodes_codebook.dtype == torch.float32

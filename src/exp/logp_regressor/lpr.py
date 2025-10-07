@@ -110,13 +110,31 @@ class Config:
     continue_from: Path | None = None
 
 
-def pick_precision():
-    # Works on A100/H100 if BF16 is supported by the PyTorch/CUDA build.
+def on_a100() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        name = torch.cuda.get_device_name(0)
+    except Exception:
+        return False
+    return "A100" in name
+
+
+def pick_precision() -> int | str:
+    # explicit override via env if you want: PRECISION in {"64","32","bf16-mixed","16-mixed"}
+    p = os.getenv("PRECISION")
+    if p:  # trust user override
+        return int(p) if p.isdigit() else p
+
+    if torch.cuda.is_available() and on_a100():
+        return 64  # A100: run full FP64 as you requested
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return "bf16-mixed"  # local GPUs: fast and stable
     if torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
-            return "bf16-mixed"  # safest + fast on H100/A100
-        return "16-mixed"  # widely supported fallback
-    return 32  # CPU or MPS
+        return "16-mixed"  # widest fallback
+    return 32
+
+
 torch.set_float32_matmul_precision("high")
 
 
@@ -150,7 +168,9 @@ class LossCurveCallback(pl.Callback):
         df["epoch"] = df["epoch"].astype(int)
 
         # separate tables and skip epoch 0
-        train = df[df["train_loss"].notna() & (df["epoch"] > 0)][["epoch", "train_loss", "train_mae", "train_rmse", "train_r2"]]
+        train = df[df["train_loss"].notna() & (df["epoch"] > 0)][
+            ["epoch", "train_loss", "train_mae", "train_rmse", "train_r2"]
+        ]
         val = df[df["val_loss"].notna() & (df["epoch"] > 0)][["epoch", "val_loss", "val_mae", "val_rmse", "val_r2"]]
 
         self.artefacts_dir.mkdir(parents=True, exist_ok=True)
@@ -229,9 +249,9 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
 
     # ----- datasets / loaders -----
     log(f"Loading {cfg.dataset.value} pair datasets.")
-    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
-        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600")
-        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600")
+    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600_F64:
+        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600F64")
+        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600F64")
     elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
         train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
         validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
@@ -272,7 +292,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     # model = RealNVPV2Lightning(cfg)
     model = resolve_model(
         "LPR",
-        input_dim=2 * cfg.hv_dim,
+        input_dim=3 * cfg.hv_dim,
         hidden_dims=cfg.hidden_dims,
         activation=cfg.activation,
         dropout=cfg.dropout,
@@ -403,7 +423,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
 
 def run_qm9_trial(trial: optuna.Trial):
     lpr_cfg = get_cfg(trial, dataset="qm9")
-    lpr_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600
+    lpr_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64
     lpr_cfg.hv_dim = 40 * 40
     return run_experiment(lpr_cfg, trial)
 

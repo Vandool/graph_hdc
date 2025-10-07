@@ -70,6 +70,7 @@ class DatasetConfig:
     seed: int | None = None
     nha_bins: int | None = None
     nha_depth: int | None = None
+    dtype: str = "float32"
 
 
 ZINC_CONFIG: DatasetConfig = DatasetConfig(
@@ -277,6 +278,11 @@ QM9_SMILES_HRR_1600_CONFIG: DatasetConfig = deepcopy(QM9_SMILES_CONFIG)
 QM9_SMILES_HRR_1600_CONFIG.hv_dim = 1600
 QM9_SMILES_HRR_1600_CONFIG.name = "QM9SmilesHRR1600"
 
+QM9_SMILES_HRR_1600_CONFIG_F64: DatasetConfig = deepcopy(QM9_SMILES_CONFIG)
+QM9_SMILES_HRR_1600_CONFIG_F64.hv_dim = 1600
+QM9_SMILES_HRR_1600_CONFIG_F64.name = "QM9SmilesHRR1600F64"
+QM9_SMILES_HRR_1600_CONFIG_F64.dtype = "float64"
+
 
 class SupportedDataset(enum.Enum):
     ZINC = ("ZINC", ZINC_CONFIG)
@@ -288,6 +294,7 @@ class SupportedDataset(enum.Enum):
     QM9 = ("QM9", QM9_CONFIG)
     QM9_SMILES = ("QM9_SMILES", QM9_SMILES_CONFIG)
     QM9_SMILES_HRR_1600 = ("QM9_SMILES_HRR_1600", QM9_SMILES_HRR_1600_CONFIG)
+    QM9_SMILES_HRR_1600_F64 = ("QM9_SMILES_HRR_1600_F64", QM9_SMILES_HRR_1600_CONFIG_F64)
 
     def __new__(cls, value: str, default_cfg: DatasetConfig):
         obj = object.__new__(cls)
