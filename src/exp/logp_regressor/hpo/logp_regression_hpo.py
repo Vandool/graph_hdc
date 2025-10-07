@@ -110,16 +110,16 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="LogP Regression - HPO")
-    p.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc"])
-    p.add_argument("--n_trials", type=int, default=2)
+    p.add_argument("--dataset", type=str, default="qm9", choices=["qm9", "zinc"])
+    p.add_argument("--n_trials", type=int, default=1)
     args = p.parse_args()
 
     # Paths (per-dataset DB + CSV)
     here = pathlib.Path(__file__).parent
     study_base = here.parent.name
-    study_name = f"{study_base}_{args.dataset}"
-    db_path = here / f"logp_reg_hpo_{args.dataset}.db"
-    csv = here / f"trials_{args.dataset}.csv"
+    study_name = f"{study_base}_{args.dataset}_3d"
+    db_path = here / f"logp_reg_hpo_{args.dataset}_3d.db"
+    csv = here / f"trials_{args.dataset}_3d.csv"
 
     # Rebuild if DB missing, else load
     if not db_path.exists():

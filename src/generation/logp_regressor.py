@@ -100,17 +100,17 @@ class LogPRegressor(pl.LightningModule):
         self.test_r2.reset()
 
     def _flat_from_batch(self, batch) -> torch.Tensor:
-        D = self.hparams.input_dim // 2
+        D = self.hparams.input_dim // 3
         B = batch.num_graphs
         n, e, g = (
             batch.node_terms.as_subclass(torch.Tensor),
-            batch.edge_terms.as_sublcass(torch.Tensor),
+            batch.edge_terms.as_subclass(torch.Tensor),
             batch.graph_terms.as_subclass(torch.Tensor),
         )
         if n.dim() == 1:
             n = n.view(B, D)
-        if g.dim() == 1:
-            g = g.view(B, D)
+        if e.dim() == 1:
+            e = e.view(B, D)
         if g.dim() == 1:
             g = g.view(B, D)
         return torch.cat([n, e, g], dim=-1)
