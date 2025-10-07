@@ -428,7 +428,9 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
             break
 
         batch = batch.to(device)
-        flat = model._flat_from_batch(batch)  # [B, dim]
+
+        mdtype = next(model.parameters()).dtype
+        flat = model._flat_from_batch(batch).to(mdtype)  # [B, dim]
 
         # Standardize with your learned/fitted μ, σ.
         # This is a *determinantful* pre-transform; we track its log-det so that
@@ -781,6 +783,7 @@ def run_experiment(cfg: FlowConfig):
     log(f"Loading best checkpoint: {best_path}")
     best_model = retrieve_model("NVP").load_from_checkpoint(best_path)
     best_model.to(device).eval()
+    best_model.to(dtype=torch.float64)
 
     # ---- per-sample NLL (really the KL objective) on validation ----
     val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)

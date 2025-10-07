@@ -819,7 +819,7 @@ def run_experiment(cfg: FlowConfig):
     log(f"Loading best checkpoint: {best_path}")
     best_model = retrieve_model("NVP").load_from_checkpoint(best_path)
     best_model.to(device).eval()
-
+    best_model.to(dtype=torch.float64)
     # ---- per-sample NLL (really the KL objective) on validation ----
     val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)
     nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))

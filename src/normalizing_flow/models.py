@@ -137,6 +137,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         self.log_sigma.copy_(torch.log(torch.clamp(sigma, min=eps)))
 
     def _pretransform(self, x):
+        x = x.to(self.mu.dtype)
         """z = (x - mu) / sigma ; returns (z, +sum(log sigma)) for log-det correction."""
         z = (x - self.mu) * torch.exp(-self.log_sigma)
         # log|det ∂z/∂x| = -sum(log_sigma); NLL must ADD +sum(log_sigma)
