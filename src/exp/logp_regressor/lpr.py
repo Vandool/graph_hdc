@@ -417,6 +417,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
     lpr_cfg.norm = cfg["norm"]
     lpr_cfg.dropout = cfg["dropout"]
 
+    cfg["hidden"] = sorted(hidden_dims, reverse=True)
     lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
     return lpr_cfg
 

@@ -22,31 +22,6 @@ def _fmt_value(v: Any) -> str:
     return str(v).replace(" ", "").replace("/", "_")
 
 
-# --- helpers specific to the MLP regressor space ---
-def _derive_hidden(cfg: Mapping[str, Any]) -> str | None:
-    """
-    Prefer explicit cfg['hidden'] if provided; otherwise build from depth/h1..h3.
-    Returns e.g. '1024-256-64' or None if not derivable.
-    """
-    if cfg.get("hidden"):
-        # Accept list/tuple/str
-        h = cfg["hidden"]
-        if isinstance(h, (list, tuple)):
-            return "-".join(str(int(x)) for x in h)
-        return str(h)
-    # Build from depth + h1..h3 (our Optuna space)
-    d = int(cfg.get("depth", 0) or 0)
-    if d <= 0:
-        return None
-    hs = []
-    if d >= 1 and "h1" in cfg:
-        hs.append(int(cfg["h1"]))
-    if d >= 2 and "h2" in cfg:
-        hs.append(int(cfg["h2"]))
-    if d >= 3 and "h3" in cfg:
-        hs.append(int(cfg["h3"]))
-    return "-".join(map(str, hs)) if hs else None
-
 
 def _normalize_norm(norm_val: Any) -> str:
     # map to short tokens
@@ -104,12 +79,6 @@ def make_run_folder_name(
     }
 
     parts: list[str] = [prefix, dataset.lower()]
-
-    # Ensure 'hidden' is present (derive from depth/h1..h3 if needed)
-    derived_hidden = _derive_hidden(cfg)
-    if derived_hidden is not None:
-        cfg = dict(cfg)  # shallow copy
-        cfg.setdefault("hidden", derived_hidden)
 
     def render(k: str, v: Any) -> str:
         alias = aliases.get(k, k[:3])
