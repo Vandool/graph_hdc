@@ -71,7 +71,7 @@ def make_run_folder_name(
     cfg: Mapping[str, Any],
     dataset: str,
     *,
-    prefix: str = "lpr",
+    prefix: str = "lpr-3d",
     key_alias: Mapping[str, str] | None = None,
     ordered_keys: Sequence[str] = (
         "hidden",  # derived from depth/h1..h3 if not explicitly given
