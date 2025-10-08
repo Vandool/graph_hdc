@@ -817,9 +817,10 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        node_s, graph_s, logs = best_model.sample_split(10_000)  # each [K, D]
+        node_s, edge_s, graph_s, logs = best_model.sample_split(10_000)  # each [K, D]
 
     node_s = node_s.as_subclass(HRRTensor)
+    edge_s = edge_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
 
     log(f"node_s device: {node_s.device!s}")
@@ -836,10 +837,12 @@ def run_experiment(cfg: FlowConfig):
     pprint(report)
 
     node_np = node_s.detach().cpu().numpy()
+    edge_np = edge_s.detach().cpu().numpy()
     graph_np = graph_s.detach().cpu().numpy()
 
     # per-branch norms and pairwise cosine samples
     node_norm = np.linalg.norm(node_np, axis=1)
+    edge_norm = np.linalg.norm(edge_np, axis=1)
     graph_norm = np.linalg.norm(graph_np, axis=1)
 
     def _pairwise_cosine(x: np.ndarray, m: int = 2000) -> np.ndarray:
@@ -854,23 +857,19 @@ def run_experiment(cfg: FlowConfig):
         return np.sum(an * bn, axis=1)
 
     node_cos = _pairwise_cosine(node_np, m=4000)
+    edge_cos = _pairwise_cosine(edge_np, m=4000)
     graph_cos = _pairwise_cosine(graph_np, m=4000)
 
     # plots
     _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
+    _hist(artefacts_dir / "sample_node_edge_hist.png", node_norm, "Sample edge L2 norm", "||edge||")
     _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
     if node_cos.size:
         _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    if edge_cos.size:
+        _hist(artefacts_dir / "sample_edge_cos_hist.png", edge_cos, "Edge pairwise cosine", "cos")
     if graph_cos.size:
         _hist(artefacts_dir / "sample_graph_cos_hist.png", graph_cos, "Graph pairwise cosine", "cos")
-
-    # quick table
-    pd.DataFrame(
-        {
-            **{f"node_{i}": node_np[:16, i] for i in range(min(16, node_np.shape[1]))},
-            **{f"graph_{i}": graph_np[:16, i] for i in range(min(16, graph_np.shape[1]))},
-        }
-    ).to_parquet(evals_dir / "sample_head.parquet", index=False)
 
     log("Experiment completed.")
     log(f"Best val loss: {min_val_loss:.4f}")
