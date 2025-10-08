@@ -1105,7 +1105,7 @@ def greedy_oracle_decoder_voter_oracle(
     return _generate_response(population)
 
 
-def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb):
+def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
     ## First get the node multiset
     num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in nodes_multiset.items()])
 
@@ -1209,7 +1209,7 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb):
     # Start with a child with on satisfied node
     selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 1]
     population = selected if len(selected) >= 1 else first_pop
-    for _ in tqdm(range(2, n_count)):
+    for i in tqdm(range(2, n_count)):
         children: list[tuple[nx.Graph, list[tuple]]] = []
         local_seen: set = set()  # per-iteration dedup to keep branching under control
 
@@ -1306,16 +1306,26 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb):
         ## Collect the children with highest number of edges
         # edge_max = max([G.number_of_edges() for G, _ in children])
         # children = [(G, l) for G, l in children if G.number_of_edges() >= edge_max]
-        population = sorted(children, key=lambda x: len(anchors(x[0])))[:64]
+        # if (i % 3) == 0:
+        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
+        enc_out = encoder.forward(batch)
+        g_terms = enc_out["graph_embedding"]
+
+        q = graph_terms.to(g_terms.device, g_terms.dtype)
+        sims_c = torchhd.cos(q, g_terms).tolist()[0]
+        sorted_idx = torch.argsort(torch.tensor(sims_c), descending=True)
+        children = [children[ix] for ix in sorted_idx[:4]]
+        population = children
 
     return zip(*population, strict=True)
 
 
-if __name__ == "__main__":
-    base_dataset = "qm9"
+if __name__ == '__main__':
+
+    base_dataset = "zinc"
     ds = ZincSmiles(split="test") if base_dataset == "zinc" else QM9Smiles(split="test")
 
-    data = ds[10]
+    data = ds[1]
 
     nx_g = DataTransformer.pyg_to_nx(data)
     mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset=base_dataset)
@@ -1390,7 +1400,7 @@ if __name__ == "__main__":
     ## Now let's fucking decode the edges
     node_counter = DataTransformer.get_node_counter_from_batch(0, batch)
     candidates, edges_left = new_decoder(
-        nodes_multiset=node_counter, edge_terms=edge_terms, nodes_cb=node_cb
+        nodes_multiset=node_counter, edge_terms=edge_terms, nodes_cb=node_cb, encoder=encoder
     )
     data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
 
