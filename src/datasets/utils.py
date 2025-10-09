@@ -1,14 +1,11 @@
-import random
-from typing import Any, Optional, Callable
 import hashlib
+import random
+from collections.abc import Callable
+
 import networkx as nx
 import torch
-from torch_geometric.data import Batch, Data, InMemoryDataset
-from torch_geometric.utils import degree, to_undirected, k_hop_subgraph
-
-from graph_hdc.utils import AbstractEncoder
-from src.encoding.graph_encoders import AbstractGraphEncoder
-from src.encoding.pca_encoder import PCAEncoder
+from torch_geometric.data import Data, InMemoryDataset
+from torch_geometric.utils import degree, k_hop_subgraph, to_undirected
 
 IDX2COLOR = {
     0: ("R", "red"),
@@ -159,7 +156,7 @@ class AddNodeDegree:
         row, col = data.edge_index
 
         # degree(col) counts how many times each node appears as a "destination".
-        # For an undirected graph, you typically want degree = in‐degree + out‐degree.
+        # For an undirected graph, you typically want degree = in‐degree plus out‐degree.
         # If edge_index is symmetric (i↔j appears twice), then degree(col) already equals full degree.
         # If edge_index is not symmetric, you can do degree(row) + degree(col) to get full undirected degree.
         deg_out = degree(row, data.num_nodes, dtype=torch.float)
@@ -181,7 +178,6 @@ class AddNodeDegree:
         return data
 
 
-
 def stable_hash(tensor: torch.Tensor, bins: int) -> int:
     """
     Map a feature tensor to a stable integer in [0, bins-1], such that small changes in features produce different
@@ -194,6 +190,7 @@ def stable_hash(tensor: torch.Tensor, bins: int) -> int:
     byte_str = tensor.numpy().tobytes()
     h = hashlib.sha256(byte_str).hexdigest()
     return int(h, 16) % bins
+
 
 class AddNeighbourhoodEncodings:
     """
@@ -213,9 +210,7 @@ class AddNeighbourhoodEncodings:
 
         hash_features = []
         for node_idx in range(num_nodes):
-            node_ids, _, _, _ = k_hop_subgraph(
-                node_idx, self.depth, edge_index, relabel_nodes=False
-            )
+            node_ids, _, _, _ = k_hop_subgraph(node_idx, self.depth, edge_index, relabel_nodes=False)
             # Remove self
             mask = node_ids != node_idx
             node_ids = node_ids[mask]
@@ -231,56 +226,6 @@ class AddNeighbourhoodEncodings:
 
         return data
 
-import torch
-from torch.utils.data import Dataset
-
-
-class EncodedPCADataset(Dataset):
-    def __init__(
-        self,
-        base_dataset: Dataset,
-        graph_encoder: AbstractEncoder,
-        pca_encoder: PCAEncoder | None = None,
-    ):
-        """
-        Wraps a base PyG dataset, encodes each graph via `graph_encoder`, then
-        optionally reduces its embedding via `pca_encoder`.
-
-        :param base_dataset: any torch Dataset yielding PyG Data objects
-        :param graph_encoder: object with .forward(data=Batch) → dict of tensors
-        :param pca_encoder: optional PCAEncoder; if None, PCA is skipped
-        """
-        self.base_dataset = base_dataset
-        self.graph_encoder = graph_encoder
-        self.pca_encoder = pca_encoder
-
-    def __len__(self) -> int:
-        return len(self.base_dataset)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        # 1) get a single graph and batch it
-        data = self.base_dataset[idx]
-        batch = Batch.from_data_list([data])
-
-        # 2) encode node/edge/graph terms
-        res = self.graph_encoder.forward(data=batch)
-        # squeeze out the batch dim
-        node_terms = res["node_terms"].squeeze(0)
-        edge_terms = res["edge_terms"].squeeze(0)
-        graph_embedding = res["graph_embedding"].squeeze(0)
-
-        # 3) stack into [3, D] tensor
-        x = torch.stack([node_terms, edge_terms, graph_embedding], dim=0)
-
-        # 4) optionally apply PCAEncoder
-        if self.pca_encoder is not None:
-            # PCAEncoder.transform returns a tensor of shape [..., new_dim]
-            # Here x has shape [3, D] → we want [3, D_pca]
-            x_reduced = self.pca_encoder.transform(x)
-            return x_reduced
-
-        # 5) fallback: return raw stack
-        return x
 
 class Compose:
     def __init__(self, transforms: list[Callable]):
@@ -289,15 +234,4 @@ class Compose:
     def __call__(self, data: Data) -> Data:
         for t in self.transforms:
             data = t(data)
-        return data
-
-class AddHDCEncodings:
-
-    def __init__(self, encoder: AbstractGraphEncoder):
-        self.encoder = encoder
-
-    def __call__(self, data: Data) -> Data:
-        encodings = self.encoder.forward(data=data)
-        data.graph_terms = encodings["graph_embedding"]
-        data.node_terms = encodings["node_terms"]
         return data

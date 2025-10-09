@@ -10,7 +10,7 @@ from pytorch_lightning import seed_everything
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.oracles import Oracle
 from src.generation.evaluator import GenerationEvaluator
-from src.generation.generation import Generator
+from src.generation.generation import OracleGenerator
 from src.utils import registery
 from src.utils.chem import draw_mol
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
@@ -162,7 +162,7 @@ for gen_ckpt_path in gen_paths:
         continue
     oracle = Oracle(model=classifier, model_type=model_type)
 
-    generator = Generator(
+    generator = OracleGenerator(
         gen_model=gen_model,
         oracle=oracle,
         ds_config=ZINC_SMILES_HRR_7744_CONFIG if base_dataset == "zinc" else QM9_SMILES_HRR_1600_CONFIG,

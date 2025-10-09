@@ -3,6 +3,7 @@ import math
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
+from typing import Literal
 
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
@@ -71,10 +72,12 @@ class DatasetConfig:
     nha_bins: int | None = None
     nha_depth: int | None = None
     dtype: str = "float32"
+    base_dataset: Literal["zinc", "qm9"] = "qm9"
 
 
 ZINC_CONFIG: DatasetConfig = DatasetConfig(
     name="ZINC",
+    base_dataset="zinc",
     hv_dim=10000,
     node_feature_configs=OrderedDict(
         [
@@ -129,6 +132,7 @@ ZINC_ND_COMB_CONFIG_NHA.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig
 
 QM9_CONFIG: DatasetConfig = DatasetConfig(
     name="QM9",
+    base_dataset="qm9",
     hv_dim=10000,
     node_feature_configs=OrderedDict(
         [
@@ -248,6 +252,7 @@ ZINC_SMILES_HRR_7744_CONFIG = DatasetConfig(
 QM9_SMILES_CONFIG = DatasetConfig(
     seed=42,
     name="QM9Smiles",
+    base_dataset="qm9",
     vsa=VSAModel.HRR,
     hv_dim=40 * 40,
     device=pick_device_str(),

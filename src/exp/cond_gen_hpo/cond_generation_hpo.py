@@ -16,7 +16,7 @@ from tqdm.auto import tqdm
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import Generator
+from src.generation.generation import OracleGenerator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
@@ -274,7 +274,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         oracle = Oracle(model=classifier, model_type=model_type)
         decoder_settings["oracle_threshold"] = oracle_threshold
 
-    generator = Generator(
+    generator = OracleGenerator(
         gen_model=gen_model,
         oracle=oracle,
         ds_config=QM9_SMILES_HRR_1600_CONFIG if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG,

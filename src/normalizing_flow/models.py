@@ -152,7 +152,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         return self._posttransform(x_std)
 
     @torch.no_grad()
-    def sample_split(self, num_samples: int):
+    def sample_split(self, num_samples: int) -> dict:
         """
         Returns:
           node_terms:  [num_samples, D]
@@ -162,7 +162,12 @@ class RealNVPV2Lightning(AbstractNFModel):
         z, _logs = self.sample(num_samples)  # standardized space
         x = self._posttransform(z)  # back to data space
         node_terms, edge_terms, graph_terms = self.split(x)
-        return node_terms, edge_terms, graph_terms, _logs
+        return {
+            "node_terms": node_terms,
+            "edge_terms": edge_terms,
+            "graph_terms": graph_terms,
+            "logs": _logs,
+        }
 
     def nf_forward_kld(self, flat):
         """Example: exact NLL with pre-transform correction."""

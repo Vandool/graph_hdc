@@ -20,7 +20,7 @@ from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import Generator
+from src.generation.generation import OracleGenerator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
@@ -53,19 +53,6 @@ def stats(arr):
         "median": float(np.median(arr)),
         "std": float(arr.std(ddof=1)) if len(arr) > 1 else 0.0,
     }
-
-
-def get_model_type(path: Path | str) -> registery.ModelType:
-    res: registery.ModelType = "MLP"
-    if "bah" in str(path):
-        res = "BAH"
-    elif "gin-c" in str(path):
-        res = "GIN-C"
-    elif "gin-f" in str(path):
-        res = "GIN-F"
-    elif "nvp" in str(path):
-        res = "NVP"
-    return res
 
 
 def make_lambda_cosine_decay(*, steps: int, lam_hi: float = 1e-2, lam_lo: float = 1e-4):
@@ -278,7 +265,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
         oracle = Oracle(model=classifier, model_type=model_type)
         decoder_settings["oracle_threshold"] = oracle_threshold
 
-    generator = Generator(
+    generator = OracleGenerator(
         gen_model=gen_model,
         oracle=oracle,
         ds_config=QM9_SMILES_HRR_1600_CONFIG,

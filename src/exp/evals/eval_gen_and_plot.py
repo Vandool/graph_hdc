@@ -18,7 +18,7 @@ from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.oracles import Oracle
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import Generator
+from src.generation.generation import OracleGenerator
 from src.utils import registery
 from src.utils.chem import draw_mol
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
@@ -38,19 +38,6 @@ seed_everything(seed)
 device = pick_device()
 # device = torch.device("cpu")
 EVALUATOR = None
-
-
-def get_model_type(path: Path | str) -> registery.ModelType:
-    res: registery.ModelType = "MLP"
-    if "bah" in str(path):
-        res = "BAH"
-    elif "gin-c" in str(path):
-        res = "GIN-C"
-    elif "gin-f" in str(path):
-        res = "GIN-F"
-    elif "nvp" in str(path):
-        res = "NVP"
-    return res
 
 
 def make_lambda_cosine_decay(*, steps: int, lam_hi: float = 1e-2, lam_lo: float = 1e-4):
@@ -151,7 +138,7 @@ def eval_cond_gen(
     )
 
     # ---- Hyperparams ----
-    generator = Generator(
+    generator = OracleGenerator(
         gen_model=gen_model,
         oracle=Oracle(model_path=get_classifier(hint=classifier_hint)),
         ds_config=QM9_SMILES_HRR_1600_CONFIG if dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG,

@@ -2,21 +2,13 @@ import copy
 import itertools
 import logging
 from collections import Counter, deque
-from collections.abc import Sequence
-from itertools import chain, combinations
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import torch
 import torchhd
-from networkx.algorithms.isomorphism import (
-    GraphMatcher,
-    categorical_edge_match,
-    categorical_node_match,
-)
 from sklearn.metrics import (
-    ConfusionMatrixDisplay,
     accuracy_score,
 )
 from torch_geometric.data import Batch
@@ -24,296 +16,28 @@ from tqdm import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG_F64, ZINC_SMILES_HRR_7744_CONFIG
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.encoding.the_types import Feat
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, TupleIndexer
+from src.utils.nx_utils import (
+    _hash,
+    add_edge_if_possible,
+    add_node_and_connect,
+    add_node_with_feat,
+    anchors,
+    connect_all_if_possible,
+    leftover_features,
+    order_leftovers_by_degree_distinct,
+    perfect_oracle,
+    powerset,
+    residual_degree,
+    residuals,
+    total_edges_count,
+)
+from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, TupleIndexer, show_confusion_matrix
 from src.utils.visualisations import draw_nx_with_atom_colorings
-
-
-def is_induced_subgraph_by_features(
-    g1: nx.Graph,
-    g2: nx.Graph,
-    *,
-    node_keys: list[str] | None = None,
-    edge_keys: Sequence[str] = (),
-    require_connected: bool = True,
-) -> bool:
-    """
-    Return True iff G1 is isomorphic to a node-induced subgraph of G2 while
-    preserving specified node (and optional edge) attributes.
-
-    Parameters
-    ----------
-    g1, g2 : nx.Graph
-        Pattern graph (g1) and target graph (g2).
-    node_keys : str | Sequence[str], optional
-        Node attribute key(s) that define a node's identity (labels).
-        Nodes are matched by equality of these attributes; node IDs are ignored.
-        Default: "feature".
-    edge_keys : Sequence[str], optional
-        Edge attribute key(s) that must also match categorically. Default: ().
-    require_connected : bool, optional
-        If True, fail fast when g1 is non-empty and not connected.
-
-    Returns
-    -------
-    bool
-        True if an induced subgraph isomorphism exists; False otherwise.
-
-    Notes
-    -----
-    - Uses NetworkX VF2 with semantic checks via `categorical_node_match`
-      and `categorical_edge_match`. Subgraph here means *node-induced*.
-    - Performs a quick multiset pre-check on node features to prune impossible cases.
-
-    """
-    if require_connected and g1.number_of_nodes() and not nx.is_connected(g1):
-        return False
-
-    if node_keys is None:
-        node_keys = ["feat"]
-
-    # Fast prune: g1's feature multiset must be a subset of g2's
-
-    def feat_tuple(G: nx.Graph, n) -> tuple:
-        data = G.nodes[n]
-        return tuple(data.get(k) for k in node_keys)
-
-    # Quick check: g1's feature multiset must be a subset of g2's
-    c1 = Counter(feat_tuple(g1, n) for n in g1.nodes)
-    c2 = Counter(feat_tuple(g2, n) for n in g2.nodes)
-    for k, need in c1.items():
-        if c2.get(k, 0) < need:
-            return False
-
-    # Perform the full graph isomorphism check
-    nm = categorical_node_match(
-        node_keys if len(node_keys) > 1 else node_keys[0], [None] * len(node_keys) if len(node_keys) > 1 else None
-    )
-
-    em = categorical_edge_match(list(edge_keys), [None] * len(edge_keys)) if edge_keys else None
-
-    GM = GraphMatcher(g2, g1, node_match=nm, edge_match=em)
-    return GM.subgraph_is_isomorphic()
-
-
-def perfect_oracle(gs: list[nx.Graph], full_g_nx: nx.Graph) -> list[bool]:
-    return [is_induced_subgraph_by_features(g1=g, g2=full_g_nx, node_keys=["feat"]) for g in gs]
-
-
-def show_confusion_matrix(ys: list[bool], ps: list[bool]) -> None:
-    disp = ConfusionMatrixDisplay.from_predictions(
-        ys,
-        ps,
-        labels=[False, True],
-        normalize="true",  # row-normalize => 0..1
-        cmap="Blues",
-        values_format=".0%",  # show percents
-    )
-    disp.im_.set_clim(0, 1)  # fix color scale (no auto-rescale)
-    plt.tight_layout()
-    plt.show()
-
-
-def feature_counter_from_graph(G: nx.Graph) -> Counter[tuple[int, int, int, int]]:
-    """
-    Count node features in a graph.
-
-    :returns: Counter keyed by ``feat.to_tuple()``.
-    """
-    c = Counter()
-    for n in G.nodes:
-        c[G.nodes[n]["feat"].to_tuple()] += 1
-    return c
-
-
-def leftover_features(full: Counter[tuple[int, int, int, int]], G: nx.Graph) -> Counter:
-    """
-    Remaining features to be placed given the current graph.
-
-    :param full: Full target multiset of node features.
-    :param G: Current partial graph.
-    :returns: Non-negative counter of leftover feature tuples.
-    """
-    left = full.copy()
-    left.subtract(feature_counter_from_graph(G))
-    # drop non-positive
-    for k in list(left):
-        if left[k] <= 0:
-            del left[k]
-    return left
-
-
-def current_degree(G: nx.Graph, node: int) -> int:
-    """
-    Current degree of ``node`` (undirected).
-
-    :param G: Graph.
-    :param node: Node id.
-    :returns: Degree in the *current* partial graph.
-    """
-    return G.degree[node]
-
-
-def residual_degree(G: nx.Graph, node: int) -> int:
-    """
-    Residual degree capacity = ``target_degree - current_degree``.
-
-    :param G: Graph.
-    :param node: Node id.
-    :returns: Remaining stubs (>= 0).
-    """
-    return int(G.nodes[node]["target_degree"]) - current_degree(G, node)
-
-
-def residuals(G: nx.Graph) -> dict[int, int]:
-    """
-    Residual degrees for all nodes.
-
-    :param G: Graph.
-    :returns: Mapping ``node -> residual_degree``.
-    """
-    return {n: residual_degree(G, n) for n in G.nodes}
-
-
-def anchors(G: nx.Graph) -> list[int]:
-    """
-    Nodes that can still accept edges (residual > 0).
-
-    :param G: Graph.
-    :returns: list of node ids.
-    """
-    return [n for n in G.nodes if residual_degree(G, n) > 0]
-
-
-def add_edge_if_possible(G: nx.Graph, u: int, v: int, *, strict: bool = True) -> bool:
-    """
-    Add an undirected edge if constraints allow it.
-
-    Constraints:
-    - ``u != v``
-    - Edge must not already exist.
-    - Both endpoints must have residual > 0.
-    - If ``strict``: never exceed target degrees.
-
-    :param G: Graph (modified in place).
-    :param u: Endpoint node.
-    :param v: Endpoint node.
-    :param strict: Enforce residual checks.
-    :returns: ``True`` if edge was added, else ``False``.
-    """
-    if u == v or G.has_edge(u, v):
-        return False
-    if strict and (residual_degree(G, u) <= 0 or residual_degree(G, v) <= 0):
-        return False
-    G.add_edge(u, v)
-    if strict and (residual_degree(G, u) < 0 or residual_degree(G, v) < 0):
-        # rollback if we over-shot due to concurrent edits
-        G.remove_edge(u, v)
-        return False
-    return True
-
-
-def total_edges_count(feat_ctr: Counter[tuple[int, int, int, int]]) -> int:
-    """
-    Compute the total number of edges implied by a multiset of features.
-
-    The degree in the encoding is ``degree_idx = degree - 1``. The sum of all
-    target degrees divided by 2 yields the number of undirected edges.
-
-    :param feat_ctr: Counter mapping feature tuples to multiplicities.
-    :returns: Total number of edges in the final graph.
-    """
-    return sum(((deg_idx + 1) * v) for (_, deg_idx, _, _), v in feat_ctr.items()) // 2
-
-
-def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: int | None = None) -> int:
-    """
-    Add a node with frozen features.
-
-    :param G: Target graph (modified in place).
-    :param feat: Frozen node features.
-    :param node_id: Optional explicit node id. If ``None``, uses ``max_id+1`` or ``0``.
-    :returns: The node id used.
-    """
-    if node_id is None:
-        node_id = 0 if not G.nodes else (max(G.nodes) + 1)
-    G.add_node(node_id, feat=feat, target_degree=feat.target_degree)
-    return node_id
-
-
-def add_node_and_connect(G: nx.Graph, feat: Feat, connect_to: Sequence[int], total_nodes: int) -> int | None:
-    """
-    Add a node and try to connect it to a set of anchors (greedy, respects residuals).
-
-    :param G: Graph (modified in place).
-    :param feat: Features of the new node.
-    :param connect_to: Candidate anchor nodes to attempt connections.
-    :returns: New node id, or ``None`` if no valid placement (edge constraints violated).
-    """
-    nid = add_node_with_feat(G, feat)
-    return connect_all_if_possible(G, nid, connect_to, total_nodes)
-
-
-def connect_all_if_possible(G: nx.Graph, nid: int, connect_to: Sequence[int], total_nodes: int) -> int | None:
-    """
-    Add a node and try to connect it to a set of anchors (greedy, respects residuals).
-
-    :param G: Graph (modified in place).
-    :param feat: Features of the new node.
-    :param connect_to: Candidate anchor nodes to attempt connections.
-    :returns: New node id, or ``None`` if no valid placement (edge constraints violated).
-    """
-    ok = True
-    for a in connect_to:
-        if residual_degree(G, nid) <= 0:
-            break
-        if residual_degree(G, a) <= 0:
-            continue
-        if not add_edge_if_possible(G, nid, a, strict=True):
-            ok = False
-            break
-    # Don't finish the graph if we still have leftover nodes
-    if not ok or (len(anchors(G)) <= 0 and G.number_of_nodes() != total_nodes):
-        G.remove_node(nid)
-        return None
-    return nid
-
-
-def powerset(iterable):
-    """
-    Return the power set of the input iterable.
-
-    Example
-    -------
-    >>> list(powerset([1, 2, 3]))
-    [(), (1,), (2,), (3,), (1, 2), (1, 3), (2, 3), (1, 2, 3)]
-    """
-    s = list(iterable)
-    return chain.from_iterable(combinations(s, r) for r in range(len(s) + 1))
-
-
-def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
-    """WL hash that respects `feat`."""
-    H = G.copy()
-    for n in H.nodes:
-        f = H.nodes[n]["feat"]
-        H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
-    return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
-
-
-def _hash(G: nx.Graph) -> tuple[str, int, int]:
-    return _wl_hash(G), G.number_of_nodes(), G.number_of_edges()
-
-
-def order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
-    """Unique feature tuples, sorted by final degree (asc), then lexicographically."""
-    uniq = list(ctr.keys())
-    uniq.sort(key=lambda t: (t[1] + 1, t))
-    return uniq
 
 
 def greedy_oracle_decoder(
@@ -602,18 +326,6 @@ def greedy_oracle_decoder_faster(
         "trace_back_attempts": 0,
         "agitated_rounds": 0,  # how many rounds after applying trace back keep the beam size larger
     }
-
-    # -- local helpers --
-    def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
-        """WL hash that respects `feat`."""
-        H = G.copy()
-        for n in H.nodes:
-            f = H.nodes[n]["feat"]
-            H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
-        return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
-
-    def _hash(G: nx.Graph) -> tuple[str, int, int]:
-        return _wl_hash(G), G.number_of_nodes(), G.number_of_edges()
 
     def _order_leftovers_by_degree_distinct(ctr: Counter) -> list[tuple[int, int, int, int]]:
         """Unique feature tuples, sorted by final degree (asc), then lexicographically."""
@@ -1105,40 +817,40 @@ def greedy_oracle_decoder_voter_oracle(
     return _generate_response(population)
 
 
-def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
+def new_decoder(nodes_multiset: Counter, edge_terms, encoder, graph_terms):
     ## First get the node multiset
     num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in nodes_multiset.items()])
 
-    n_count = node_counter.total()
+    n_count = nodes_multiset.total()
     e_count = num_edges
     print(n_count)
     print(e_count)
 
-    node_idxs = node_idxer.get_idxs(node_tuples)
-    idx_tensor = torch.tensor(node_idxs, dtype=torch.long, device=device)
-    cb = nodes_cb[idx_tensor]
+    node_idxs = encoder.nodes_indexer.get_idxs(nodes_multiset.keys())
+    idx_tensor = torch.tensor(node_idxs, dtype=torch.long, device=torch.device("cpu"))
+    cb = encoder.nodes_codebook[idx_tensor]
     print(cb.shape)
 
-    residuals = {k: (k[1] + 1) * n * 2 for k, n in node_counter.items()}  # how much each node can spend on edges
-    edges_left = [(node_tuples[a], node_tuples[b]) for a, b in edge_tuples]
+    residuals = {k: (k[1] + 1) * n * 2 for k, n in nodes_multiset.items()}  # how much each node can spend on edges
+    # edges_left = [(node_tuples[a], node_tuples[b]) for a, b in edge_tuples]
     result = Counter()
     print(f"ITERATIONS: {e_count}")
     result_edge_index = []
     black_list = set()
+    edge_terms_clone = edge_terms.clone()
+    edges = []
+    all_edges = list(itertools.product(nodes_multiset.keys(), nodes_multiset.keys()))
+    for a, b in all_edges:
+        # if a == b: continue
+        idx_a = encoder.nodes_indexer.get_idx(a)
+        idx_b = encoder.nodes_indexer.get_idx(b)
+        hd_a = encoder.nodes_codebook[idx_a]
+        hd_b = encoder.nodes_codebook[idx_b]
+
+        # bind
+        edges.append(hd_a.bind(hd_b))
+    t = torch.stack(edges).as_subclass(torchhd.HRRTensor)
     for i in range(e_count // 2):
-        edges = []
-        all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
-        for a, b in all_edges:
-            # if a == b: continue
-            idx_a = node_idxer.get_idx(a)
-            idx_b = node_idxer.get_idx(b)
-            hd_a = node_cb[idx_a]
-            hd_b = node_cb[idx_b]
-
-            # bind
-            edges.append(hd_a.bind(hd_b))
-
-        t = torch.stack(edges).as_subclass(torchhd.HRRTensor)
         sims = torchhd.cos(edge_terms, t)
         max = sims.max().item()
         eps = 1e-9
@@ -1160,10 +872,10 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
         if not a_found or not b_found:
             print("Failed to decode")
             break
-        edges_left.remove((a_found, b_found))
-        edges_left.remove((b_found, a_found))
-        hd_a_found = node_cb[node_idxer.get_idx(a_found)]
-        hd_b_found = node_cb[node_idxer.get_idx(b_found)]
+        # edges_left.remove((a_found, b_found))
+        # edges_left.remove((b_found, a_found))
+        hd_a_found = encoder.nodes_codebook[encoder.nodes_indexer.get_idx(a_found)]
+        hd_b_found = encoder.nodes_codebook[encoder.nodes_indexer.get_idx(b_found)]
         edge_terms -= hd_a_found.bind(hd_b_found)
         edge_terms -= hd_b_found.bind(hd_a_found)
         result[(a_found, b_found)] += 1
@@ -1177,15 +889,28 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
         print(f"Edge {i} done")
         print(f"Sim max: {sims.max().item()}")
 
-    print(result.total())
-    print(result)
-    print(result_edge_index)
-    print("ENCODED")
-    e_c = Counter(result_edge_index)
-    print(sorted(e_c.items(), key=lambda x: x[1], reverse=True))
-    print("ACTUAL")
-    a_c = Counter([(node_tuples[a], node_tuples[b]) for a, b in edge_tuples])
-    print(sorted(a_c.items(), key=lambda x: x[1], reverse=True))
+    # actual_edges = [(node_tuples[a], node_tuples[b]) for a, b in edge_tuples]
+    # if result_edge_index != actual_edges:
+    #     print("ALARM")
+    # extras = []
+    # for tup in result_edge_index:
+    #     if tup not in actual_edges:
+    #         extras.append(tup)
+    #
+    # not_found = []
+    # for tup in actual_edges:
+    #     if tup not in result_edge_index:
+    #         not_found.append(tup)
+
+    # print(result.total())
+    # print(result)
+    # print(result_edge_index)
+    # print("ENCODED")
+    # e_c = Counter(result_edge_index)
+    # print(sorted(e_c.items(), key=lambda x: x[1], reverse=True))
+    # print("ACTUAL")
+    # # a_c = Counter([(node_tuples[a], node_tuples[b]) for a, b in edge_tuples])
+    # print(sorted(a_c.items(), key=lambda x: x[1], reverse=True))
 
     ## We have the multiset of nodes and the multiset of edges
     first_pop: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1207,7 +932,7 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
     print(len(first_pop))
 
     # Start with a child with on satisfied node
-    selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 1]
+    selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
     population = selected if len(selected) >= 1 else first_pop
     for i in tqdm(range(2, n_count)):
         children: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1222,9 +947,10 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
             ancrs = anchors(G)
             if not ancrs:
                 continue
+            lowest_degree_ancrs = sorted(ancrs, key=lambda n: residual_degree(G, n))[:1]
 
             # how many anchors we’ll actually use (slice semantics preserved)
-            for a, lo_t in list(itertools.product(ancrs, leftover_types)):
+            for a, lo_t in list(itertools.product(lowest_degree_ancrs, leftover_types)):
                 a_t = G.nodes[a]["feat"].to_tuple()
                 if (a_t, lo_t) not in edges_left:
                     continue
@@ -1239,6 +965,15 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
                 keyC = _hash(C)
                 if keyC in global_seen or keyC in local_seen:
                     continue
+                # # ## --------------------------
+                # batch = Batch.from_data_list([DataTransformer.nx_to_pyg(C)])
+                # enc_out = encoder.forward(batch)
+                # g_terms = enc_out["graph_embedding"]
+                # sims_c = torchhd.cos(graph_terms, g_terms).tolist()[0]
+                # print(f"SIM: {sims_c[0]}")
+                # draw_nx_with_atom_colorings(C, dataset="ZincSmiles", label=sims_c[0])
+                # plt.show()
+                # # ## --------------------------
                 remaining_edges = edges_left.copy()
                 remaining_edges.remove((a_t, lo_t))
                 remaining_edges.remove((lo_t, a_t))
@@ -1299,6 +1034,17 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
                         except Exception as e:
                             print(e)
                             continue
+
+                    # ## ---------------------------------
+                    # batch = Batch.from_data_list([DataTransformer.nx_to_pyg(H)])
+                    # enc_out = encoder.forward(batch)
+                    # g_terms = enc_out["graph_embedding"]
+                    # sims_c = torchhd.cos(graph_terms, g_terms).tolist()[0]
+                    # print(f"SIM: {sims_c[0]}")
+                    # draw_nx_with_atom_colorings(H, dataset="ZincSmiles", label=sims_c[0])
+                    # plt.show()
+                    # ## ---------------------------------
+
                     global_seen.add(keyH)
                     local_seen.add(keyH)
                     children.append((H, remaining_edges_))
@@ -1307,116 +1053,155 @@ def new_decoder(nodes_multiset: Counter, edge_terms, nodes_cb, encoder):
         # edge_max = max([G.number_of_edges() for G, _ in children])
         # children = [(G, l) for G, l in children if G.number_of_edges() >= edge_max]
         # if (i % 3) == 0:
+        if not children:
+            graphs, edges_left = zip(*population, strict=True)
+            are_final = [len(i) == 0 for i in edges_left]
+            return graphs, are_final
+
+        def ring_bonus(cycles: torch.Tensor, alpha: float = 0.05) -> torch.Tensor:
+            """
+            Apply a *very small* additive boost if the graph has any cycle.
+            cycles: tensor[int] with number of simple cycles per graph.
+            alpha: small positive constant controlling how much rings matter.
+            """
+            return alpha * torch.log1p(cycles)
+
+        # --- pipeline ---
+        limit = 128
+        keep = limit // 2
+
+        # Encode and compute similarity
         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
         enc_out = encoder.forward(batch)
         g_terms = enc_out["graph_embedding"]
+        sims = torchhd.cos(graph_terms, g_terms)[0]
 
-        q = graph_terms.to(g_terms.device, g_terms.dtype)
-        sims_c = torchhd.cos(q, g_terms).tolist()[0]
-        sorted_idx = torch.argsort(torch.tensor(sims_c), descending=True)
-        children = [children[ix] for ix in sorted_idx[:4]]
+        # Sort by similarity first
+        sim_order = torch.argsort(sims, descending=True)
+        children = [children[i.item()] for i in sim_order]
+
+        # Optional ring-boost if too many
+        if len(children) > limit:
+            top_children = children[:limit]
+            cyc_counts = torch.tensor([len(nx.cycle_basis(c)) for c, _ in top_children])
+
+            # very light boost (alpha ≈ 0.05)
+            boosted = sims[sim_order[:limit]] + ring_bonus(cyc_counts, alpha=0.00)
+
+            # Re-rank by boosted score
+            final_order_local = torch.argsort(boosted, descending=True)
+            children = [top_children[i.item()] for i in final_order_local[:keep]]
+
         population = children
 
-    return zip(*population, strict=True)
+    graphs, edges_left = zip(*population, strict=True)
+    are_final = [len(i) == 0 for i in edges_left]
+    return graphs, are_final
 
-
-if __name__ == '__main__':
-
-    base_dataset = "zinc"
-    ds = ZincSmiles(split="test") if base_dataset == "zinc" else QM9Smiles(split="test")
-
-    data = ds[1]
-
-    nx_g = DataTransformer.pyg_to_nx(data)
-    mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset=base_dataset)
-
-    print(mol.GetNumAtoms())
-    print(mol.GetNumBonds())
-    print(nx_g.number_of_nodes())
-    print(nx_g.number_of_edges())
-    print(data.x)
-    print(data.edge_index)
-
-    # device = pick_device()
-    device = torch.device("cpu")
-    node_tuples = [tuple(i) for i in data.x.tolist()]
-    edge_tuples = [tuple(e) for e in data.edge_index.t().cpu().tolist()]
-
-    ds_config = ZINC_SMILES_HRR_7744_CONFIG
-    encoder = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
-    encoder.nodes_codebook = encoder.nodes_codebook.to(torch.float64).as_subclass(torchhd.HRRTensor)
-    node_cb = encoder.nodes_codebook
-    node_cb = node_cb.to(torch.float64).as_subclass(torchhd.HRRTensor)
-    print(node_cb.shape)
-    node_idxer: TupleIndexer = encoder.nodes_indexer
-
-    # Manually compute the edge terms
-    edge_terms_manul = None
-    edges = []
-    for a, b in edge_tuples:
-        idx_a = node_idxer.get_idx(node_tuples[a])
-        idx_b = node_idxer.get_idx(node_tuples[b])
-        hd_a = node_cb[idx_a]
-        hd_b = node_cb[idx_b]
-
-        # bind
-        edges.append(hd_a.bind(hd_b))
-
-    t = torch.stack(edges)
-    print(t.shape)
-    edge_terms_manul = torchhd.multibundle(t)
-    print(edge_terms_manul.shape)
-
-    edget_terms_m_copy = edge_terms_manul.clone()
-    # Now just reverse to see if you get 0
-    for a, b in edge_tuples:
-        idx_a = node_idxer.get_idx(node_tuples[a])
-        idx_b = node_idxer.get_idx(node_tuples[b])
-        hd_a = node_cb[idx_a]
-        hd_b = node_cb[idx_b]
-
-        # bind
-        edget_terms_m_copy -= hd_a.bind(hd_b)
-
-    zero_hd = torchhd.empty(1, 1600, "HRR")
-    sum_elements = edget_terms_m_copy.abs().sum().item()
-    print(sum_elements)
-    # prints 2.470420440658927e-05 <-- why not zero?
-    # with dtype float64 -> 4.542902902140598e-14 almost zero
-
-    # Compare the manually created one with the hypernet
-
-    batch = Batch.from_data_list([data])
-    forward = encoder.forward(batch)
-    edge_terms = forward["edge_terms"]
-    graph_terms = forward["graph_embedding"]
-
-    eps = 1e-9
-    ok_mask = (edge_terms - edge_terms_manul).abs() <= eps  # bool tensor
-    all_ok = ok_mask.all()  # << GOOD
-    print(all_ok.item())
-
-    draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
-    ## Now let's fucking decode the edges
-    node_counter = DataTransformer.get_node_counter_from_batch(0, batch)
-    candidates, edges_left = new_decoder(
-        nodes_multiset=node_counter, edge_terms=edge_terms, nodes_cb=node_cb, encoder=encoder
-    )
-    data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
-
-    batch = Batch.from_data_list(data_list)
-    enc_out = encoder.forward(batch)
-    g_terms = enc_out["graph_embedding"]  # [B, D]
-
-    q = graph_terms.to(g_terms.device, g_terms.dtype)  # [D]
-    sims_ = torchhd.cos(q, g_terms).tolist()[0]
-    print(sims_)
-    print(max(sims_))
-
-    best_idx = sims_.index(max(sims_))
-    best = candidates[best_idx]
-
-    draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
-    for i, c in enumerate(candidates):
-        best_mol, _ = DataTransformer.nx_to_mol_v2(c, dataset=base_dataset)
-        draw_mol(mol=best_mol, save_path=f"candidate-{i}-best-{best_idx}.png", fmt="png")
+#
+# if __name__ == "__main__":
+#     base_dataset = "qm9"
+#     ds = ZincSmiles(split="train") if base_dataset == "zinc" else QM9Smiles(split="train")
+#
+#     data = ds[0]
+#
+#     nx_g = DataTransformer.pyg_to_nx(data)
+#     draw_nx_with_atom_colorings(nx_g, dataset=base_dataset)
+#     plt.show()
+#     mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset=base_dataset)
+#
+#     print(mol.GetNumAtoms())
+#     print(mol.GetNumBonds())
+#     print(nx_g.number_of_nodes())
+#     print(nx_g.number_of_edges())
+#     print(data.x)
+#     print(data.edge_index)
+#
+#     # device = pick_device()
+#     device = torch.device("cpu")
+#     node_tuples = [tuple(i) for i in data.x.tolist()]
+#     edge_tuples = [tuple(e) for e in data.edge_index.t().cpu().tolist()]
+#
+#     ds_config = ZINC_SMILES_HRR_7744_CONFIG if base_dataset == "zinc" else QM9_SMILES_HRR_1600_CONFIG_F64
+#     encoder = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
+#     encoder.nodes_codebook = encoder.nodes_codebook.to(torch.float64).as_subclass(torchhd.HRRTensor)
+#     node_cb = encoder.nodes_codebook
+#     node_cb = node_cb.to(torch.float64).as_subclass(torchhd.HRRTensor)
+#     print(node_cb.shape)
+#     node_idxer: TupleIndexer = encoder.nodes_indexer
+#
+#     # Manually compute the edge terms
+#     edge_terms_manul = None
+#     edges = []
+#     for a, b in edge_tuples:
+#         idx_a = node_idxer.get_idx(node_tuples[a])
+#         idx_b = node_idxer.get_idx(node_tuples[b])
+#         hd_a = node_cb[idx_a]
+#         hd_b = node_cb[idx_b]
+#
+#         # bind
+#         edges.append(hd_a.bind(hd_b))
+#
+#     t = torch.stack(edges)
+#     print(t.shape)
+#     edge_terms_manul = torchhd.multibundle(t)
+#     print(edge_terms_manul.shape)
+#
+#     edget_terms_m_copy = edge_terms_manul.clone()
+#     # Now just reverse to see if you get 0
+#     for a, b in edge_tuples:
+#         idx_a = node_idxer.get_idx(node_tuples[a])
+#         idx_b = node_idxer.get_idx(node_tuples[b])
+#         hd_a = node_cb[idx_a]
+#         hd_b = node_cb[idx_b]
+#
+#         # bind
+#         edget_terms_m_copy -= hd_a.bind(hd_b)
+#
+#     zero_hd = torchhd.empty(1, 1600, "HRR")
+#     sum_elements = edget_terms_m_copy.abs().sum().item()
+#     print(sum_elements)
+#     # prints 2.470420440658927e-05 <-- why not zero?
+#     # with dtype float64 -> 4.542902902140598e-14 almost zero
+#
+#     # Compare the manually created one with the hypernet
+#
+#     batch = Batch.from_data_list([data])
+#     forward = encoder.forward(batch)
+#     edge_terms = forward["edge_terms"]
+#     graph_terms = forward["graph_embedding"]
+#     mp2_terms = forward["mp2_terms"]
+#
+#     eps = 1e-9
+#     ok_mask = (edge_terms - edge_terms_manul).abs() <= eps  # bool tensor
+#     all_ok = ok_mask.all()  # << GOOD
+#     print(all_ok.item())
+#
+#     draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
+#     ## Now let's fucking decode the edges
+#     node_counter = DataTransformer.get_node_counter_from_batch(0, batch)
+#     candidates, edges_left = new_decoder(
+#         nodes_multiset=node_counter,
+#         edge_terms=edge_terms,
+#         encoder=encoder,
+#         graph_terms=graph_terms,
+#     )
+#     data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
+#
+#     batch = Batch.from_data_list(data_list)
+#     enc_out = encoder.forward(batch)
+#     g_terms = enc_out["graph_embedding"]  # [B, D]
+#
+#     q = graph_terms.to(g_terms.device, g_terms.dtype)  # [D]
+#     sims_ = torchhd.cos(q, g_terms).tolist()[0]
+#     print(sims_)
+#     print(max(sims_))
+#
+#     best_idx = sims_.index(max(sims_))
+#     best = candidates[best_idx]
+#     print(f"Edges Left Best: {edges_left[best_idx]}")
+#
+#     draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
+#     for i, c in enumerate(candidates):
+#         best_mol, _ = DataTransformer.nx_to_mol_v2(c, dataset=base_dataset)
+#         draw_mol(mol=best_mol, save_path=f"candidate-{i}-best-{best_idx}.png", fmt="png")

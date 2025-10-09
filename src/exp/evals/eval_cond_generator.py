@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG
 from src.encoding.oracles import Oracle
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import Generator
+from src.generation.generation import OracleGenerator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
@@ -284,7 +284,7 @@ for gen_ckpt_path in gen_paths:
         "use_pair_feasibility": USE_PAIR_FEASIBILITY,
         "expand_on_n_anchors": expand_on_n_anchors,
     }
-    generator = Generator(
+    generator = OracleGenerator(
         gen_model=gen_model,
         oracle=oracle,
         ds_config=QM9_SMILES_HRR_1600_CONFIG,

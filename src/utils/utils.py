@@ -1605,6 +1605,19 @@ def zscore(x: float, stats: dict) -> float:
         return 0.0
     return (x - stats["mean"]) / stats["std"]
 
+def show_confusion_matrix(ys: list[bool], ps: list[bool]) -> None:
+    disp = ConfusionMatrixDisplay.from_predictions(
+        ys,
+        ps,
+        labels=[False, True],
+        normalize="true",  # row-normalize => 0..1
+        cmap="Blues",
+        values_format=".0%",  # show percents
+    )
+    disp.im_.set_clim(0, 1)  # fix color scale (no auto-rescale)
+    plt.tight_layout()
+    plt.show()
+
 
 if __name__ == "__main__":
     print(ROOT)
