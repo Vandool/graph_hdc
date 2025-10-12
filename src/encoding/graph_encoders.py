@@ -1548,7 +1548,9 @@ class HyperNet(AbstractGraphEncoder):
         draw_nx_with_atom_colorings(g, dataset="ZincSmiles", label=sims_c[0])
         plt.show()
 
-    def decode_graph(self, node_counter: Counter, edge_term: VSATensor, graph_term: VSATensor):
+    def decode_graph(
+        self, node_counter: Counter, edge_term: VSATensor, graph_term: VSATensor, settings: dict | None = None
+    ):
         num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         node_count = node_counter.total()
         edge_count = num_edges
@@ -1616,6 +1618,7 @@ class HyperNet(AbstractGraphEncoder):
         # Start with a child with on satisfied node
         # selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
         # population = selected if len(selected) >= 1 else first_pop
+        initial_limit = 4096
         population = first_pop
         for _ in tqdm(range(2, node_count)):
             children: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1723,39 +1726,19 @@ class HyperNet(AbstractGraphEncoder):
                 are_final = [len(i) == 0 for i in edges_left]
                 return graphs, are_final
 
-            # def ring_bonus(cycles: torch.Tensor, alpha: float = 0.05) -> torch.Tensor:
-            #     """
-            #     Apply a *very small* additive boost if the graph has any cycle.
-            #     cycles: tensor[int] with number of simple cycles per graph.
-            #     alpha: small positive constant controlling how much rings matter.
-            #     """
-            #     return alpha * torch.log1p(cycles)
+            if len(children) > initial_limit:
+                initial_limit = settings.get("limit", initial_limit)
+                keep = settings.get("beam_size")
 
-            # --- pipeline ---
-            limit = 4096
-            keep = 32
-            #
-            # Encode and compute similarity
-            batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
-            enc_out = self.forward(batch)
-            g_terms = enc_out["graph_embedding"]
-            sims = torchhd.cos(graph_term, g_terms)
+                # Encode and compute similaity
+                batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
+                enc_out = self.forward(batch)
+                g_terms = enc_out["graph_embedding"]
+                sims = torchhd.cos(graph_term, g_terms)
 
-            # Sort by similarity first
-            sim_order = torch.argsort(sims, descending=True)
-            children = [children[i.item()] for i in sim_order]
-            #
-            # # Optional ring-boost if too many
-            if len(children) > limit:
-                children = children[:limit]
-            #     cyc_counts = torch.tensor([len(nx.cycle_basis(c)) for c, _ in top_children])
-            #
-            #     # very light boost (alpha ≈ 0.05)
-            #     boosted = sims[sim_order[:limit]] + ring_bonus(cyc_counts, alpha=0.00)
-            #
-            #     # Re-rank by boosted score
-            #     final_order_local = torch.argsort(boosted, descending=True)
-            #     children = [top_children[i.item()] for i in final_order_local[:keep]]
+                # Sort by similarity first
+                sim_order = torch.argsort(sims, descending=True)
+                children = [children[i.item()] for i in sim_order[:keep]]
 
             population = children
 

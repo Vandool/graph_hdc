@@ -21,6 +21,9 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
+DATASET="${DATASET:-qm9}"
+N_SAMPLES="${N_SAMPLES:-1000}"
+
 
 MODULE_LOAD_DEFAULT=''
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
@@ -29,7 +32,7 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 # Paths
 PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
 EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/evals}"
-SCRIPT_NAME="${SCRIPT_NAME:-eval_retrieval.py}"
+SCRIPT_NAME="${SCRIPT_NAME:-eval_gen_and_plot_3d_hdc.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
@@ -40,6 +43,8 @@ EXP_NAME="Cond Gen and Plot ${DATASET}"
 # -----------------------------
 PY_ARGS=(
   "$SCRIPT"
+  --dataset "$DATASET"
+  --n_samples "$N_SAMPLES"
 )
 
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
