@@ -4,6 +4,7 @@ import time
 
 import numpy as np
 import pandas as pd
+import torch
 import torchhd
 from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
@@ -18,7 +19,7 @@ from src.utils.nx_utils import is_induced_subgraph_by_features
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransformer, pick_device
 
 
-def eval_retrieval(n_samples: int = 100):
+def eval_retrieval(n_samples: int = 1):
     for ds_config in [
         # QM9_SMILES_HRR_1600_CONFIG_F64,
         ZINC_SMILES_HRR_7744_CONFIG_F64
@@ -34,8 +35,8 @@ def eval_retrieval(n_samples: int = 100):
             7744,
         ]:
             for beam_size in [16, 32, 64]:
-                device = pick_device()
-                # device = torch.device("cpu")
+                # device = pick_device()
+                device = torch.device("cpu")
                 ds_config = ds_config
                 ds_config.hv_dim = hv_dim
                 hypernet: HyperNet = (
@@ -79,7 +80,7 @@ def eval_retrieval(n_samples: int = 100):
                     q = graph_terms[0].to(g_terms.device, g_terms.dtype)
                     similarities = torchhd.cos(q, g_terms)
 
-                    best_idx = similarities.tolist().index(max(similarities))
+                    best_idx = int(torch.argmax(similarities))
                     best_g = candidates[best_idx]
 
                     ts.append(time.perf_counter() - t0)
@@ -87,7 +88,7 @@ def eval_retrieval(n_samples: int = 100):
                     is_hit = is_induced_subgraph_by_features(best_g, DataTransformer.pyg_to_nx(data.to_data_list()[0]))
                     hits.append(is_hit)
                     finals.append(final_flags[best_idx])
-                    sims.append(max(similarities))
+                    sims.append(float(similarities[best_idx].detach().cpu()))
 
                 sims = np.array(sims)
                 ts = np.array(ts)
@@ -128,7 +129,7 @@ def eval_retrieval(n_samples: int = 100):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
     p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=1)
     args = p.parse_args()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     eval_retrieval(n_samples=args.n_samples)
