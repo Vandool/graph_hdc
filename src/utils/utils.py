@@ -21,6 +21,7 @@ import seaborn as sns
 import torch
 import torchhd
 from rdkit import Chem
+from sklearn.metrics import ConfusionMatrixDisplay
 from torch import Tensor
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.utils import scatter
@@ -1604,6 +1605,7 @@ def zscore(x: float, stats: dict) -> float:
     if np.isnan(x):
         return 0.0
     return (x - stats["mean"]) / stats["std"]
+
 
 def show_confusion_matrix(ys: list[bool], ps: list[bool]) -> None:
     disp = ConfusionMatrixDisplay.from_predictions(

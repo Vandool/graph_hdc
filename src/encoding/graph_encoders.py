@@ -687,7 +687,7 @@ class HyperNet(AbstractGraphEncoder):
             else:
                 self.nodes_indexer = TupleIndexer([e.num_categories for e, _ in self.node_encoder_map.values()])
 
-    def populate_nodes_codebooks(self) -> None:
+    def populate_nodes_codebooks(self, limit_node_set: set[tuple[int, ...]] | None = None) -> None:
         if self.is_not_initialized(tensor=self.nodes_codebook):
             # Retrieve the node encoders from the node_encoder_map.
             # Each node encoder is responsible for encoding on property of the node
@@ -701,6 +701,21 @@ class HyperNet(AbstractGraphEncoder):
             # HVnode = bind(HV(feature_1), ..., HV(feature_n))
             # [N, D]
             self.nodes_codebook = cartesian_bind_tensor(cbs)
+
+    def limit_nodes_codebook(self, limit_node_set: set[tuple[int, ...]]) -> None:
+        self.populate_nodes_codebooks()
+        self._populate_nodes_indexer()
+
+        # Limit the codebook only to a subset of the nodes.
+        sorted_limit_node_set = sorted(limit_node_set)
+        idxs = self.nodes_indexer.get_idxs(sorted_limit_node_set)
+        self.nodes_indexer.idx_to_tuple = sorted_limit_node_set
+        self.nodes_indexer.tuple_to_idx = {tup: idx for idx, tup in enumerate(sorted_limit_node_set)}
+        self.nodes_codebook = self.nodes_codebook[idxs].as_subclass(type(self.nodes_codebook))
+
+        for _, (enc, _) in self.node_encoder_map.items():
+            enc.codebook = self.nodes_codebook
+            enc.indexer = self.nodes_indexer
 
     @staticmethod
     def is_not_initialized(tensor: torch.Tensor | None) -> bool:
@@ -1599,8 +1614,9 @@ class HyperNet(AbstractGraphEncoder):
             first_pop.append((G, remaining_edges))
 
         # Start with a child with on satisfied node
-        selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
-        population = selected if len(selected) >= 1 else first_pop
+        # selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
+        # population = selected if len(selected) >= 1 else first_pop
+        population = first_pop
         for _ in tqdm(range(2, node_count)):
             children: list[tuple[nx.Graph, list[tuple]]] = []
 
@@ -1715,23 +1731,23 @@ class HyperNet(AbstractGraphEncoder):
             #     """
             #     return alpha * torch.log1p(cycles)
 
-            # # --- pipeline ---
-            # limit = 128
-            # keep = limit // 2
+            # --- pipeline ---
+            limit = 4096
+            keep = 32
             #
-            # # Encode and compute similarity
-            # batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
-            # enc_out = self.forward(batch)
-            # g_terms = enc_out["graph_embedding"]
-            # sims = torchhd.cos(graph_term, g_terms)
-            #
-            # # Sort by similarity first
-            # sim_order = torch.argsort(sims, descending=True)
-            # children = [children[i.item()] for i in sim_order]
+            # Encode and compute similarity
+            batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
+            enc_out = self.forward(batch)
+            g_terms = enc_out["graph_embedding"]
+            sims = torchhd.cos(graph_term, g_terms)
+
+            # Sort by similarity first
+            sim_order = torch.argsort(sims, descending=True)
+            children = [children[i.item()] for i in sim_order]
             #
             # # Optional ring-boost if too many
-            # if len(children) > limit:
-            #     top_children = children[:limit]
+            if len(children) > limit:
+                children = children[:limit]
             #     cyc_counts = torch.tensor([len(nx.cycle_basis(c)) for c, _ in top_children])
             #
             #     # very light boost (alpha ≈ 0.05)

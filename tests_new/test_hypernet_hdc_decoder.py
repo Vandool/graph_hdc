@@ -7,12 +7,17 @@ from tqdm import tqdm
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG_F64
-from src.encoding.decoder import new_decoder
+from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.utils.nx_utils import is_induced_subgraph_by_features
-from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer
+from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, pick_device  # noqa: F401
 
-
+"""
+1000 Samples:
+Accuracy: 0.994
+Average sim:  0.9998896030902724
+Average final:  0.998
+"""
 @pytest.mark.parametrize("ds_config", [QM9_SMILES_HRR_1600_CONFIG_F64])
 def test_hypernet_hdc_decoder(ds_config):
     # device = pick_device()
@@ -32,12 +37,13 @@ def test_hypernet_hdc_decoder(ds_config):
     sims = []
     for data in tqdm(dataloader):
         forward = hypernet.forward(data)
+        node_terms = forward["node_terms"]
         edge_terms = forward["edge_terms"]
         graph_terms = forward["graph_embedding"]
-        node_counter = DataTransformer.get_node_counter_from_batch(0, data)
-
+        # node_counter = DataTransformer.get_node_counter_from_batch(0, data)
+        counters = hypernet.decode_order_zero_counter(node_terms)
         candidates, final_flags = hypernet.decode_graph(
-            node_counter=node_counter, edge_term=edge_terms[0], graph_term=graph_terms[0]
+            node_counter=counters[0], edge_term=edge_terms[0], graph_term=graph_terms[0]
         )
 
         # candidates, final_flags = new_decoder(
