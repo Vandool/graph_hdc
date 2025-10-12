@@ -21,8 +21,8 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
-DATASET="${DATASET:-qm9}"
-N_SAMPLES="${N_SAMPLES:-1000}"
+DATASET="${DATASET:-zinc}"
+N_SAMPLES="${N_SAMPLES:-100}"
 
 
 MODULE_LOAD_DEFAULT=''
