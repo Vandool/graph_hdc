@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 
 import numpy as np
@@ -129,4 +130,5 @@ if __name__ == "__main__":
     p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
     p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     eval_retrieval(n_samples=args.n_samples)
