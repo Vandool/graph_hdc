@@ -32,11 +32,11 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 seed = 42
 seed_everything(seed)
 device = pick_device()
-# device = torch.device("cpu")
+device = torch.device("cpu")
 EVALUATOR = None
 
 
-def eval_cond_gen(
+def eval_generation(
     base_dataset: str,
     n_samples: int,
     gen_mod_hint: str,
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     models = {
         "qm9": {
             "gen_models": [
-                "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
+                # "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
                 "nvp-3d-f64_qm9_f8_hid1536_lr0.000503983_wd1e-5_bs384_smf7.43606_smi1.94892_smw15_an",
             ],
         },
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     dataset = args.dataset
     for g in models[dataset]["gen_models"]:
-        res = eval_cond_gen(
+        res = eval_generation(
             base_dataset=dataset,
             n_samples=n_samples,
             gen_mod_hint=g,

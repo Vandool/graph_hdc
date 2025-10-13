@@ -12,6 +12,8 @@ from networkx import Graph
 from torch_geometric.data import Batch
 from tqdm.auto import tqdm
 
+from src.datasets.qm9_smiles_generation import QM9Smiles
+from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import DatasetConfig
 from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
@@ -68,6 +70,10 @@ class AbstractGenerator(abc.ABC):
         self.hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=self.ds_config).to(self.device).eval()
         self.vsa = self.ds_config.vsa
         self.base_dataset = "zinc" if "zinc" in self.ds_config.name.lower() else "qm9"
+        # Limit the node codebook so we encode only valid nodes
+        ds = QM9Smiles(split="train") if self.base_dataset == "qm9" else ZincSmiles(split="train")
+        nodes_set = set(map(tuple, ds.x.long().tolist()))
+        self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
 
     @abc.abstractmethod
     def generate_most_similar(self, n_samples: int = 16) -> dict: ...
@@ -99,7 +105,10 @@ class HDCGenerator(AbstractGenerator):
                 continue
 
             candidates, final_flags = self.hypernet.decode_graph(
-                node_counter=full_ctr, edge_term=edge_terms[i], graph_term=graph_terms[i]
+                node_counter=full_ctr,
+                edge_term=edge_terms[i],
+                graph_term=graph_terms[i],
+                settings=self.decoder_settings,
             )
 
             if len(candidates) == 1 and candidates[0].number_of_nodes() == 0:

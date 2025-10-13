@@ -36,6 +36,7 @@ DECODER_SETTINGS = {
             "beam_size": 256,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
+            "use_one_initial_population": True,
         }
     ],
     "zinc": [
@@ -66,6 +67,13 @@ DECODER_SETTINGS = {
             "beam_size": 32,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
+        },
+        {
+            "initial_limit": 1024,
+            "limit": 256,
+            "beam_size": 64,
+            "pruning_method": "cos_sim",
+            "use_size_aware_pruning": False,
         },
     ],
 }
@@ -176,7 +184,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
+    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
     p.add_argument("--n_samples", type=int, default=100)
     args = p.parse_args()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

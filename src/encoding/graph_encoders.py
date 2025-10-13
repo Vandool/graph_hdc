@@ -1548,9 +1548,10 @@ class HyperNet(AbstractGraphEncoder):
         draw_nx_with_atom_colorings(g, dataset="ZincSmiles", label=sims_c[0])
         plt.show()
 
-    def decode_graph(
-        self, node_counter: Counter, edge_term: VSATensor, graph_term: VSATensor, settings: dict | None = None
-    ):
+    def decode_graph(self, node_counter: Counter, edge_term: VSATensor, graph_term: VSATensor, settings: dict = None):
+        if settings is None:
+            settings = {}
+
         num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         node_count = node_counter.total()
         edge_count = num_edges
@@ -1615,11 +1616,12 @@ class HyperNet(AbstractGraphEncoder):
             remaining_edges.remove((v_t, u_t))
             first_pop.append((G, remaining_edges))
 
-        # Start with a child with on satisfied node
-        # selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
-        # population = selected if len(selected) >= 1 else first_pop
         initial_limit = settings.get("initial_limit", 1024)
         use_size_aware_pruning = settings.get("use_size_aware_pruning", False)
+        if settings.get("use_one_initial_population", False):
+            # Start with a child both anchors free
+            selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
+            first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
         population = first_pop
         for _ in tqdm(range(2, node_count)):
             children: list[tuple[nx.Graph, list[tuple]]] = []

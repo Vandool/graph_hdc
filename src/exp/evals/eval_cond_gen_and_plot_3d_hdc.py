@@ -10,17 +10,16 @@ from typing import Any
 
 import normflows as nf
 import numpy as np
-import pandas as pd
 import torch
 from pytorch_lightning import seed_everything
 from tqdm.auto import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG
-from src.encoding.oracles import Oracle, SimpleVoterOracle
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, QM9_SMILES_HRR_1600_CONFIG_F64, \
+    ZINC_SMILES_HRR_7744_CONFIG_F64
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import OracleGenerator
+from src.generation.generation import HDCGenerator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
@@ -145,12 +144,9 @@ def get_lpr(hint: str) -> Path | None:
     return None
 
 
-def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa: PLR0915
+def eval_cond_gen(cfg: dict, decoder_settings: dict, gen_model_hint: str, lpr_hint: str) -> dict[str, Any]:  # noqa: PLR0915
     global EVALUATOR  # noqa: PLW0603
     global HDC_Y_REUSE
-    gen_model_hint = os.getenv("GEN_MODEL")
-    assert gen_model_hint is not None
-    assert os.getenv("CLASSIFIER") is not None
 
     gen_ckpt_path = get_gen_model(hint=gen_model_hint)
     print(f"Generator Checkpoint: {gen_ckpt_path}")
@@ -160,9 +156,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
         gen_ckpt_path, map_location=device, strict=True
     )
 
-    lpr_path = get_lpr(
-        hint="lpr_qm9_h1280-128-448_actlrelu_nmnone_dp0.00331757_bs480_lr0.000102482_wd3e-6_dep4_h11280_h2128_h3448_h496"
-    )
+    lpr_path = get_lpr(hint=lpr_hint)
     print(lpr_path)
     logp_regressor = LogPRegressor.load_from_checkpoint(lpr_path, map_location=device, strict=True)
 
@@ -231,45 +225,11 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
 
     # Only evaluate the hits
     hits = [s for s, h in zip(hdc, hits, strict=True) if h]
-    n, g = gen_model.split(torch.stack(hits))
-    # n, g = gen_model.split(hdc)
+    n, e, g = gen_model.split(torch.stack(hits))
 
-    if os.getenv("CLASSIFIER") == "SIMPLE_VOTER":
-        oracle = SimpleVoterOracle(
-            model_paths=[
-                GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_qm9_resume/models/epoch10-val0.3359.ckpt",
-                GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt",
-                GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt",
-            ],
-            device=device,
-        )
-    else:
-        classifier_ckpt = get_classifier(hint=os.getenv("CLASSIFIER"))
-        print(f"Classifier Checkpoint: {classifier_ckpt}")
-        model_type = get_model_type(classifier_ckpt)
-        classifier = (
-            registery.retrieve_model(name=model_type)
-            .load_from_checkpoint(classifier_ckpt, map_location="cpu", strict=True)
-            .to(device)
-            .eval()
-        )
-
-        # Read the metrics from training
-        evals_dir = classifier_ckpt.parent.parent / "evaluations"
-        epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
-
-        val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
-        best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()].add_suffix("_best")
-        oracle_threshold = best["val_best_thr_best"]
-        print(f"Oracle Threshold: {oracle_threshold}")
-
-        oracle = Oracle(model=classifier, model_type=model_type)
-        decoder_settings["oracle_threshold"] = oracle_threshold
-
-    generator = OracleGenerator(
-        gen_model=gen_model,
-        oracle=oracle,
-        ds_config=QM9_SMILES_HRR_1600_CONFIG,
+    generator = HDCGenerator(
+        gen_model_hint=gen_model_hint,
+        ds_config=QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64 ,
         decoder_settings=decoder_settings,
         device=device,
     )
@@ -380,16 +340,8 @@ if __name__ == "__main__":
             "lambda_hi": 0.0061834838894459,
         }
     }
-    decoder_settings = {
-        "beam_size": 128,
-        "use_pair_feasibility": True,
-        "expand_on_n_anchors": 9,
-        "trace_back_settings": {
-            "beam_size_multiplier": 2,
-            "trace_back_attempts": 3,
-            "trace_back_to_last_nth_iter": 1,
-            "agitated_rounds": 1,  # how many rounds after applying trace back keep the beam size larger
-        },
+    lpr = {
+        "qm9": "lpr-3d_qm9_h896-512_actlrelu_nmln_dp0.0377275_bs448_lr0.000181621_wd1e-5_dep2_h1512_h2896_h3192_h4224"
     }
     n_samples = args.n_samples
     for target_multiplier in [0, 1, -1, 2, -2, 3, -3]:
@@ -421,4 +373,7 @@ if __name__ == "__main__":
             }
             os.environ["GEN_MODEL"] = gen_model
             os.environ["CLASSIFIER"] = classifier
-            res = eval_cond_gen(cfg=cfg, decoder_settings=decoder_settings)
+            os.environ["LPR"] = lpr[dataset]
+            res = eval_cond_gen(
+                cfg=cfg, decoder_settings=decoder_settings, gen_model_hint=gen_model, lpr_hint=lpr[dataset]
+            )
