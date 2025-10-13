@@ -1618,7 +1618,7 @@ class HyperNet(AbstractGraphEncoder):
         # Start with a child with on satisfied node
         # selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
         # population = selected if len(selected) >= 1 else first_pop
-        initial_limit = 2048
+        initial_limit = settings.get("initial_limit", 1024)
         population = first_pop
         for _ in tqdm(range(2, node_count)):
             children: list[tuple[nx.Graph, list[tuple]]] = []

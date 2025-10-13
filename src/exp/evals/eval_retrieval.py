@@ -16,7 +16,7 @@ from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG_F64
 from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.utils.nx_utils import is_induced_subgraph_by_features
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransformer, pick_device
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransformer
 
 
 def eval_retrieval(n_samples: int = 1):
@@ -34,7 +34,7 @@ def eval_retrieval(n_samples: int = 1):
             4096 + 6 * 512,
             7744,
         ]:
-            for beam_size in [16, 32, 64]:
+            for beam_size in [4, 8, 16, 32, 64]:
                 # device = pick_device()
                 device = torch.device("cpu")
                 ds_config = ds_config
@@ -56,7 +56,12 @@ def eval_retrieval(n_samples: int = 1):
                 sims = []
                 ts = []
                 results = []
-                decoder_settings = {"limit": 128, "beam_size": beam_size, "pruning_method": "cos_sim"}
+                decoder_settings = {
+                    "initial_limit": 1024,
+                    "limit": 128,
+                    "beam_size": beam_size,
+                    "pruning_method": "cos_sim",
+                }
                 for data in tqdm(dataloader):
                     forward = hypernet.forward(data)
                     node_terms = forward["node_terms"]
@@ -105,7 +110,6 @@ def eval_retrieval(n_samples: int = 1):
                         "cos_sim_mean": sims.mean(),
                         "cos_sim_std": sims.std(),
                         "decoder_settings": decoder_settings,
-                        "comments": "initial limit 4096",
                     }
                 )
 
