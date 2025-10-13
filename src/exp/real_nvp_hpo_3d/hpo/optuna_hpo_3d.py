@@ -98,7 +98,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Real NVP V2 - HPO")
     p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    p.add_argument("--n_trials", type=int, default=5)
+    p.add_argument("--n_trials", type=int, default=1)
     args = p.parse_args()
 
     # Paths (per-dataset DB + CSV)

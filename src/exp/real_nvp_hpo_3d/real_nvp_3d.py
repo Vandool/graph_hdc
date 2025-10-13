@@ -817,7 +817,10 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        node_s, edge_s, graph_s, logs = best_model.sample_split(10_000)  # each [K, D]
+        samples = best_model.sample_split(10_000)  # each [K, D]
+        node_s = samples["node_terms"]
+        edge_s = samples["edge_terms"]
+        graph_s = samples["graph_terms"]
 
     node_s = node_s.as_subclass(HRRTensor)
     edge_s = edge_s.as_subclass(HRRTensor)
@@ -862,7 +865,7 @@ def run_experiment(cfg: FlowConfig):
 
     # plots
     _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
-    _hist(artefacts_dir / "sample_node_edge_hist.png", node_norm, "Sample edge L2 norm", "||edge||")
+    _hist(artefacts_dir / "sample_node_edge_hist.png", edge_norm, "Sample edge L2 norm", "||edge||")
     _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
     if node_cos.size:
         _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
@@ -886,7 +889,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "num_flows": trial.suggest_int("num_flows", 4, 16),
-        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=128),
+        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 800, 1600, step=400),
         "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
         "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
         "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),

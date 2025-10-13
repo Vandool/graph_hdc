@@ -1619,6 +1619,7 @@ class HyperNet(AbstractGraphEncoder):
         # selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
         # population = selected if len(selected) >= 1 else first_pop
         initial_limit = settings.get("initial_limit", 1024)
+        use_size_aware_pruning = settings.get("use_size_aware_pruning", False)
         population = first_pop
         for _ in tqdm(range(2, node_count)):
             children: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1730,15 +1731,33 @@ class HyperNet(AbstractGraphEncoder):
                 initial_limit = settings.get("limit", initial_limit)
                 keep = settings.get("beam_size")
 
-                # Encode and compute similaity
-                batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
-                enc_out = self.forward(batch)
-                g_terms = enc_out["graph_embedding"]
-                sims = torchhd.cos(graph_term, g_terms)
+                if use_size_aware_pruning:
+                    repo = defaultdict(list)
+                    for c, l in children:
+                        repo[c.number_of_edges()].append((c, l))
 
-                # Sort by similarity first
-                sim_order = torch.argsort(sims, descending=True)
-                children = [children[i.item()] for i in sim_order[:keep]]
+                    res = []
+                    for ch in [v for _, v in repo.items()]:
+                        # Encode and compute similaity
+                        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in ch])
+                        enc_out = self.forward(batch)
+                        g_terms = enc_out["graph_embedding"]
+                        sims = torchhd.cos(graph_term, g_terms)
+
+                        # Sort by similarity first
+                        sim_order = torch.argsort(sims, descending=True)
+                        res.extend([ch[i.item()] for i in sim_order[:keep]])
+                    children = res
+                else:
+                    # Encode and compute similaity
+                    batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
+                    enc_out = self.forward(batch)
+                    g_terms = enc_out["graph_embedding"]
+                    sims = torchhd.cos(graph_term, g_terms)
+
+                    # Sort by similarity first
+                    sim_order = torch.argsort(sims, descending=True)
+                    children = [children[i.item()] for i in sim_order[:keep]]
 
             population = children
 
