@@ -51,14 +51,21 @@ DECODER_SETTINGS = {
             "limit": 256,
             "beam_size": 8,
             "pruning_method": "cos_sim",
-            "use_size_aware_pruning": False,
+            "use_size_aware_pruning": True,
         },
         {
             "initial_limit": 1024,
             "limit": 256,
             "beam_size": 16,
             "pruning_method": "cos_sim",
-            "use_size_aware_pruning": False,
+            "use_size_aware_pruning": True,
+        },
+        {
+            "initial_limit": 1024,
+            "limit": 256,
+            "beam_size": 32,
+            "pruning_method": "cos_sim",
+            "use_size_aware_pruning": True,
         },
     ],
 }
@@ -67,10 +74,11 @@ DECODER_SETTINGS = {
 def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
     ds_config = QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64
     for hv_dim in HV_DIMS[base_dataset]:
-        for d in [3, 4, 5]:
+        for d in [3, 4, 5, 6]:
             for decoder_setting in DECODER_SETTINGS[base_dataset]:
                 device = pick_device()
-                device = torch.device("cpu")
+                print(f"Running on {device}")
+                # device = torch.device("cpu")
                 ds_config = ds_config
                 ds_config.hv_dim = hv_dim
                 ds_config.device = device
