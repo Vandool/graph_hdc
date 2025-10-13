@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import ZINC_SMILES_HRR_7744_CONFIG_F64
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG_F64, ZINC_SMILES_HRR_7744_CONFIG_F64
 from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.utils.nx_utils import is_induced_subgraph_by_features
@@ -21,20 +21,24 @@ from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransf
 
 def eval_retrieval(n_samples: int = 1):
     for ds_config in [
-        # QM9_SMILES_HRR_1600_CONFIG_F64,
-        ZINC_SMILES_HRR_7744_CONFIG_F64
+        QM9_SMILES_HRR_1600_CONFIG_F64,
+        # ZINC_SMILES_HRR_7744_CONFIG_F64
     ]:
         for hv_dim in [
-            4096 + 0 * 512,
-            4096 + 1 * 512,
-            4096 + 2 * 512,
-            4096 + 3 * 512,
-            4096 + 4 * 512,
-            4096 + 5 * 512,
-            4096 + 6 * 512,
-            7744,
+            1024,
+            1024 + 256,
+            1024 + 512,
+            1600
+            # 4096 + 0 * 512,
+            # 4096 + 1 * 512,
+            # 4096 + 2 * 512,
+            # 4096 + 3 * 512,
+            # 4096 + 4 * 512,
+            # 4096 + 5 * 512,
+            # 4096 + 6 * 512,
+            # 7744,
         ]:
-            for beam_size in [4, 8, 16, 32, 64]:
+            for beam_size in [256]:
                 # device = pick_device()
                 device = torch.device("cpu")
                 ds_config = ds_config
@@ -58,7 +62,7 @@ def eval_retrieval(n_samples: int = 1):
                 results = []
                 decoder_settings = {
                     "initial_limit": 1024,
-                    "limit": 128,
+                    "limit": 256,
                     "beam_size": beam_size,
                     "pruning_method": "cos_sim",
                 }
@@ -132,7 +136,7 @@ def eval_retrieval(n_samples: int = 1):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
+    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
     p.add_argument("--n_samples", type=int, default=1)
     args = p.parse_args()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
