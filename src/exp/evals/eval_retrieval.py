@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG_F64, ZINC_SMILES_HRR_7744_CONFIG_F64
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG_F64
 from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.utils.nx_utils import is_induced_subgraph_by_features
@@ -28,7 +28,8 @@ def eval_retrieval(n_samples: int = 1):
             1024,
             1024 + 256,
             1024 + 512,
-            1600
+            1600,
+            2048,
             # 4096 + 0 * 512,
             # 4096 + 1 * 512,
             # 4096 + 2 * 512,
