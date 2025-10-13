@@ -42,38 +42,19 @@ DECODER_SETTINGS = {
     "zinc": [
         {
             "initial_limit": 1024,
-            "limit": 256,
-            "beam_size": 4,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": True,
-        },
-        {
-            "initial_limit": 1024,
-            "limit": 256,
-            "beam_size": 8,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": True,
-        },
-        {
-            "initial_limit": 1024,
-            "limit": 256,
-            "beam_size": 16,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": True,
-        },
-        {
-            "initial_limit": 1024,
-            "limit": 256,
-            "beam_size": 32,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": True,
-        },
-        {
-            "initial_limit": 1024,
-            "limit": 256,
+            "limit": 512,
             "beam_size": 64,
             "pruning_method": "cos_sim",
+            "use_size_aware_pruning": True,
+            "use_one_initial_population": True,
+        },
+        {
+            "initial_limit": 1024,
+            "limit": 512,
+            "beam_size": 128,
+            "pruning_method": "cos_sim",
             "use_size_aware_pruning": False,
+            "use_one_initial_population": True,
         },
     ],
 }
