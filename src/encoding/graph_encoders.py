@@ -885,7 +885,7 @@ class HyperNet(AbstractGraphEncoder):
 
         return results
 
-    def decode_order_one_counter(
+    def decode_order_one(
         self, edge_term: torch.Tensor, node_counter: Counter[tuple[int, ...]]
     ) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
         """
@@ -1436,7 +1436,7 @@ class HyperNet(AbstractGraphEncoder):
         node_count = node_counter.total()
         edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
 
-        decoded_edges = self.decode_order_one_counter(edge_term=edge_term, node_counter=node_counter)
+        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
 
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1618,6 +1618,53 @@ class HyperNet(AbstractGraphEncoder):
         graphs, edges_left = zip(*population, strict=True)
         are_final = [len(i) == 0 for i in edges_left]
         return graphs, are_final
+
+    def decode_graph_2(
+        self,
+        node_counter: Counter,
+        edge_term: torch.Tensor,
+        graph_term: torch.Tensor,
+        decoder_settings: dict | None = None,
+    ):
+        if decoder_settings is None:
+            decoder_settings = {}
+
+
+        def get_similarities(a, b):
+            if pruning_fn != "cos_sim":
+                diff = a[:, None, :] - b[None, :, :]
+                return torch.sum(diff**2, dim=-1)
+            return torchhd.cos(a, b)
+
+        def get_least_popular(ctr):
+            return ctr.most_common()[::-1]
+
+        node_count = node_counter.total()
+        edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
+
+        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        edge_counter = Counter(decoded_edges)
+
+        ## We have the multiset of nodes and the multiset of edges
+        first_pop: list[tuple[nx.Graph, list[tuple]]] = []
+        global_seen: set = set()
+        for k, (u_t, v_t) in enumerate(decoded_edges):
+            G = nx.Graph()
+            uid = add_node_with_feat(G, Feat.from_tuple(u_t))
+            ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=node_count) is not None
+            if not ok:
+                continue
+            key = _hash(G)
+            if key in global_seen:
+                continue
+            global_seen.add(key)
+            remaining_edges = edge_counter.copy()
+            remaining_edges[(u_t, v_t)] -= 1
+            remaining_edges[(v_t, u_t)] -= 1
+            remaining_edges += Counter() # This cleans up the countre (removes all the zero entries)
+            first_pop.append((G, remaining_edges))
+
+
 
     def use_edge_features(self) -> bool:
         return len(self.edge_encoder_map) > 0
