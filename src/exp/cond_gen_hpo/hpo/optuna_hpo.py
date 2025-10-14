@@ -90,24 +90,14 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 
 if __name__ == "__main__":
-    base_dataset = "zinc"
+    base_dataset = "qm9"
     base_objective = run_qm9_cond_gen if base_dataset == "qm9" else run_zinc_cond_gen
     for gen_model in [
-        "nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd1e-4_an",
-        "nvp_zinc_h7744_f12_hid384_s42_lr1e-3_wd0.0_an",
-        "nvp_zinc_h7744_f8_hid512_s42_lr5e-4_wd0.0_an",
-        "nvp_zinc_h7744_f8_hid512_s42_lr1e-3_wd0.0_noan",
-        "nvp_zinc_h7744_f6_hid512_s42_lr1e-3_wd0.0_an",
-        "nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd0.0_an",
-        "nvp_zinc_h7744_f4_hid256_s42_lr1e-3_wd0.0_an",
-        "nvp_zinc_f11_hid1152_lr0.000218409_wd0_bs64_smf5.99998_smi1.00004_smw15_an",
-        "nvp_zinc_h7744_f12_hid1024_s42_lr5e-4_wd1e-4_an",
-        "nvp_zinc_h7744_f12_hid1280_s42_lr5e-4_wd0.0_an",
-        "nvp_zinc_f10_hid1152_lr7.61217e-5_wd0_bs64_smf6.00085_smi0.999514_smw15_an",
-        "nvp_zinc_h7744_f12_hid768_s42_lr1e-3_wd1e-4_an",
+        "nvp-3d-f64_qm9_f8_hid1536_lr0.000503983_wd1e-5_bs384_smf7.43606_smi1.94892_smw15_an",
+        "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
     ]:
         for classifier in [
-            "gin-f_baseline_zinc_resume_3",
+            "HDC-Decoder",
         ]:
             # Paths (per-dataset DB + CSV)
             here = pathlib.Path(__file__).parent
@@ -140,7 +130,7 @@ if __name__ == "__main__":
                 return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
 
             # Run optimization
-            study.optimize(objective, n_trials=30)
+            study.optimize(objective, n_trials=1)
 
             # Export canonical CSV (with exp_dir_name)
             export_trials(study_name=study_name, db_path=db_path, dataset=base_dataset, csv=csv)

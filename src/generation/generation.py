@@ -75,18 +75,22 @@ class AbstractGenerator(abc.ABC):
         nodes_set = set(map(tuple, ds.x.long().tolist()))
         self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
 
-    @abc.abstractmethod
-    def generate_most_similar(self, n_samples: int = 16) -> dict: ...
-
-
-@attr.define(slots=True, kw_only=True)
-class HDCGenerator(AbstractGenerator):
     def generate_most_similar(self, n_samples: int = 16) -> dict:
         samples = self.gen_model.sample_split(n_samples)
         node_terms = samples["node_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
         edge_terms = samples["edge_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
         graph_terms = samples["graph_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
+        return self.decode(node_terms, edge_terms, graph_terms)
 
+    def decode(
+        self,
+        node_terms: torch.Tensor,
+        edge_terms: torch.Tensor,
+        graph_terms: torch.Tensor,
+        *,
+        only_final_graphs: bool = False,
+    ):
+        n_samples = node_terms.shape[0]
         full_ctrs: dict[int, Counter[tuple[int, ...]]] = self.hypernet.decode_order_zero_counter(node_terms)
 
         best_graphs: list[Graph] = []
@@ -104,11 +108,10 @@ class HDCGenerator(AbstractGenerator):
                 all_similarities.append([0])
                 continue
 
-            candidates, final_flags = self.hypernet.decode_graph(
+            candidates, final_flags = self._decode_single_graph(
                 node_counter=full_ctr,
                 edge_term=edge_terms[i],
                 graph_term=graph_terms[i],
-                settings=self.decoder_settings,
             )
 
             if len(candidates) == 1 and candidates[0].number_of_nodes() == 0:
@@ -143,6 +146,30 @@ class HDCGenerator(AbstractGenerator):
             "similarities": all_similarities,
         }
 
+    @abc.abstractmethod
+    def _decode_single_graph(
+        self,
+        node_counter: Counter[tuple[int, ...]],
+        edge_term: torch.Tensor,
+        graph_term: torch.Tensor,
+    ) -> tuple[list[nx.Graph], list[bool]]: ...
+
+
+@attr.define(slots=True, kw_only=True)
+class HDCGenerator(AbstractGenerator):
+    def _decode_single_graph(
+        self,
+        node_counter: Counter[tuple[int, ...]],
+        edge_term: torch.Tensor,
+        graph_term: torch.Tensor,
+    ) -> tuple[list[nx.Graph], list[bool]]:
+        return self.hypernet.decode_graph(
+            node_counter=node_counter,
+            edge_term=edge_term,
+            graph_term=graph_term,
+            decoder_settings=self.decoder_settings,
+        )
+
 
 @attr.define(slots=True, kw_only=True)
 class OracleGenerator(AbstractGenerator):
@@ -162,74 +189,16 @@ class OracleGenerator(AbstractGenerator):
         )
         self.decode_skip_n_nodes_threshold = 70 if self.base_dataset == "zinc" else 15
 
-    def generate_most_similar(
+    def _decode_single_graph(
         self,
-        n_samples: int = 16,
-        *,
-        only_final_graphs: bool = False,
-    ) -> tuple[list[Graph], list[bool], list[list[float]]]:
-        node_terms, graph_terms, _ = self.gen_model.sample_split(n_samples)
-        return self.decode(node_terms, graph_terms, only_final_graphs=only_final_graphs)
-
-    def decode(self, node_terms: torch.Tensor, graph_terms: torch.Tensor, *, only_final_graphs: bool = True):
-        n_samples = node_terms.shape[0]
-        node_terms_hd = node_terms.as_subclass(self.vsa.tensor_class)
-        graph_terms_hd = graph_terms.as_subclass(self.vsa.tensor_class)
-
-        full_ctrs: dict[int, Counter[tuple[int, ...]]] = self.hypernet.decode_order_zero_counter(node_terms_hd)
-
-        best_graphs: list[Graph] = []
-        are_final_flags: list[bool] = []
-        all_similarities: list[list[float]] = []
-
-        # --- important: iterate by requested index---
-        for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
-            full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
-            if full_ctr is None or sum(full_ctr.values()) == 0:
-                print("[WARNING] full ctr is None or empty.")
-                # nothing to decode for this sample → return empty
-                best_graphs.append(nx.Graph())
-                are_final_flags.append(False)
-                all_similarities.append([0])
-                continue
-
-            candidates, final_flags = self.decoding_fn(
-                node_multiset=full_ctr,
-                oracle=self.oracle,
-                full_g_h=graph_terms_hd[i],
-                strict=only_final_graphs,
-                skip_n_nodes=self.decode_skip_n_nodes_threshold,
-                **self.decoder_settings,
-            )
-
-            if len(candidates) == 1 and candidates[0].number_of_nodes() == 0:
-                best_graphs.append(candidates[0])
-                are_final_flags.append(final_flags[0])
-                all_similarities.append([0])
-                continue
-
-            assert all(c.number_of_nodes() > 0 for c in candidates)
-            data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
-            try:
-                batch = Batch.from_data_list(data_list)
-                enc_out = self.hypernet.forward(batch)
-                g_terms = enc_out["graph_embedding"]  # [B, D]
-            except Exception:
-                best_graphs.append(nx.Graph())
-                all_similarities.append([0])
-                are_final_flags.append(False)
-                continue
-
-            q = graph_terms_hd[i].to(g_terms.device, g_terms.dtype)  # [D]
-            sims = torchhd.cos(q, g_terms).tolist()
-
-            all_similarities.append(sims)
-            best_idx = sims.index(max(sims))
-            best_graphs.append(candidates[best_idx])
-            are_final_flags.append(final_flags[best_idx])
-
-        return {
-            "graphs": best_graphs,
-            "final_flags": are_final_flags,
-            "similarities": all_similarities,
-        }
+        node_counter: Counter[tuple[int, ...]],
+        edge_term: torch.Tensor,  # noqa: ARG002
+        graph_term: torch.Tensor,
+    ) -> tuple[list[nx.Graph], list[bool]]:
+        return self.decoding_fn(
+            node_multiset=node_counter,
+            oracle=self.oracle,
+            full_g_h=graph_term,
+            skip_n_nodes=self.decode_skip_n_nodes_threshold,
+            **self.decoder_settings,
+        )

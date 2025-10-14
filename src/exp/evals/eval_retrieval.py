@@ -102,7 +102,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                             node_counter=counters[0],
                             edge_term=edge_terms[0],
                             graph_term=graph_terms[0],
-                            settings=decoder_setting,
+                            decoder_settings=decoder_setting,
                         )
                     except Exception as e:
                         candidates = [nx.Graph()]

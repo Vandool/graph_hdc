@@ -8,15 +8,17 @@ from typing import Any
 
 import normflows as nf
 import optuna
-import pandas as pd
 import torch
 from pytorch_lightning import seed_everything
+from torchhd import HRRTensor
 from tqdm.auto import tqdm
 
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, ZINC_SMILES_HRR_7744_CONFIG
-from src.encoding.oracles import Oracle, SimpleVoterOracle
+from src.encoding.configs_and_constants import (
+    QM9_SMILES_HRR_1600_CONFIG_F64,
+    ZINC_SMILES_HRR_7744_CONFIG,
+)
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import OracleGenerator
+from src.generation.generation import HDCGenerator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils import registery
 from src.utils.chem import draw_mol
@@ -26,6 +28,10 @@ from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files
 num = max(1, min(8, os.cpu_count() or 1))
 torch.set_num_threads(num)
 torch.set_num_interop_threads(max(1, min(2, num)))  # coordination threads
+
+# by defualt float64
+torch.set_default_dtype(torch.float64)
+
 
 # (optional but often helps BLAS backends)
 os.environ.setdefault("OMP_NUM_THREADS", str(num))
@@ -150,10 +156,11 @@ def get_lpr(hint: str) -> Path | None:
 
 
 def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
-    assert os.getenv("GEN_MODEL") is not None
+    gen_model_hint = os.getenv("GEN_MODEL")
+    assert gen_model_hint is not None
     assert os.getenv("CLASSIFIER") is not None
 
-    gen_ckpt_path = get_gen_model(hint=os.getenv("GEN_MODEL"))
+    gen_ckpt_path = get_gen_model(hint=gen_model_hint)
     print(f"Generator Checkpoint: {gen_ckpt_path}")
     ## Retrieve the model
     model_type_gen = get_model_type(gen_ckpt_path)
@@ -162,7 +169,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     )
 
     lpr_path = get_lpr(
-        hint="lpr_zinc_h768-768-128_actsilu_nmbn_dp0.181982_bs288_lr0.000102926_wd0.0001_dep3_h1768_h2768_h3128_h4160"
+        hint="lpr-3d_qm9_h896-512_actlrelu_nmln_dp0.0377275_bs448_lr0.000181621_wd1e-5_dep2_h1512_h2896_h3192_h4224"
     )
     print(f"LPR Checkpoint: {lpr_path}")
     logp_regressor = LogPRegressor.load_from_checkpoint(lpr_path, map_location=device, strict=True)
@@ -186,7 +193,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     lambda_lo = cfg.get("lambda_lo", 1e-4)
     steps = cfg.get("steps", 300)
     lr = cfg.get("lr", 1e-3)
-    epsilon = 0.2  # success@epsilon threshold for logP
+    epsilon = 0.25  # success@epsilon threshold for logP
 
     t0_gen = time.perf_counter()
     # ---- Initialize latents ----
@@ -229,61 +236,27 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
 
     # Only evaluate the hits
     hits = [s for s, h in zip(hdc, hits, strict=True) if h]
-    n, g = gen_model.split(torch.stack(hits))
-    # n, g = gen_model.split(hdc)
-
+    n, e, g = gen_model.split(torch.stack(hits))
+    n = n.as_subclass(HRRTensor)
+    e = e.as_subclass(HRRTensor)
+    g = g.as_subclass(HRRTensor)
     decoder_settings = {
-        "beam_size": 4,
-        "use_pair_feasibility": True,
-        "expand_on_n_anchors": 8,
-        "trace_back_settings": {
-            "beam_size_multiplier": 2,
-            "trace_back_attempts": 3,
-            "trace_back_to_last_nth_iter": 1,
-            "agitated_rounds": 1,  # how many rounds after applying trace back keep the beam size larger
-        },
+        "initial_limit": 2048,
+        "limit": 1024,
+        "beam_size": 256,
+        "pruning_method": "cos_sim",
+        "use_size_aware_pruning": True,
+        "use_one_initial_population": True,
     }
-    if os.getenv("CLASSIFIER") == "SIMPLE_VOTER" and base_dataset == "qm9":  # not available for ZINC
-        oracle = SimpleVoterOracle(
-            model_paths=[
-                GLOBAL_MODEL_PATH / "1_gin/gin-f_baseline_zinc_resume_3/models/epoch18-val0.2083.ckpt",
-                GLOBAL_MODEL_PATH / "1_mlp_lightning/MLP_Lightning_qm9/models/epoch17-val0.2472.ckpt",
-                GLOBAL_MODEL_PATH / "2_bah_lightning/BAH_base_qm9_v2/models/epoch23-val0.2772.ckpt",
-            ]
-        )
-    else:
-        classifier_ckpt = get_classifier(hint=os.getenv("CLASSIFIER"))
-        print(f"Classifier Checkpoint: {classifier_ckpt}")
-        model_type = get_model_type(classifier_ckpt)
-        classifier = (
-            registery.retrieve_model(name=model_type)
-            .load_from_checkpoint(classifier_ckpt, map_location="cpu", strict=True)
-            .to(device)
-            .eval()
-        )
 
-        # Read the metrics from training
-        evals_dir = classifier_ckpt.parent.parent / "evaluations"
-        epoch_metrics = pd.read_parquet(evals_dir / "epoch_metrics.parquet")
-
-        val_loss = "val_loss" if "val_loss" in epoch_metrics.columns else "val_loss_cb"
-        best = epoch_metrics.loc[epoch_metrics[val_loss].idxmin()].add_suffix("_best")
-        oracle_threshold = best["val_best_thr_best"]
-        print(f"Oracle Threshold: {oracle_threshold}")
-
-        oracle = Oracle(model=classifier, model_type=model_type)
-        decoder_settings["oracle_threshold"] = oracle_threshold
-
-    generator = OracleGenerator(
-        gen_model=gen_model,
-        oracle=oracle,
-        ds_config=QM9_SMILES_HRR_1600_CONFIG if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG,
+    generator = HDCGenerator(
+        gen_model_hint=gen_model_hint,
+        ds_config=QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG,
         decoder_settings=decoder_settings,
         device=device,
     )
 
-    nx_graphs, final_flags, sims = generator.decode(node_terms=n, graph_terms=g)
-    # nx_graphs, final_flag, sims = generator.generate_most_similar(n_samples=n_samples, only_final_graphs=False)
+    nx_graphs, final_flags, sims = generator.decode(node_terms=n, edge_terms=e, graph_terms=g)
 
     results = {
         "gen_model": str(gen_ckpt_path.parent.parent.stem),
@@ -299,7 +272,6 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         "lr": lr,
         "epsilon": epsilon,
         "initial_success_rate": success_rate,
-        "classifier": os.getenv("CLASSIFIER"),
         **decoder_settings,
     }
 
@@ -308,7 +280,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     if EVALUATOR is None:
         EVALUATOR = GenerationEvaluator(base_dataset=base_dataset, device=device)
     evals = EVALUATOR.evaluate_conditional(
-        samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples
+        samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples, sims=sims
     )
     # Flatten the evals
     results.update(
@@ -341,10 +313,12 @@ def run_qm9_cond_gen(trial: optuna.Trial):
         "lambda_lo": trial.suggest_float("lambda_lo", 1e-5, 5e-3, log=True),
         "lambda_hi": trial.suggest_float("lambda_hi", 5e-3, 5e-2, log=True),
         "draw": False,
-        "n_samples": 5,
-        "base_dataset": "zinc",
+        "n_samples": 1000,
+        "base_dataset": "qm9",
     }
     pprint(cfg)
+    cfg["steps"] = 10
+    cfg["lr"] = 5e-3
 
     return eval_cond_gen(cfg=cfg)
 

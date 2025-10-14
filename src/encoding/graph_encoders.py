@@ -1548,9 +1548,15 @@ class HyperNet(AbstractGraphEncoder):
         draw_nx_with_atom_colorings(g, dataset="ZincSmiles", label=sims_c[0])
         plt.show()
 
-    def decode_graph(self, node_counter: Counter, edge_term: VSATensor, graph_term: VSATensor, settings: dict = None):
-        if settings is None:
-            settings = {}
+    def decode_graph(
+        self,
+        node_counter: Counter,
+        edge_term: torch.Tensor,
+        graph_term: torch.Tensor,
+        decoder_settings: dict | None = None,
+    ):
+        if decoder_settings is None:
+            decoder_settings = {}
 
         num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         node_count = node_counter.total()
@@ -1616,9 +1622,9 @@ class HyperNet(AbstractGraphEncoder):
             remaining_edges.remove((v_t, u_t))
             first_pop.append((G, remaining_edges))
 
-        initial_limit = settings.get("initial_limit", 1024)
-        use_size_aware_pruning = settings.get("use_size_aware_pruning", False)
-        if settings.get("use_one_initial_population", False):
+        initial_limit = decoder_settings.get("initial_limit", 1024)
+        use_size_aware_pruning = decoder_settings.get("use_size_aware_pruning", False)
+        if decoder_settings.get("use_one_initial_population", False):
             # Start with a child both anchors free
             selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
             first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
@@ -1730,8 +1736,8 @@ class HyperNet(AbstractGraphEncoder):
                 return graphs, are_final
 
             if len(children) > initial_limit:
-                initial_limit = settings.get("limit", initial_limit)
-                keep = settings.get("beam_size")
+                initial_limit = decoder_settings.get("limit", initial_limit)
+                keep = decoder_settings.get("beam_size")
 
                 if use_size_aware_pruning:
                     repo = defaultdict(list)
