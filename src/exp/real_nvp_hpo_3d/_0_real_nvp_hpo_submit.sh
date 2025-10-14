@@ -21,7 +21,7 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
-DATASET="${DATASET:-qm9}"
+DATASET="${DATASET:-zinc}"
 N_TRIALS="${N_TRIALS:-1}"
 IS_DEV="${IS_DEV:-False}"
 

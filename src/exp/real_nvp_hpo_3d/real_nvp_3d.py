@@ -643,6 +643,8 @@ def run_experiment(cfg: FlowConfig):
 
     log("Loading/creating hypernet …")
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
+    hypernet.depth = ds_cfg.hypernet_depth
     log("Hypernet ready.")
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
@@ -654,9 +656,9 @@ def run_experiment(cfg: FlowConfig):
     if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600_F64:
         train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600F64")
         validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600F64")
-    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
-        train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
-        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_5120D5_F64:
+        train_dataset = ZincSmiles(split="train", enc_suffix="HRR5120D5F64")
+        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR5120D5F64")
     log(
         f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
@@ -676,7 +678,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 6,
+        prefetch_factor=None if local_dev else 8,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -686,7 +688,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        prefetch_factor=None if local_dev else 6,
+        prefetch_factor=None if local_dev else 8,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -889,7 +891,7 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "num_flows": trial.suggest_int("num_flows", 4, 16),
-        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 800, 1600, step=400),
+        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 512, 2560, step=512),
         "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
         "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
         "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),
@@ -903,8 +905,8 @@ def get_cfg(trial: optuna.Trial, dataset: str):
 
 def run_zinc_trial(trial: optuna.Trial):
     flow_cfg = get_cfg(trial, dataset="zinc")
-    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_7744
-    flow_cfg.hv_dim = 88 * 88
+    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_5120D5_F64
+    flow_cfg.hv_dim = SupportedDataset.ZINC_SMILES_HRR_5120D5_F64.default_cfg.hv_dim
     return run_experiment(flow_cfg)
 
 

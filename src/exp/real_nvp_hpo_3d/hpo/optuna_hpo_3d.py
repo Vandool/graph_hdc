@@ -13,7 +13,7 @@ SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
     "weight_decay": optuna.distributions.CategoricalDistribution([0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
     "num_flows": optuna.distributions.IntDistribution(4, 16),
-    "num_hidden_channels": optuna.distributions.IntDistribution(256, 2048, step=64),
+    "num_hidden_channels": optuna.distributions.IntDistribution(512, 2560, step=256),
     "smax_initial": optuna.distributions.FloatDistribution(0.1, 3.0),
     "smax_final": optuna.distributions.FloatDistribution(3.0, 8.0),
     "smax_warmup_epochs": optuna.distributions.IntDistribution(10, 20),
@@ -97,7 +97,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Real NVP V2 - HPO")
-    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
+    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
     p.add_argument("--n_trials", type=int, default=1)
     args = p.parse_args()
 
