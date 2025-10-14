@@ -44,7 +44,7 @@ DECODER_SETTINGS = {
             "initial_limit": 1024,
             "limit": 512,
             "beam_size": 32,
-            "pruning_method": "negative_euclidean_distance",
+            "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
             "use_g3_instead_of_h3": True,
