@@ -36,6 +36,7 @@ DECODER_SETTINGS = {
             "pruning_method": "negative_euclidean_distance",
             "use_size_aware_pruning": True,
             "use_one_initial_population": True,
+            "use_g3_instead_of_h3": True,
         }
     ],
     "zinc": [
@@ -46,6 +47,7 @@ DECODER_SETTINGS = {
             "pruning_method": "negative_euclidean_distance",
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
+            "use_g3_instead_of_h3": True,
         },
         # {
         #     "initial_limit": 1024,
@@ -94,6 +96,9 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                     node_terms = forward["node_terms"]
                     edge_terms = forward["edge_terms"]
                     graph_terms = forward["graph_embedding"]
+
+                    if decoder_setting.get("use_g3_instead_of_h3", False):
+                        graph_terms = node_terms + edge_terms + graph_terms
 
                     t0 = time.perf_counter()
                     counters = hypernet.decode_order_zero_counter(node_terms)
@@ -168,7 +173,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
+    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
     p.add_argument("--n_samples", type=int, default=10)
     args = p.parse_args()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

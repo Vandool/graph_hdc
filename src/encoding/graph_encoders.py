@@ -1774,7 +1774,8 @@ class HyperNet(AbstractGraphEncoder):
                         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in ch])
                         enc_out = self.forward(batch)
                         g_terms = enc_out["graph_embedding"]
-                        # sims = torchhd.cos(graph_term, g_terms)
+                        if decoder_settings.get("use_g3_instead_of_h3", False):
+                            g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
                         sims = get_similarities(graph_term, g_terms)
 
                         # Sort by similarity first
@@ -1786,7 +1787,8 @@ class HyperNet(AbstractGraphEncoder):
                     batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
                     enc_out = self.forward(batch)
                     g_terms = enc_out["graph_embedding"]
-                    # sims = torchhd.cos(graph_term, g_terms)
+                    if decoder_settings.get("use_g3_instead_of_h3", False):
+                        g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
                     sims = get_similarities(graph_term, g_terms)
 
                     # Sort by similarity first
