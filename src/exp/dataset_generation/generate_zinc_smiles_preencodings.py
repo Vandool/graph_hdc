@@ -69,7 +69,7 @@ def generate():
             hypernet=hypernet,
             batch_size=1028,
             device=device,
-            out_suffix="HRR5120F64",
+            out_suffix="HRR5120D5F64",
         )
         print(f"{split}: wrote {out_path}")
 
