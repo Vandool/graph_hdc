@@ -256,7 +256,10 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         device=device,
     )
 
-    nx_graphs, final_flags, sims = generator.decode(node_terms=n, edge_terms=e, graph_terms=g)
+    decoded = generator.decode(node_terms=n, edge_terms=e, graph_terms=g)
+    nx_graphs = decoded["graphs"]
+    final_flags = decoded["final_flags"]
+    sims = decoded["similarities"]
 
     results = {
         "gen_model": str(gen_ckpt_path.parent.parent.stem),
