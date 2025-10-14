@@ -32,7 +32,7 @@ SCRIPT_NAME="${SCRIPT_NAME:-generate_zinc_smiles_preencodings.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
-EXP_NAME="REAL NVP HPO ${DATASET}"
+EXP_NAME="Smiles Pre-encodings"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
