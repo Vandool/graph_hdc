@@ -15,6 +15,7 @@ from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 torch.set_default_dtype(torch.float64)
 
+
 def get_device() -> torch.device:
     if torch.cuda.is_available():
         count = torch.cuda.device_count()
@@ -58,13 +59,10 @@ def generate():
     hypernet.depth = 5
 
     # Precompute and cache encodings for each split
-    for split in [
-            "train",
-            "valid",
-            "test"
-    ]:
+    for split in ["train", "valid", "test"]:
         ds = ZincSmiles(split=split)
         # Writes processed/data_<split>_<out_suffix>.pt (e.g., data_train_HRR7744.pt)
+        print(f"split: {split}")
         out_path: Path = precompute_encodings(
             base_ds=ds,
             hypernet=hypernet,
