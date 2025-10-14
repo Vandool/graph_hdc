@@ -3,7 +3,6 @@ import os
 import time
 from pprint import pprint
 
-import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
@@ -25,7 +24,7 @@ from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransf
 
 HV_DIMS = {
     "qm9": [1024, 1280, 1536, 1600, 1792],
-    "zinc": [5120, 5632, 6144, 7168, 7744],
+    "zinc": [5120, 5632, 6144, 7168, 7744, 8192],
 }
 
 DECODER_SETTINGS = {
@@ -43,7 +42,7 @@ DECODER_SETTINGS = {
         {
             "initial_limit": 1024,
             "limit": 512,
-            "beam_size": 64,
+            "beam_size": 32,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
             "use_one_initial_population": True,
@@ -51,7 +50,7 @@ DECODER_SETTINGS = {
         {
             "initial_limit": 1024,
             "limit": 512,
-            "beam_size": 128,
+            "beam_size": 32,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": False,
             "use_one_initial_population": True,
@@ -66,6 +65,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
         for d in [3, 4, 5, 6]:
             for decoder_setting in DECODER_SETTINGS[base_dataset]:
                 device = pick_device()
+                # device = torch.device("cpu")
                 print(f"Running on {device}")
                 # device = torch.device("cpu")
                 ds_config = ds_config
@@ -94,7 +94,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                     node_terms = forward["node_terms"]
                     edge_terms = forward["edge_terms"]
                     graph_terms = forward["graph_embedding"]
-                    # node_counter = DataTransformer.get_node_counter_from_batch(0, data)
+
                     t0 = time.perf_counter()
                     counters = hypernet.decode_order_zero_counter(node_terms)
                     try:
@@ -105,26 +105,29 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                             decoder_settings=decoder_setting,
                         )
                     except Exception as e:
-                        candidates = [nx.Graph()]
-                        final_flags = [False]
+                        hits.append(False)
+                        finals.append(False)
+                        sims.append(0.0)
+                    else:
+                        data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
+                        batch = Batch.from_data_list(data_list)
+                        enc_out = hypernet.forward(batch)
+                        g_terms = enc_out["graph_embedding"]
 
-                    data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
-                    batch = Batch.from_data_list(data_list)
-                    enc_out = hypernet.forward(batch)
-                    g_terms = enc_out["graph_embedding"]
+                        q = graph_terms[0].to(g_terms.device, g_terms.dtype)
+                        similarities = torchhd.cos(q, g_terms)
 
-                    q = graph_terms[0].to(g_terms.device, g_terms.dtype)
-                    similarities = torchhd.cos(q, g_terms)
+                        best_idx = int(torch.argmax(similarities))
+                        best_g = candidates[best_idx]
 
-                    best_idx = int(torch.argmax(similarities))
-                    best_g = candidates[best_idx]
+                        ts.append(time.perf_counter() - t0)
 
-                    ts.append(time.perf_counter() - t0)
-
-                    is_hit = is_induced_subgraph_by_features(best_g, DataTransformer.pyg_to_nx(data.to_data_list()[0]))
-                    hits.append(is_hit)
-                    finals.append(final_flags[best_idx])
-                    sims.append(float(similarities[best_idx].detach().cpu()))
+                        is_hit = is_induced_subgraph_by_features(
+                            best_g, DataTransformer.pyg_to_nx(data.to_data_list()[0])
+                        )
+                        hits.append(is_hit)
+                        finals.append(final_flags[best_idx])
+                        sims.append(float(similarities[best_idx].detach().cpu()))
 
                 sims = np.array(sims)
                 ts = np.array(ts)
@@ -165,8 +168,8 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=100)
+    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
+    p.add_argument("--n_samples", type=int, default=1)
     args = p.parse_args()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     pprint(args)
