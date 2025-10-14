@@ -1576,18 +1576,34 @@ class HyperNet(AbstractGraphEncoder):
         # edges_hdc: torchhd.HRRTensor = pairs.reshape(-1, pairs.size(-1)).as_subclass(torchhd.HRRTensor)
         # all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
 
-        edges = []
-        all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
-        for a, b in all_edges:
-            # if a == b: continue
-            idx_a = self.nodes_indexer.get_idx(a)
-            idx_b = self.nodes_indexer.get_idx(b)
-            hd_a = self.nodes_codebook[idx_a]
-            hd_b = self.nodes_codebook[idx_b]
+        # edges = []
+        # all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
+        # for a, b in all_edges:
+        #     # if a == b: continue
+        #     idx_a = self.nodes_indexer.get_idx(a)
+        #     idx_b = self.nodes_indexer.get_idx(b)
+        #     hd_a = self.nodes_codebook[idx_a]
+        #     hd_b = self.nodes_codebook[idx_b]
+        #
+        #     # bind
+        #     edges.append(hd_a.bind(hd_b))
+        # edges_hdc = torch.stack(edges).as_subclass(self.vsa.tensor_class)
 
-            # bind
-            edges.append(hd_a.bind(hd_b))
-        edges_hdc = torch.stack(edges).as_subclass(torchhd.HRRTensor)
+        ## test faster tensor version
+        # Fast tensor variant: vectorized binding
+        all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
+
+        # Get all indices at once
+        node_tuples_a, node_tuples_b = zip(*all_edges, strict=False)
+        idx_a = torch.tensor(self.nodes_indexer.get_idxs(node_tuples_a), dtype=torch.long, device=self.device)
+        idx_b = torch.tensor(self.nodes_indexer.get_idxs(node_tuples_b), dtype=torch.long, device=self.device)
+
+        # Gather all node hypervectors at once: [N*N, D]
+        hd_a = self.nodes_codebook[idx_a]  # [N*N, D]
+        hd_b = self.nodes_codebook[idx_b]  # [N*N, D]
+
+        # Vectorized bind operation
+        edges_hdc = hd_a.bind(hd_b)
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         for i in range(edge_count // 2):
@@ -1621,6 +1637,14 @@ class HyperNet(AbstractGraphEncoder):
             remaining_edges.remove((u_t, v_t))
             remaining_edges.remove((v_t, u_t))
             first_pop.append((G, remaining_edges))
+
+        pruning_fn = decoder_settings.get("pruning_fn", "cos_sim")
+
+        def get_similarities(a, b):
+            if pruning_fn != "cos_sim":
+                diff = a[:, None, :] - b[None, :, :]
+                return torch.sum(diff**2, dim=-1)
+            return torchhd.cos(a, b)
 
         initial_limit = decoder_settings.get("initial_limit", 1024)
         use_size_aware_pruning = decoder_settings.get("use_size_aware_pruning", False)
@@ -1750,7 +1774,8 @@ class HyperNet(AbstractGraphEncoder):
                         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in ch])
                         enc_out = self.forward(batch)
                         g_terms = enc_out["graph_embedding"]
-                        sims = torchhd.cos(graph_term, g_terms)
+                        # sims = torchhd.cos(graph_term, g_terms)
+                        sims = get_similarities(graph_term, g_terms)
 
                         # Sort by similarity first
                         sim_order = torch.argsort(sims, descending=True)
@@ -1761,7 +1786,8 @@ class HyperNet(AbstractGraphEncoder):
                     batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
                     enc_out = self.forward(batch)
                     g_terms = enc_out["graph_embedding"]
-                    sims = torchhd.cos(graph_term, g_terms)
+                    # sims = torchhd.cos(graph_term, g_terms)
+                    sims = get_similarities(graph_term, g_terms)
 
                     # Sort by similarity first
                     sim_order = torch.argsort(sims, descending=True)

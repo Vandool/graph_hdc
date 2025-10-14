@@ -33,7 +33,7 @@ DECODER_SETTINGS = {
             "initial_limit": 2048,
             "limit": 1024,
             "beam_size": 256,
-            "pruning_method": "cos_sim",
+            "pruning_method": "negative_euclidean_distance",
             "use_size_aware_pruning": True,
             "use_one_initial_population": True,
         }
@@ -43,18 +43,18 @@ DECODER_SETTINGS = {
             "initial_limit": 1024,
             "limit": 512,
             "beam_size": 32,
-            "pruning_method": "cos_sim",
+            "pruning_method": "negative_euclidean_distance",
             "use_size_aware_pruning": True,
-            "use_one_initial_population": True,
+            "use_one_initial_population": False,
         },
-        {
-            "initial_limit": 1024,
-            "limit": 512,
-            "beam_size": 32,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": False,
-            "use_one_initial_population": True,
-        },
+        # {
+        #     "initial_limit": 1024,
+        #     "limit": 512,
+        #     "beam_size": 32,
+        #     "pruning_method": "negative_euclidean_distance",
+        #     "use_size_aware_pruning": False,
+        #     "use_one_initial_population": False,
+        # },
     ],
 }
 
@@ -168,8 +168,8 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=1)
+    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
+    p.add_argument("--n_samples", type=int, default=10)
     args = p.parse_args()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     pprint(args)
