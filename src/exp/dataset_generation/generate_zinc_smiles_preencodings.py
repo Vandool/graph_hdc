@@ -13,6 +13,7 @@ from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
+torch.set_default_dtype(torch.float64)
 
 def get_device() -> torch.device:
     if torch.cuda.is_available():
@@ -27,7 +28,7 @@ def generate():
     seed = 42
     seed_everything(seed)
 
-    ds_name = "ZincSmilesHRR7744"
+    ds_name = "ZincSmilesHRR5120"
     zinc_feature_bins = [9, 6, 3, 4]
     device = pick_device()
 
@@ -35,8 +36,9 @@ def generate():
         seed=seed,
         name=ds_name,
         vsa=VSAModel.HRR,
-        hv_dim=88 * 88,  # 7744
+        hv_dim=5120,  # 7744
         device=device,
+        dtype="float64",
         node_feature_configs=OrderedDict(
             [
                 (
@@ -67,7 +69,7 @@ def generate():
             hypernet=hypernet,
             batch_size=1028,
             device=device,
-            out_suffix="HRR7744",
+            out_suffix="HRR5120F64",
         )
         print(f"{split}: wrote {out_path}")
 
