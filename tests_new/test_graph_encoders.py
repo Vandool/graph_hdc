@@ -197,11 +197,9 @@ def test_hypernet_decode_order_one_is_good_enough_counter(
     if normalize and separate_levels:
         graph_embedding_1 = graph_embedding_1.normalize()
     unique_nodes_decoded = [sorted(nodes_decoded_counter[b].keys()) for b in range(batch_size)]
-    order_one_fn = (
-        hypernet.decode_order_one_counter_explain_away if use_explain_away else hypernet.decode_order_one_counter
-    )
 
-    edges_decoded_counter = order_one_fn(graph_embedding_1, unique_nodes_decoded)
+    edges_decoded_counter = hypernet.decode_order_one_counter_explain_away(graph_embedding_1, unique_nodes_decoded)
+
     order_one_f1s = []
     order_one_precisions = []
     for b in range(batch_size):

@@ -1,7 +1,5 @@
-import time
-from collections import Counter, OrderedDict
+from collections import Counter
 from datetime import datetime
-from math import prod
 from pprint import pprint
 
 import pandas as pd
@@ -16,12 +14,10 @@ from torchhd import structures
 from src import evaluation_metrics
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange, SupportedDataset
-from src.encoding.feature_encoders import CombinatoricIntegerEncoder
-from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
+from src.encoding.configs_and_constants import SupportedDataset
+from src.encoding.graph_encoders import HyperNet
 from src.encoding.the_types import VSAModel
-from src.utils import utils
-from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTEFACTS_PATH, DataTransformer, pick_device
+from src.utils.utils import TEST_ARTEFACTS_PATH, DataTransformer
 
 
 @pytest.mark.parametrize(
@@ -54,14 +50,8 @@ from src.utils.utils import GLOBAL_MODEL_PATH, TEST_ARTEFACTS_PATH, DataTransfor
     "depth",
     [3],
 )
-@pytest.mark.parametrize(
-    "ds",
-    [SupportedDataset.QM9_SMILES]
-)
-@pytest.mark.parametrize(
-    "seed",
-    [7, 13, 42]
-)
+@pytest.mark.parametrize("ds", [SupportedDataset.QM9_SMILES])
+@pytest.mark.parametrize("seed", [7, 13, 42])
 def test_node_terms_decoding_smiles(seed, ds, hv_dim, vsa, depth, normalise_graph_embedding):  # noqa: PLR0915
     seed_everything(seed)
 
@@ -264,222 +254,6 @@ def test_node_terms_decoding_smiles(seed, ds, hv_dim, vsa, depth, normalise_grap
     # --- new code starts here ---
     # --- save metrics to disk ---
     asset_dir = TEST_ARTEFACTS_PATH / "nodes_and_edges" / "node_terms_qm9"
-    asset_dir.mkdir(parents=True, exist_ok=True)
-
-    parquet_path = asset_dir / "res_normalizing.parquet"
-
-    metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
-
-    # append current row
-    new_row = pd.DataFrame([run_metrics])
-    metrics_df = pd.concat([metrics_df, new_row], ignore_index=True)
-
-    # write back out
-    metrics_df.to_parquet(parquet_path, index=False)
-
-
-@pytest.mark.parametrize(
-    "vsa",
-    [VSAModel.HRR, VSAModel.MAP],
-)
-@pytest.mark.parametrize(
-    "hv_dim",
-    [
-        # 32 * 32,
-        40 * 40,
-        48 * 48,
-        # 56 * 56,
-        # 64 * 64,
-        # 72 * 72,
-        # 80 * 80,
-        # 88 * 88,
-        # 96 * 96,
-        # 104 * 104,
-        # 112 * 112,
-        # 120 * 120,
-        # 128 * 128,
-    ],
-)
-@pytest.mark.parametrize(
-    "normalise_graph_embedding",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "ds",
-    [SupportedDataset.QM9_SMILES]
-)
-@pytest.mark.parametrize(
-    "seed",
-    [42]
-)
-def test_edge_terms_decoding_smiles(seed, ds, hv_dim, vsa, normalise_graph_embedding):  # noqa: PLR0915
-    seed_everything(seed)
-
-    depth = 3
-    # Set config
-    ds.default_cfg.seed = seed
-    ds.default_cfg.hv_dim = hv_dim
-    ds.default_cfg.vsa = vsa
-    ds.default_cfg.depth = depth
-    ds.default_cfg.device = "cpu"
-
-    device = torch.device("cpu")
-    hypernet = HyperNet(config=ds.default_cfg, depth=depth, use_edge_codebook=True).to(device)
-    assert not hypernet.use_edge_features()
-    assert not hypernet.use_graph_features()
-
-    batch_size = 1024
-    dataset = ZincSmiles(split="train") if "zinc" in ds.value.lower() else QM9Smiles(split="train")
-    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=False)
-    batch = next(iter(dataloader))
-
-    # Encode the whole graph in one HV
-    encoded_data = hypernet.forward(batch)
-    node_term = encoded_data["node_terms"]
-    edge_term = encoded_data["edge_terms"]
-    graph_term = encoded_data["graph_embedding"]
-
-    if normalise_graph_embedding:
-        graph_term = graph_term.normalize()
-
-    s0_hyper_graph = graph_term
-
-    ### ----- H2
-    ## Create a HashTable
-    v_n = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
-    v_g = torchhd.random(1, dimensions=hv_dim, vsa=vsa.value)
-    node_term_key_value = v_n.bind(node_term)
-    graph_term_key_value = v_g.bind(graph_term)
-
-    stacked = torch.stack([node_term_key_value, graph_term_key_value], dim=0).transpose(0, 1)
-    g_hv = torchhd.multiset(stacked)
-
-    # Extract the node_terms from Graph Hyper Vector
-    node_term_extract_2_levels = torchhd.bind(v_n.inverse(), g_hv)
-    graph_term_extract_2_levels = torchhd.bind(v_g.inverse(), g_hv)
-
-    print("Similarity metrics after decoding")
-    H2_node_term_sim = F.cosine_similarity(node_term_extract_2_levels, node_term, dim=1).mean().item()
-    H2_graph_term_sim = F.cosine_similarity(graph_term_extract_2_levels, graph_term, dim=1).mean().item()
-
-    ### ----- H3
-    ## Create a HashTable
-    hach_table_3_levels = structures.HashTable(dim_or_input=hv_dim, vsa=vsa.value)
-    h3_var = torchhd.random(3, hv_dim, vsa=vsa.value)
-    hach_table_3_levels.add(key=h3_var[0], value=node_term)
-    hach_table_3_levels.add(key=h3_var[1], value=edge_term)
-    hach_table_3_levels.add(key=h3_var[2], value=graph_term)
-
-    # Extract the node_terms from Graph Hyper Vector
-    node_term_extract_3_levels = hach_table_3_levels.get(h3_var[0])
-    edge_term_extract_3_levels = hach_table_3_levels.get(h3_var[1])
-    graph_term_extract_3_levels = hach_table_3_levels.get(h3_var[2])
-
-    H3_node_term_sim = F.cosine_similarity(node_term_extract_3_levels, node_term, dim=1).mean().item()
-    H3_edge_term_sim = F.cosine_similarity(edge_term_extract_3_levels, edge_term, dim=1).mean().item()
-    H3_graph_term_sim = F.cosine_similarity(graph_term_extract_3_levels, graph_term, dim=1).mean().item()
-
-    # Build ground‐truth Counters per graph
-    ground_truth_counters = {}
-    for g in range(batch_size):
-        ground_truth_counters[g] = DataTransformer.get_node_counter_from_batch(batch=g, data=batch)
-
-    ## ---- Order 0 - H0
-    nodes_decoded_counter = hypernet.decode_order_zero_counter(node_term)
-    edge_decoded_counters = hypernet.decode_order_one_counter_explain_away_faster_lazy(
-        embedding=graph_term, unique_decode_nodes_batch=nodes_decoded_counter
-    )
-
-    # Compute accuracy per graph:
-    H0_edge_term_f1s = []
-    H0_edge_term_p = []
-    for g in range(batch_size):
-        actual_edge_counter = DataTransformer.get_edge_existence_counter(
-            batch=g, data=batch, indexer=hypernet.nodes_indexer
-        )
-        edge_existence_counter = Counter({k: 1 for k, _ in actual_edge_counter.items()})
-        p, _, f = evaluation_metrics.calculate_p_a_f1(
-            pred=edge_decoded_counters[g],
-            true=edge_existence_counter,
-        )
-        H0_edge_term_p.append(p)
-        H0_edge_term_f1s.append(f)
-    H0_F1_avg_edge_term = sum(H0_edge_term_f1s) / batch_size
-    H0_P_avg_edge_term = sum(H0_edge_term_p) / batch_size
-
-    ## ---- Order 0 - H2
-    H2_nodes_decoded_counter = hypernet.decode_order_zero_counter(node_term_extract_2_levels)
-    H2_edge_decode_counter = hypernet.decode_order_one_counter_explain_away_faster_lazy(
-        embedding=graph_term_extract_2_levels, unique_decode_nodes_batch=H2_nodes_decoded_counter, )
-
-    # Compute accuracy per graph:
-    H2_edge_term_f1s = []
-    H2_edge_term_p = []
-    for g in range(batch_size):
-        actual_edge_counter = DataTransformer.get_edge_existence_counter(
-            batch=g, data=batch, indexer=hypernet.nodes_indexer
-        )
-        edge_existence_counter = Counter({k: 1 for k, _ in actual_edge_counter.items()})
-        p, _, f = evaluation_metrics.calculate_p_a_f1(
-            pred=H2_edge_decode_counter[g],
-            true=edge_existence_counter,
-        )
-        H2_edge_term_p.append(p)
-        H2_edge_term_f1s.append(f)
-    H2_F1_avg_edge_term = sum(H2_edge_term_f1s) / batch_size
-    H2_P_avg_edge_term = sum(H2_edge_term_p) / batch_size
-
-    ## ---- Order 0 - H3
-    H3_nodes_decoded_counter = hypernet.decode_order_zero_counter(node_term_extract_3_levels)
-    H3_edge_decode_counter = hypernet.decode_order_one_counter_explain_away_faster_lazy(
-        embedding=graph_term_extract_3_levels, unique_decode_nodes_batch=H3_nodes_decoded_counter, )
-
-    # Compute accuracy per graph:
-    H3_edge_term_f1s = []
-    H3_edge_term_p = []
-    for g in range(batch_size):
-        actual_edge_counter = DataTransformer.get_edge_existence_counter(
-            batch=g, data=batch, indexer=hypernet.nodes_indexer
-        )
-        edge_existence_counter = Counter({k: 1 for k, _ in actual_edge_counter.items()})
-        p, _, f = evaluation_metrics.calculate_p_a_f1(
-            pred=H3_edge_decode_counter[g],
-            true=edge_existence_counter,
-        )
-        H3_edge_term_p.append(p)
-        H3_edge_term_f1s.append(f)
-    H3_F1_avg_edge_term = sum(H3_edge_term_f1s) / batch_size
-    H3_P_avg_edge_term = sum(H3_edge_term_p) / batch_size
-
-
-    ### Save metrics
-    run_metrics = {
-        "dataset": "QM9Smiles (4 features - codebook size 300)",
-        "date": datetime.now().isoformat(),
-        "depth": depth,
-        "normalize_graph_term": normalise_graph_embedding,
-        "n_samples": batch_size,
-        "vsa": vsa.value,
-        "hv_dim": hv_dim,
-        "seed": seed,
-        "H0_P_edge_term": H0_P_avg_edge_term,
-        "H2_P_edge_term": H2_P_avg_edge_term,
-        "H3_P_edge_term": H3_P_avg_edge_term,
-
-        "H0_F1_edge_term": H0_F1_avg_edge_term,
-        "H2_F1_edge_term": H2_F1_avg_edge_term,
-        "H3_F1_edge_term": H3_F1_avg_edge_term,
-
-        "H2_avg_node_term_cos_sim": H2_node_term_sim,
-        "H2_avg_graph_term_cos_sim": H2_graph_term_sim,
-        "H3_avg_node_term_cos_sim": H3_node_term_sim,
-        "H3_avg_edge_term_cos_sim": H3_edge_term_sim,
-        "H3_avg_graph_term_cos_sim": H3_graph_term_sim,
-    }
-
-
-    # --- save metrics to disk ---
-    asset_dir = TEST_ARTEFACTS_PATH / "nodes_and_edges" / "edge_terms_qm9"
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_path = asset_dir / "res_normalizing.parquet"

@@ -885,93 +885,9 @@ class HyperNet(AbstractGraphEncoder):
 
         return results
 
-    def decode_order_one_counter_explain_away_faster_lazy(
-        self,
-        embedding: torch.Tensor,  # [B, D] or [D]
-        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
-        max_iters: int = 50,
-        threshold: float = 0.5,
-        *,
-        use_break: bool = False,
-    ) -> list[Counter]:
-        # Use no edge codebook
-        self.populate_nodes_codebooks()
-        self._populate_nodes_indexer()
-
-        # 1) ensure batch dimension
-        if embedding.dim() == 1:
-            embedding = embedding.unsqueeze(0)
-        B, D = embedding.shape
-
-        results = []
-        for b in range(B):
-            graph_hv = embedding[b].clone()
-
-            # 2) build the list of candidate edge *flat* indices once
-            node_idxs = self.nodes_indexer.get_idxs(unique_decode_nodes_batch[b])
-            assert len(node_idxs) > 0
-            pairs = list(itertools.product(node_idxs, node_idxs))
-            bound_hvs = torch.stack(
-                [self.nodes_codebook[u].bind(self.nodes_codebook[v]) for u, v in pairs],
-                dim=0,
-            )  # [E, D]
-            active = torch.ones(len(pairs), dtype=torch.bool, device=bound_hvs.device)
-
-            found = set()
-            iteration, should_break = 1, False
-
-            while iteration <= max_iters and active.any() and not should_break:
-                cand_hvs = bound_hvs[active]  # [E_active, D]
-                sims = cand_hvs.matmul(graph_hv)  # [E_active]
-                if self.vsa == VSAModel.MAP:
-                    sims = sims / D
-
-                top_val = sims.max()
-                if top_val <= 0:  # step 3 – nothing left
-                    break
-
-                idxs_sorted = sims.argsort(descending=True)  # step 4
-                # Map back to *global* pair indices
-                global_idxs = active.nonzero(as_tuple=False).flatten()
-
-                active_modified = False
-                for loc_idx in idxs_sorted[::2].tolist():  # inner loop
-                    g_idx = global_idxs[loc_idx].item()
-                    score = sims[loc_idx].item()
-                    u, v = pairs[g_idx]
-
-                    if score > threshold:
-                        # record & explain-away
-                        found.update({(u, v), (v, u)})
-                        graph_hv = (
-                            graph_hv
-                            - bound_hvs[g_idx]  # (u, v)
-                            - bound_hvs[pairs.index((v, u))]  # (v, u)
-                        )
-                        # mark both directions as inactive
-                        active[g_idx] = False
-                        active[pairs.index((v, u))] = False
-                        active_modified = True
-                        if use_break:
-                            break
-                    elif 0 < score <= threshold:
-                        if not active_modified:
-                            should_break = True
-                        break
-                    else:
-                        should_break = True
-                        break
-                iteration += 1
-
-            results.append(Counter(found))
-
-        return results
-
     def decode_order_one_counter(
-        self,
-        embedding: torch.Tensor,
-        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # [unique_nodes], len = batch_size
-    ) -> list[dict]:
+        self, edge_term: torch.Tensor, node_counter: Counter[tuple[int, ...]]
+    ) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
         """
         Returns information about the kind and number of edges (order one information) that were contained in the
         original graph represented by the given ``embedding`` vector.
@@ -992,83 +908,45 @@ class HyperNet(AbstractGraphEncoder):
         that this edge type was present in the original graph and we derive the number of times it was present from
         the magnitude of the projection.
 
-        :param unique_decode_nodes_batch:
-        :param embedding: The high-dimensional graph embedding vector that represents the graph.
-        :param constraints_order_zero: The list of constraints that represent the zero order information about the
+        :param edge_term: Graph representation with HDC message passing depth 1.
+        :param node_tuples: The list of constraints that represent the zero order information about the
             nodes that were present in the original graph.
-        :param correction_factor_map: A dictionary that contains correction factors for the number of shared core
-            properties between the nodes that constitute the edge. The keys are the number of shared core properties
-            and the values are the correction factors that should be applied to the calculated edge count.
 
-        :returns: A list of constraints where each constraint is represented by a dictionary with the keys:
-            - src: A dictionary that represents the properties of the source node as they were originally encoded
-                by the node encoders. The keys in this dict are the same as the names of the node encoders given to
-                the constructor.
-            - dst: A dictionary that represents the properties of the destination node as they were originally
-                encoded by the node encoders. The keys in this dict are the same as the names of the node encoders
-                given to the constructor.
-            - num: The integer number of how many of these edges are present in the graph.
+
+        :returns: A list of edges represented as tuples of (u, v) where u and v are node tuples
         """
+        all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
+        num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
+        edge_count = num_edges
 
-        # 1) Make sure we have a true batch of embeddings
-        if embedding.dim() == 1:
-            # single graph case → treat it as batch of size 1
-            embedding = embedding.unsqueeze(0)
+        # Get all indices at once
+        node_tuples_a, node_tuples_b = zip(*all_edges, strict=False)
+        idx_a = torch.tensor(self.nodes_indexer.get_idxs(node_tuples_a), dtype=torch.long, device=self.device)
+        idx_b = torch.tensor(self.nodes_indexer.get_idxs(node_tuples_b), dtype=torch.long, device=self.device)
 
-        self.populate_nodes_codebooks()
-        self._populate_nodes_indexer()
-        self.populate_edge_feature_codebook()
-        self._populate_edge_feature_indexer()
-        self.populate_edges_codebook()
-        self._populate_edges_indexer()
+        # Gather all node hypervectors at once: [N*N, D]
+        hd_a = self.nodes_codebook[idx_a]  # [N*N, D]
+        hd_b = self.nodes_codebook[idx_b]  # [N*N, D]
 
-        # # Compute the dot product between the embedding and each node hypervector representation.
-        # d = torchhd.dot(embedding, self.edges_codebook)
-        # # Round the dimension normalized dot products to obtain integer counts.
-        # # [Batch, N]: where N is the number of possible combinatorial edges (nodes*nodes*edges).
-        # dot_product_rounded = torch.round(d).int().clamp(min=0)
-        # return self.convert_to_counter(similarities=dot_product_rounded, indexer=self.edges_indexer)
-        ## Let's optimize the edge decoder
+        # Vectorized bind operation
+        edges_hdc = hd_a.bind(hd_b)
 
-        results: list[dict] = []
+        decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+        for i in range(edge_count // 2):
+            sims = torchhd.cos(edge_term, edges_hdc)
+            idx_max = torch.argmax(sims).item()
+            a_found, b_found = all_edges[idx_max]
+            if not a_found or not b_found:
+                break
+            hd_a_found: VSATensor = self.nodes_codebook[self.nodes_indexer.get_idx(a_found)]
+            hd_b_found: VSATensor = self.nodes_codebook[self.nodes_indexer.get_idx(b_found)]
+            edge_term -= hd_a_found.bind(hd_b_found)
+            edge_term -= hd_b_found.bind(hd_a_found)
 
-        # our indexer expects tuples of (src_idx, dst_idx) over node‐index space:
-        edge_indexer = self.edges_indexer
+            decoded_edges.append((a_found, b_found))
+            decoded_edges.append((b_found, a_found))
 
-        batches = embedding.shape[0]
-        for b in range(batches):
-            # 1) collect this batch’s unique node‐tuples, turn them into their integer indices
-            node_idxs = self.nodes_indexer.get_idxs(unique_decode_nodes_batch[b])
-
-            pairs = [(u, v) for u in node_idxs for v in node_idxs]
-
-            if not pairs:
-                # no candidate edges
-                results.append({})
-                continue
-
-            # 3) map those to positions in edges_codebook
-            edge_idxs = edge_indexer.get_idxs(pairs)  # shape [E]
-
-            # 4) gather their hypervectors and compute similarities
-            # edges_codebook: [#all_possible_edges, D]
-            codebook_slice = self.edges_codebook[edge_idxs]  # [E, D]
-            sims = torchhd.dot(embedding[b : b + 1], codebook_slice).flatten()  # [E]
-
-            # 5) round to counts, clamp ≥0
-            counts = sims.tolist()
-
-            # 6) assemble a Counter mapping the original tuple‐of‐node‐tuples → count
-            #    map back from idx to tuple
-            ctr = Counter()
-            for i, edge_idx in enumerate(edge_idxs):
-                if counts[i] > 0.0:
-                    ctr[edge_indexer.get_tuple(edge_idx)] += 1
-
-            results.append(ctr)
-
-        # Returns (node_idx, node_idx) Counter - node_idx based on the nodes_indexer
-        return results
+        return decoded_edges
 
     def _populate_edge_feature_indexer(self) -> None:
         # Create an indexer to map between combinations and their corresponding indices.
@@ -1378,11 +1256,8 @@ class HyperNet(AbstractGraphEncoder):
 
         # ~ Decode Edge terms
         edge_terms = edge_terms if edge_terms is not None else graph_hv
-        decode_order_one_fn = (
-            self.decode_order_one_counter_explain_away_faster
-            if self.use_explain_away
-            else self.decode_order_one_counter
-        )
+        decode_order_one_fn = self.decode_order_one_counter_explain_away_faster
+
         # Edges are (Node_idx_u, Node_idx_v)
         edge_counters = decode_order_one_fn(edge_terms, node_counters)
         if log:
@@ -1558,67 +1433,10 @@ class HyperNet(AbstractGraphEncoder):
         if decoder_settings is None:
             decoder_settings = {}
 
-        num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         node_count = node_counter.total()
-        edge_count = num_edges
+        edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
 
-        # First decode the edges
-        node_tuples: set[tuple[int, ...]] = set(node_counter.elements())
-        node_idxs: list[int] = self.nodes_indexer.get_idxs(node_tuples)
-        # node_cb: torchhd.VSATensor = self.nodes_codebook[torch.tensor(node_idxs, dtype=torch.long, device=self.device)]
-
-        # All pairwise bindings: shape [N, N, D]
-        # A: torchhd.HRRTensor = node_cb.unsqueeze(1)  # [N, 1, D]
-        # B: torchhd.HRRTensor = node_cb.unsqueeze(0)  # [1, N, D]
-        # pairs: torchhd.HRRTensor = A.bind(B)  # broadcasting → [N, N, D]
-
-        # Flatten to your original [N*N, D] layout
-        # edges_hdc: torchhd.HRRTensor = pairs.reshape(-1, pairs.size(-1)).as_subclass(torchhd.HRRTensor)
-        # all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
-
-        # edges = []
-        # all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
-        # for a, b in all_edges:
-        #     # if a == b: continue
-        #     idx_a = self.nodes_indexer.get_idx(a)
-        #     idx_b = self.nodes_indexer.get_idx(b)
-        #     hd_a = self.nodes_codebook[idx_a]
-        #     hd_b = self.nodes_codebook[idx_b]
-        #
-        #     # bind
-        #     edges.append(hd_a.bind(hd_b))
-        # edges_hdc = torch.stack(edges).as_subclass(self.vsa.tensor_class)
-
-        ## test faster tensor version
-        # Fast tensor variant: vectorized binding
-        all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
-
-        # Get all indices at once
-        node_tuples_a, node_tuples_b = zip(*all_edges, strict=False)
-        idx_a = torch.tensor(self.nodes_indexer.get_idxs(node_tuples_a), dtype=torch.long, device=self.device)
-        idx_b = torch.tensor(self.nodes_indexer.get_idxs(node_tuples_b), dtype=torch.long, device=self.device)
-
-        # Gather all node hypervectors at once: [N*N, D]
-        hd_a = self.nodes_codebook[idx_a]  # [N*N, D]
-        hd_b = self.nodes_codebook[idx_b]  # [N*N, D]
-
-        # Vectorized bind operation
-        edges_hdc = hd_a.bind(hd_b)
-
-        decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
-        for i in range(edge_count // 2):
-            sims = torchhd.cos(edge_term, edges_hdc)
-            idx_max = torch.argmax(sims).item()
-            a_found, b_found = all_edges[idx_max]
-            if not a_found or not b_found:
-                break
-            hd_a_found: VSATensor = self.nodes_codebook[self.nodes_indexer.get_idx(a_found)]
-            hd_b_found: VSATensor = self.nodes_codebook[self.nodes_indexer.get_idx(b_found)]
-            edge_term -= hd_a_found.bind(hd_b_found)
-            edge_term -= hd_b_found.bind(hd_a_found)
-
-            decoded_edges.append((a_found, b_found))
-            decoded_edges.append((b_found, a_found))
+        decoded_edges = self.decode_order_one_counter(edge_term=edge_term, node_counter=node_counter)
 
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []
