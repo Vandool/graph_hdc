@@ -243,6 +243,8 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
 
     log("Loading/creating hypernet …")
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log(f"Hypernet Depth set to {ds_cfg.hypernet_depth}")
+    hypernet.depth = ds_cfg.hypernet_depth
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     log("Hypernet ready.")
@@ -252,9 +254,9 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600_F64:
         train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600F64")
         validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600F64")
-    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
-        train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
-        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_5120D5_F64:
+        train_dataset = ZincSmiles(split="train", enc_suffix="HRR5120D5")
+        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR5120D5")
     log(
         f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
@@ -274,7 +276,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 6,
+        prefetch_factor=None if local_dev else 8,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -284,7 +286,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        prefetch_factor=None if local_dev else 6,
+        prefetch_factor=None if local_dev else 8,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -321,7 +323,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=10,
+        patience=13,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         verbose=True,
@@ -390,8 +392,8 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "depth": trial.suggest_categorical("depth", [2, 3, 4]),
-        "h1": trial.suggest_int("h1", 256, 2048, step=256),
-        "h2": trial.suggest_int("h2", 128, 1024, step=128),
+        "h1": trial.suggest_int("h1", 256, 2560, step=256),
+        "h2": trial.suggest_int("h2", 128, 1280, step=128),
         "h3": trial.suggest_int("h3", 64, 512, step=64),
         "h4": trial.suggest_int("h4", 32, 256, step=32),
         "activation": trial.suggest_categorical("activation", ACTS.keys()),
@@ -430,6 +432,6 @@ def run_qm9_trial(trial: optuna.Trial):
 
 def run_zinc_trial(trial: optuna.Trial):
     lpr_cfg = get_cfg(trial, dataset="zinc")
-    lpr_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_7744
-    lpr_cfg.hv_dim = 7744
+    lpr_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_5120D5_F64
+    lpr_cfg.hv_dim = 5120
     return run_experiment(lpr_cfg, trial)
