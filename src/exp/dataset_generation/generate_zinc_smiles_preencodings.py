@@ -7,7 +7,8 @@ import torch
 from pytorch_lightning import seed_everything
 
 from src.datasets.zinc_smiles_generation import ZincSmiles, precompute_encodings
-from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange
+from src.encoding.configs_and_constants import DatasetConfig, FeatureConfig, Features, IndexRange, \
+    ZINC_SMILES_HRR_5120D5_CONFIG_F64
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
@@ -29,34 +30,11 @@ def generate():
     seed = 42
     seed_everything(seed)
 
-    ds_name = "ZincSmilesHRR5120"
-    zinc_feature_bins = [9, 6, 3, 4]
     device = pick_device()
+    ds_config = ZINC_SMILES_HRR_5120D5_CONFIG_F64
 
-    dataset_config = DatasetConfig(
-        seed=seed,
-        name=ds_name,
-        vsa=VSAModel.HRR,
-        hv_dim=5120,  # 7744
-        device=device,
-        dtype="float64",
-        node_feature_configs=OrderedDict(
-            [
-                (
-                    Features.ATOM_TYPE,
-                    FeatureConfig(
-                        count=prod(zinc_feature_bins),  # 9 * 6 * 3 * 4
-                        encoder_cls=CombinatoricIntegerEncoder,
-                        index_range=IndexRange((0, 4)),
-                        bins=zinc_feature_bins,
-                    ),
-                ),
-            ]
-        ),
-    )
-
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=dataset_config).to(device)
-    hypernet.depth = 5
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_config).to(device)
+    hypernet.depth = ds_config.hypernet_depth
 
     # Precompute and cache encodings for each split
     for split in ["train", "valid", "test"]:
@@ -66,9 +44,9 @@ def generate():
         out_path: Path = precompute_encodings(
             base_ds=ds,
             hypernet=hypernet,
-            batch_size=1028,
+            batch_size=32,
             device=device,
-            out_suffix="HRR5120D5F64",
+            out_suffix=ds_config.name,
         )
         print(f"{split}: wrote {out_path}")
 

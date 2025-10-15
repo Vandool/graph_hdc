@@ -16,8 +16,10 @@ from tqdm.auto import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG, QM9_SMILES_HRR_1600_CONFIG_F64, \
-    ZINC_SMILES_HRR_7744_CONFIG_F64
+from src.encoding.configs_and_constants import (
+    QM9_SMILES_HRR_1600_CONFIG_F64,
+    ZINC_SMILES_HRR_7744_CONFIG_F64,
+)
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import HDCGenerator
 from src.generation.logp_regressor import LogPRegressor

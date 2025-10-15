@@ -20,11 +20,15 @@ def get_model_type(path: Path | str) -> registery.ModelType:
         res = "NVP"
     return res
 
-gen_paths = list(find_files(
+
+gen_paths = list(
+    find_files(
         start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2",
         prefixes=("epoch",),
+        skip_substrings=("zinc", "nvp_qm9"),
         desired_ending=".ckpt",
-    ))
+    )
+)
 print(f"Found {len(gen_paths)} generator checkpoints")
 metrics = []
 for gen_ckpt_path in gen_paths:
@@ -43,7 +47,6 @@ for gen_ckpt_path in gen_paths:
 
     print(f"Best epoch: {best_epoch}, min val_loss: {min_val_loss}")
 
-
     # extract lr, wd,
     # nvp_qm9_h1600_f6_hid1024_s42_lr1e-3_wd1e-4_an
     with (evals_dir / "run_config.json").open("r", encoding="utf-8") as f:
@@ -51,19 +54,21 @@ for gen_ckpt_path in gen_paths:
 
     ### Save metrics
     gen_path = "/".join(gen_ckpt_path.parts[-4:])
-    metrics.append({
-        "gen_path": str(gen_path),
-        "best_epoch": best_epoch,
-        "dataset": "zinc" if "zinc" in str(gen_ckpt_path) else "qm9",
-        **{k: run_config[k] for k in SPACE},
-        "val_nll_best": min_val_loss,
-    })
+    metrics.append(
+        {
+            "gen_path": str(gen_path),
+            "best_epoch": best_epoch,
+            "dataset": "zinc" if "zinc" in str(gen_ckpt_path) else "qm9",
+            **{k: run_config[k] for k in SPACE},
+            "val_nll_best": min_val_loss,
+        }
+    )
 
 asset_dir = GLOBAL_ARTEFACTS_PATH / "generators"
 asset_dir.mkdir(parents=True, exist_ok=True)
 
-parquet_path = asset_dir / "generator_trials.parquet"
-csv_path = asset_dir / "generator_trials.csv"
+parquet_path = asset_dir / "qm9_3d_f64.parquet"
+csv_path = asset_dir / "qm9_3d_f64.csv"
 
 metrics_df = pd.DataFrame(metrics)
 

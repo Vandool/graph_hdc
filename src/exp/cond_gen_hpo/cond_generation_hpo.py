@@ -320,8 +320,6 @@ def run_qm9_cond_gen(trial: optuna.Trial):
         "base_dataset": "qm9",
     }
     pprint(cfg)
-    cfg["steps"] = 10
-    cfg["lr"] = 5e-3
 
     return eval_cond_gen(cfg=cfg)
 

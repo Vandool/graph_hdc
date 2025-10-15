@@ -9,12 +9,12 @@ from src.exp.cond_gen_hpo.cond_generation_hpo import run_qm9_cond_gen, run_zinc_
 
 SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 5e-3, log=True),
-    "steps": optuna.distributions.FloatDistribution(50, 1500, log=True),
+    "steps": optuna.distributions.FloatDistribution(50, 2000, log=True),
     "scheduler": optuna.distributions.CategoricalDistribution(["cosine", "two-phase", "linear"]),
     "lambda_lo": optuna.distributions.FloatDistribution(1e-5, 5e-3, log=True),
     "lambda_hi": optuna.distributions.FloatDistribution(5e-3, 5e-2, log=True),
 }
-DIRECTION = "maximize"
+DIRECTION = "minimize"
 
 
 def load_study(study_name: str, sqlite_path: str) -> optuna.Study:
@@ -93,8 +93,9 @@ if __name__ == "__main__":
     base_dataset = "qm9"
     base_objective = run_qm9_cond_gen if base_dataset == "qm9" else run_zinc_cond_gen
     for gen_model in [
-        "nvp-3d-f64_qm9_f8_hid1536_lr0.000503983_wd1e-5_bs384_smf7.43606_smi1.94892_smw15_an",
-        "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
+        # "nvp-3d-f64_qm9_f8_hid1536_lr0.000503983_wd1e-5_bs384_smf7.43606_smi1.94892_smw15_an",
+        # "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
+        "nvp-3d-f64_qm9_f8_hid800_lr0.000373182_wd1e-5_bs384_smf6.54123_smi2.25695_smw16_an"
     ]:
         for classifier in [
             "HDC-Decoder",
@@ -102,9 +103,9 @@ if __name__ == "__main__":
             # Paths (per-dataset DB + CSV)
             here = pathlib.Path(__file__).parent
             # study_base = here.parent.name
-            study_name = f"{gen_model}_{classifier}_{base_dataset}"
-            db_path = here / f"{gen_model}_{classifier}_{base_dataset}.db"
-            csv = here / f"trials_{gen_model}_{classifier}_{base_dataset}.csv"
+            study_name = f"{gen_model}_{classifier}_{base_dataset}_mae"
+            db_path = here / f"{gen_model}_{classifier}_{base_dataset}_mae.db"
+            csv = here / f"trials_{gen_model}_{classifier}_{base_dataset}_mae.csv"
 
             # Rebuild if DB missing, else load
             if not db_path.exists():
@@ -127,7 +128,8 @@ if __name__ == "__main__":
                     trial.set_user_attr(key=k, value=v)
 
                 # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
-                return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
+                # return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
+                return res["valid_mae_to_target"]
 
             # Run optimization
             study.optimize(objective, n_trials=1)

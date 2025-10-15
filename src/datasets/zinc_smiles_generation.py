@@ -27,7 +27,7 @@ from pathlib import Path
 
 import torch
 from rdkit import Chem
-from rdkit.Chem import Crippen
+from rdkit.Chem import Crippen, QED
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
@@ -113,6 +113,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         smiles=Chem.MolToSmiles(mol, canonical=True),
         eval_smiles=eval_smiles,
         logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
+        qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
     )
 
 
