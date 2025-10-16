@@ -33,6 +33,7 @@ from src.utils.visualisations import plot_logp_kde
 num = max(1, min(8, os.cpu_count() or 1))
 torch.set_num_threads(num)
 torch.set_num_interop_threads(max(1, min(2, num)))  # coordination threads
+torch.set_default_dtype(torch.float64)
 
 # (optional but often helps BLAS backends)
 os.environ.setdefault("OMP_NUM_THREADS", str(num))
@@ -225,19 +226,27 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict, gen_model_hint: str, lpr_hi
     hits = (y_pred - target).abs() <= epsilon
     success_rate = hits.float().mean().item()
 
+    ds_config = QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64
+
     # Only evaluate the hits
     hits = [s for s, h in zip(hdc, hits, strict=True) if h]
     n, e, g = gen_model.split(torch.stack(hits))
+    n = n.as_subclass(ds_config.vsa.tensor_class)
+    e = e.as_subclass(ds_config.vsa.tensor_class)
+    g = g.as_subclass(ds_config.vsa.tensor_class)
 
     generator = HDCGenerator(
         gen_model_hint=gen_model_hint,
-        ds_config=QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64 ,
+        ds_config=ds_config,
         decoder_settings=decoder_settings,
         device=device,
     )
 
     t0_decode = time.perf_counter()
-    nx_graphs, final_flags, sims = generator.decode(node_terms=n, graph_terms=g)
+    res = generator.decode(node_terms=n, edge_terms=e, graph_terms=g)
+    nx_graphs = res["graphs"]
+    final_flags = res["final_flags"]
+    sims = res["similarities"]
     t_decode = time.perf_counter() - t0_decode
     # nx_graphs, final_flag, sims = generator.generate_most_similar(n_samples=n_samples, only_final_graphs=False)
 
@@ -263,7 +272,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict, gen_model_hint: str, lpr_hi
         EVALUATOR = GenerationEvaluator(base_dataset=base_dataset, device=device)
 
     evals = EVALUATOR.evaluate_conditional(
-        samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples
+        samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples, sims=sims
     )
     results.update({f"eval_{k}": v for k, v in evals.items()})
     pprint(results)
@@ -334,16 +343,27 @@ if __name__ == "__main__":
         "zinc": {"max": 8, "mean": 2.457799800788871, "median": 2.60617995262146, "min": -6, "std": 1.4334213538628746},
     }
     model_configs = {
-        "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an": {
-            "lr": 0.0006237800411858,
-            "steps": 1104,
+        "nvp-3d-f64_qm9_f8_hid800_lr0.000373182_wd1e-5_bs384_smf6.54123_smi2": {
+            "lr": 0.00041353778859151187,
+            "steps": 1234,
             "scheduler": "two-phase",
-            "lambda_lo": 0.0001,
-            "lambda_hi": 0.0061834838894459,
+            "lambda_lo": 1.3245461546001868e-05,
+            "lambda_hi": 0.019868999906189445,
         }
     }
     lpr = {
         "qm9": "lpr-3d_qm9_h896-512_actlrelu_nmln_dp0.0377275_bs448_lr0.000181621_wd1e-5_dep2_h1512_h2896_h3192_h4224"
+    }
+    DECODER_SETTINGS = {
+        "qm9": {
+            "initial_limit": 2048,
+            "limit": 1024,
+            "beam_size": 256,
+            "pruning_method": "negative_euclidean_distance",
+            "use_size_aware_pruning": True,
+            "use_one_initial_population": True,
+            "use_g3_instead_of_h3": True,
+        }
     }
     n_samples = args.n_samples
     for target_multiplier in [0, 1, -1, 2, -2, 3, -3]:
@@ -355,14 +375,15 @@ if __name__ == "__main__":
         ) in [
             (
                 args.dataset,
-                "nvp_qm9_h1600_f12_hid1024_s42_lr5e-4_wd0.0_an",
-                "gin-f_baseline_qm9_resume",
+                "nvp-3d-f64_qm9_f8_hid800_lr0.000373182_wd1e-5_bs384_smf6.54123_smi2",
+                "HDC-DECODER",
                 n_samples,
             ),
         ]:
             cfg = {
                 "lr": model_configs[gen_model]["lr"],
                 "steps": model_configs[gen_model]["steps"],
+                # "steps": 5,
                 "scheduler": model_configs[gen_model]["scheduler"],
                 "lambda_lo": model_configs[gen_model]["lambda_lo"],
                 "lambda_hi": model_configs[gen_model]["lambda_hi"],
@@ -376,6 +397,10 @@ if __name__ == "__main__":
             os.environ["GEN_MODEL"] = gen_model
             os.environ["CLASSIFIER"] = classifier
             os.environ["LPR"] = lpr[dataset]
+            # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
             res = eval_cond_gen(
-                cfg=cfg, decoder_settings=decoder_settings, gen_model_hint=gen_model, lpr_hint=lpr[dataset]
+                cfg=cfg,
+                decoder_settings=DECODER_SETTINGS[dataset],
+                gen_model_hint=gen_model,
+                lpr_hint=lpr[dataset],
             )
