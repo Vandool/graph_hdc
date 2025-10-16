@@ -948,6 +948,72 @@ class HyperNet(AbstractGraphEncoder):
 
         return decoded_edges
 
+    def decode_order_one_no_node_terms(self, edge_term: torch.Tensor) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+        """
+        Returns information about the kind and number of edges (order one information) that were contained in the
+        original graph represented by the given ``embedding`` vector.
+
+        **Edge Decoding**
+
+        The aim of this method is to reconstruct the first order information about what kinds of edges existed in
+        the original graph based on the given graph embedding vector ``embedding``. The way in which this works is
+        that we already get the zero oder constraints (==informations about which nodes are present) passed as an
+        argument. Based on that we construct all possible combinations of node pairs (==edges) and calculate the
+        corresponding binding of the hypervector representations. Then we can multiply each of these edge hypervectors
+        with the final graph embedding to get a projection along that edge type's dimension. The magnitude of this
+        projection should be proportional to the number of times that edge type was present in the original graph
+        (except for a correction factor).
+
+        Therefore, we iterate over all the possible node pairs and calculate the projection of the graph embedding
+        along the direction of the edge hypervector. If the magnitude of this projection is non-zero we can assume
+        that this edge type was present in the original graph and we derive the number of times it was present from
+        the magnitude of the projection.
+
+        :param edge_term: Graph representation with HDC message passing depth 1.
+        :param node_tuples: The list of constraints that represent the zero order information about the
+            nodes that were present in the original graph.
+
+
+        :returns: A list of edges represented as tuples of (u, v) where u and v are node tuples
+        """
+
+        hd_a = self.nodes_codebook
+        hd_b = self.nodes_codebook
+
+        # Vectorized bind operation
+        edges_hdc = hd_a.bind(hd_b)
+        self.populate_edges_codebook()
+        self._populate_edges_indexer()
+
+        eps = 1e-6
+        def target_reached(edges: list) -> bool:
+            if len(edges) == 0:
+                return False
+            available_edges_cnt = len(edges)  # undirected
+            target_count = sum(u[1] + 1 for u, v in edges)
+            return available_edges_cnt == target_count
+
+
+        decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+        # while not target_reached(decoded_edges):
+        while not torch.all(torch.abs(edge_term - torch.zeros_like(edge_term)) < eps):
+            #    or torch.isclose(
+            # edge_term, torch.zeros_like(edge_term), rtol=1e-5, atol=1e-8
+            sims = torchhd.cos(edge_term, self.edges_codebook)
+            idx_max = torch.argmax(sims).item()
+            a_found, b_found = self.edges_indexer.get_tuple(idx_max)
+            if not a_found or not b_found:
+                break
+            hd_a_found: VSATensor = self.nodes_codebook[a_found]
+            hd_b_found: VSATensor = self.nodes_codebook[b_found]
+            edge_term -= hd_a_found.bind(hd_b_found)
+            edge_term -= hd_b_found.bind(hd_a_found)
+
+            decoded_edges.append((self.nodes_indexer.get_tuple(a_found), self.nodes_indexer.get_tuple(b_found)))
+            decoded_edges.append((self.nodes_indexer.get_tuple(b_found), self.nodes_indexer.get_tuple(a_found)))
+
+        return decoded_edges
+
     def _populate_edge_feature_indexer(self) -> None:
         # Create an indexer to map between combinations and their corresponding indices.
         # Examples:
@@ -1436,7 +1502,8 @@ class HyperNet(AbstractGraphEncoder):
         node_count = node_counter.total()
         edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
 
-        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        # decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
 
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1675,8 +1742,6 @@ class HyperNet(AbstractGraphEncoder):
     #     breeder = first_pop
     #     while True:
     #         # We want expand in dfs manner
-
-
 
     def use_edge_features(self) -> bool:
         return len(self.edge_encoder_map) > 0
