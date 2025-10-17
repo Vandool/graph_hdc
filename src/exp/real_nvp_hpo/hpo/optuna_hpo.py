@@ -75,7 +75,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
     rows = []
     for t in study.get_trials(deepcopy=False):
         # Preferred: use stored user_attr; fallback: recompute from params
-        exp_dir = t.user_attrs.get("exp_dir_name") or make_run_folder_name(t.params, dataset=dataset)
+        exp_dir = t.user_attrs.get("exp_dir_name") or make_run_folder_name(t.params)
         row = {
             "dataset": dataset,
             "exp_dir_name": exp_dir,  # <-- include in CSV
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         val = base_objective(trial, dataset=ds)
         # After suggestions happened, params are available:
         cfg = dict(trial.params)
-        exp_dir = make_run_folder_name(cfg, dataset=ds.default_cfg.base_dataset, prefix=f"nvp_{ds.default_cfg.name}")
+        exp_dir = make_run_folder_name(cfg, prefix=f"nvp_{ds.default_cfg.name}")
         trial.set_user_attr("exp_dir_name", exp_dir)
         return val
 

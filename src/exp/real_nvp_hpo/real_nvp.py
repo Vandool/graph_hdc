@@ -7,6 +7,7 @@ import random
 import shutil
 import string
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pprint
@@ -789,7 +790,7 @@ def run_experiment(cfg: FlowConfig):
     best_model.to(dtype=torch.float64)
 
     # ---- per-sample NLL (really the KL objective) on validation ----
-    val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)
+    val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim)
     nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))
     if nll_arr.size:
         # save full arrays for later deep-dive
@@ -820,20 +821,27 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        samples = best_model.sample_split(10_000)  # each [K, D]
-        node_s = samples["node_terms"]
+        samples = best_model.sample_split(10)  # each [K, D]
+        # node_s = samples["node_terms"]
         edge_s = samples["edge_terms"]
         graph_s = samples["graph_terms"]
 
-    node_s = node_s.as_subclass(HRRTensor)
+    # node_s = node_s.as_subclass(HRRTensor)
     edge_s = edge_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
 
-    log(f"node_s device: {node_s.device!s}")
+    # log(f"node_s device: {node_s.device!s}")
     log(f"graph_s device: {graph_s.device!s}")
     log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
 
-    node_counters = hypernet.decode_order_zero_counter(node_s)
+    # node_counters = hypernet.decode_order_zero_counter(node_s)
+    nodes_set = set(map(tuple, get_split("train", ds_config=cfg.dataset.default_cfg).x.long().tolist()))
+    hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
+    node_counters: dict[int, Counter] = {}
+    for i in range(edge_s.shape[0]):
+        node_counters[i] = Counter(
+            [pair for group in hypernet.decode_order_one_no_node_terms(edge_term=edge_s[i]) for pair in group]
+        )
     report = generated_node_edge_dist(
         generated_node_types=node_counters,
         artefact_dir=artefacts_dir,
@@ -842,12 +850,12 @@ def run_experiment(cfg: FlowConfig):
     )
     pprint(report)
 
-    node_np = node_s.detach().cpu().numpy()
+    # node_np = node_s.detach().cpu().numpy()
     edge_np = edge_s.detach().cpu().numpy()
     graph_np = graph_s.detach().cpu().numpy()
 
     # per-branch norms and pairwise cosine samples
-    node_norm = np.linalg.norm(node_np, axis=1)
+    # node_norm = np.linalg.norm(node_np, axis=1)
     edge_norm = np.linalg.norm(edge_np, axis=1)
     graph_norm = np.linalg.norm(graph_np, axis=1)
 
@@ -862,16 +870,16 @@ def run_experiment(cfg: FlowConfig):
         bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-8)
         return np.sum(an * bn, axis=1)
 
-    node_cos = _pairwise_cosine(node_np, m=4000)
+    # node_cos = _pairwise_cosine(node_np, m=4000)
     edge_cos = _pairwise_cosine(edge_np, m=4000)
     graph_cos = _pairwise_cosine(graph_np, m=4000)
 
     # plots
-    _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
+    # _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
     _hist(artefacts_dir / "sample_node_edge_hist.png", edge_norm, "Sample edge L2 norm", "||edge||")
     _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
-    if node_cos.size:
-        _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    # if node_cos.size:
+    #     _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
     if edge_cos.size:
         _hist(artefacts_dir / "sample_edge_cos_hist.png", edge_cos, "Edge pairwise cosine", "cos")
     if graph_cos.size:
@@ -897,7 +905,7 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
     for k, v in cfg.items():
         setattr(flow_cfg, k, v)
     flow_cfg.exp_dir_name = make_run_folder_name(
-        cfg, dataset=dataset.default_cfg.base_dataset, prefix=f"nvp_{dataset.default_cfg.name}"
+        cfg, prefix=f"nvp_{dataset.default_cfg.name}"
     )
     flow_cfg.dataset = dataset
     flow_cfg.hv_dim = dataset.default_cfg.hv_dim

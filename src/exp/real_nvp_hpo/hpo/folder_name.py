@@ -24,7 +24,6 @@ def _fmt_value(v: Any) -> str:
 
 def make_run_folder_name(
     cfg: Mapping[str, Any],
-    dataset: str,
     *,
     prefix: str = "nvp",
     key_alias: Mapping[str, str] | None = None,
@@ -58,7 +57,7 @@ def make_run_folder_name(
         **(key_alias or {}),
     }
 
-    parts: list[str] = [prefix, dataset.lower()]
+    parts: list[str] = [prefix]
 
     def render(k: str, v: Any) -> str:
         alias = aliases.get(k, k[:3])

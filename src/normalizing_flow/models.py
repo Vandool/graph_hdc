@@ -51,7 +51,7 @@ class AbstractNFModel(pl.LightningModule):
 
     def split(self, flat: torch.Tensor) -> tuple[Tensor, ...]:
         D = self.D
-        if self.dim_multiplier == 3:
+        if self.hv_count == 3:
             return (
                 flat[:, :D].contiguous(),  # node terms
                 flat[:, D : 2 * D].contiguous(),  # edge terms
