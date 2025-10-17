@@ -27,11 +27,13 @@ from pathlib import Path
 
 import torch
 from rdkit import Chem
-from rdkit.Chem import Crippen, QED
+from rdkit.Chem import QED, Crippen
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
+from src.datasets.sa_score import calculateScore
+from src.encoding.graph_encoders import HyperNet
 from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
 
@@ -114,6 +116,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         eval_smiles=eval_smiles,
         logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
         qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
+        sa_score=torch.tensor([float(calculateScore(mol))], dtype=torch.float32),
     )
 
 
@@ -214,8 +217,9 @@ class ZincSmiles(InMemoryDataset):
 @torch.no_grad()
 def precompute_encodings(
     base_ds: ZincSmiles,
-    hypernet,
+    hypernet: HyperNet,
     *,
+    normalize: bool = False,
     batch_size: int = 1024,
     device: torch.device | None = None,
     out_suffix: str = "enc",  # writes data_<split>_enc.pt
@@ -229,7 +233,7 @@ def precompute_encodings(
     aug: list[Data] = []
     for batch in tqdm(loader, desc=f"encode[{base_ds.split}]", unit="batch", dynamic_ncols=True):
         batch = batch.to(device)
-        out = hypernet.forward(batch)  # expects batch.batch
+        out = hypernet.forward(batch, normalize=normalize)  # expects batch.batch
 
         graph_terms = out["graph_embedding"].detach().cpu()
         node_terms = out["node_terms"].detach().cpu()

@@ -20,7 +20,7 @@ from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG,
     QM9_SMILES_HRR_1600_CONFIG_F64,
-    DatasetConfig,
+    HDCConfig,
     Features,
     IndexRange,
 )
@@ -272,7 +272,7 @@ class HyperNet(AbstractGraphEncoder):
 
     def __init__(
         self,
-        config: DatasetConfig | None = None,
+        config: HDCConfig | None = None,
         depth: int = 3,
         *,
         use_explain_away: bool = True,
@@ -1751,7 +1751,7 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    path: Path, cfg: DatasetConfig, depth: int = 3, *, use_edge_codebook: bool = False
+    path: Path, cfg: HDCConfig, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
     dtype_sfx = "-f64" if cfg.dtype == "float64" else ""
     path = (

@@ -20,7 +20,7 @@ from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
 from src.datasets import AddNodeDegree
-from src.encoding.configs_and_constants import DatasetConfig
+from src.encoding.configs_and_constants import HDCConfig
 from src.encoding.graph_encoders import HyperNet
 from src.normalizing_flow.config import FlowConfig, get_flow_cli_args
 from src.normalizing_flow.models import NeuralSplineLightning
@@ -118,7 +118,7 @@ def load_or_fit_pca(train_dataset: Dataset, encoder: HyperNet, pca_path: Path, n
     return pca
 
 
-def load_or_create_hypernet(path: Path, cfg: DatasetConfig, depth: int) -> HyperNet:
+def load_or_create_hypernet(path: Path, cfg: HDCConfig, depth: int) -> HyperNet:
     path = path / f"hypernet_{cfg.vsa.value}_d{cfg.hv_dim}_s{cfg.seed}_dpth{depth}.pt"
     if path.exists():
         print(f"Loading existing HyperNet from {path}")

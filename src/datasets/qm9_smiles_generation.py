@@ -36,11 +36,12 @@ from pathlib import Path
 
 import torch
 from rdkit import Chem
-from rdkit.Chem import Crippen
+from rdkit.Chem import QED, Crippen
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
+from src.datasets.sa_score import calculateScore
 from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
 
@@ -129,6 +130,8 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         smiles=Chem.MolToSmiles(mol, canonical=True),
         eval_smiles=eval_smiles,
         logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
+        qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
+        sa_score=torch.tensor([float(calculateScore(mol))], dtype=torch.float32),
     )
 
 
@@ -161,12 +164,12 @@ class QM9Smiles(InMemoryDataset):
 
     def __init__(
         self,
-            root: str | Path = GLOBAL_DATASET_PATH / "QM9Smiles",
-            split: str = "train",
-            transform: Callable | None = None,
-            pre_transform: Callable | None = None,
-            pre_filter: Callable | None = None,
-            enc_suffix: str = "",
+        root: str | Path = GLOBAL_DATASET_PATH / "QM9Smiles",
+        split: str = "train",
+        transform: Callable | None = None,
+        pre_transform: Callable | None = None,
+        pre_filter: Callable | None = None,
+        enc_suffix: str = "",
     ) -> None:
         self.split = split.lower()
         self.enc_suffix = enc_suffix
