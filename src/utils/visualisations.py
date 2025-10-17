@@ -10,8 +10,6 @@ import seaborn as sns
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-
 # ──────────────────────────────────────────────────────────────────────────────
 ATOM_TYPES = ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"]
 
@@ -543,23 +541,3 @@ def plot_logp_kde(
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=300, bbox_inches="tight")
     plt.close(fig)
-
-
-if __name__ == "__main__":
-    # ------------------------------------------------
-    ds = QM9Smiles(split="test")
-    lp = np.array(ds.logp.tolist())
-    target = 1.5
-    lg = np.random.normal(loc=target, scale=0.5, size=100)
-
-    plot_logp_kde(
-        dataset="QM9",
-        lp=lp,
-        lg=lg,
-        out=Path("out/qm9_kde.png"),
-        target=target,
-        evals_total={"validity_pct": "80%", "final_pct": "65%"},
-        evals_valid={"mae_to_target": "0.41", "success_at_eps": "74%"},
-        description="DESCRIPTION HERE",
-        bw_adjust=0.8,
-    )

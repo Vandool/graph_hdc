@@ -20,8 +20,8 @@ from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG,
     QM9_SMILES_HRR_1600_CONFIG_F64,
-    HDCConfig,
     Features,
+    HDCConfig,
     IndexRange,
 )
 from src.encoding.feature_encoders import (
