@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import HDCConfig
+from src.encoding.configs_and_constants import DSHDCConfig
 from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
@@ -42,7 +42,7 @@ def get_model_path(hint: str) -> Path | None:
 @attr.define(slots=True, kw_only=True)
 class AbstractGenerator(abc.ABC):
     gen_model_hint: str | Path
-    ds_config: HDCConfig
+    ds_config: DSHDCConfig
     device: torch.device | None = None
     decoder_settings: dict[str, Any] = attr.Factory(dict)
 

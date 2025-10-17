@@ -12,6 +12,26 @@ from src.encoding.the_types import VSAModel
 from src.utils.registery import register_model
 
 
+## Real NVP
+@dataclass
+class FlowConfig:
+    seed: int = 42
+    epochs: int = 50
+    batch_size: int = 64
+    lr: float = 1e-3
+    weight_decay: float = 0.0
+    device: str = "cuda"
+
+    hv_dim: int = 7744
+    vsa: VSAModel = VSAModel.HRR
+    num_flows: int = 8
+    num_hidden_channels: int = 512
+
+    smax_initial = 1.0
+    smax_final = 6.0
+    smax_warmup_epochs = 15
+
+
 class AbstractNFModel(pl.LightningModule):
     def __init__(self, cfg):
         super().__init__()
@@ -29,13 +49,17 @@ class AbstractNFModel(pl.LightningModule):
         z, logs = self.flow.sample(num_samples)
         return z, logs
 
-    def split(self, flat: torch.Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        # flat: [B, 3D] in data-space
+    def split(self, flat: torch.Tensor) -> tuple[Tensor, ...]:
         D = self.D
+        if self.dim_multiplier == 3:
+            return (
+                flat[:, :D].contiguous(),  # node terms
+                flat[:, D : 2 * D].contiguous(),  # edge terms
+                flat[:, 2 * D :].contiguous(),  # graph terms
+            )
         return (
-            flat[:, :D].contiguous(),  # node terms
-            flat[:, D : 2 * D].contiguous(),  # edge terms
-            flat[:, 2 * D :].contiguous(),  # graph terms
+            flat[:, :D].contiguous(),
+            flat[:, D:].contiguous(),
         )
 
     def configure_optimizers(self):
@@ -55,26 +79,6 @@ class AbstractNFModel(pl.LightningModule):
         """
         ckpt = {"state_dict": self.state_dict(), "hyper_parameters": {"cfg": self.cfg.__dict__()}}
         torch.save(ckpt, path)
-
-
-## Real NVP
-@dataclass
-class FlowConfig:
-    seed: int = 42
-    epochs: int = 50
-    batch_size: int = 64
-    lr: float = 1e-3
-    weight_decay: float = 0.0
-    device: str = "cuda"
-
-    hv_dim: int = 7744
-    vsa: VSAModel = VSAModel.HRR
-    num_flows: int = 8
-    num_hidden_channels: int = 512
-
-    smax_initial = 1.0
-    smax_final = 6.0
-    smax_warmup_epochs = 15
 
 
 class BoundedMLP(torch.nn.Module):
@@ -97,6 +101,7 @@ class RealNVPV2Lightning(AbstractNFModel):
         D = int(cfg.hv_dim)
         self.D = D
         dim_multiplier = 2 if not hasattr(cfg, "hv_count") else cfg.hv_count
+        self.hv_count = dim_multiplier
         self.flat_dim = dim_multiplier * D
 
         mask = (torch.arange(self.flat_dim) % 2).to(torch.float32)
@@ -161,9 +166,16 @@ class RealNVPV2Lightning(AbstractNFModel):
         """
         z, _logs = self.sample(num_samples)  # standardized space
         x = self._posttransform(z)  # back to data space
-        node_terms, edge_terms, graph_terms = self.split(x)
+        if self.hv_count == 3:
+            node_terms, edge_terms, graph_terms = self.split(x)
+            return {
+                "node_terms": node_terms,
+                "edge_terms": edge_terms,
+                "graph_terms": graph_terms,
+                "logs": _logs,
+            }
+        edge_terms, graph_terms = self.split(x)
         return {
-            "node_terms": node_terms,
             "edge_terms": edge_terms,
             "graph_terms": graph_terms,
             "logs": _logs,
@@ -222,7 +234,10 @@ class RealNVPV2Lightning(AbstractNFModel):
             e = e.view(B, D)
         if g.dim() == 1:
             g = g.view(B, D)
-        return torch.cat([n, e, g], dim=-1)
+
+        if self.hv_count == 3:
+            return torch.cat([n, e, g], dim=-1)
+        return torch.cat([e, g], dim=-1)
 
     def training_step(self, batch, batch_idx):
         flat = self._flat_from_batch(batch)

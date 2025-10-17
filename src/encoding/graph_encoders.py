@@ -21,7 +21,7 @@ from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG,
     QM9_SMILES_HRR_1600_CONFIG_F64,
     Features,
-    HDCConfig,
+    DSHDCConfig,
     IndexRange,
 )
 from src.encoding.feature_encoders import (
@@ -272,7 +272,7 @@ class HyperNet(AbstractGraphEncoder):
 
     def __init__(
         self,
-        config: HDCConfig | None = None,
+        config: DSHDCConfig | None = None,
         depth: int = 3,
         *,
         use_explain_away: bool = True,
@@ -1751,7 +1751,7 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    cfg: HDCConfig, path: Path = GLOBAL_MODEL_PATH, depth: int = 3, *, use_edge_codebook: bool = False
+    cfg: DSHDCConfig, path: Path = GLOBAL_MODEL_PATH, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
     dtype_sfx = "-f64" if cfg.dtype == "float64" else ""
     path = (

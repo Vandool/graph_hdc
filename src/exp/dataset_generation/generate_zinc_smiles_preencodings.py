@@ -7,7 +7,7 @@ from pytorch_lightning import seed_everything
 from src.datasets.zinc_smiles_generation import ZincSmiles, precompute_encodings
 from src.encoding.configs_and_constants import (
     ZINC_SMILES_HRR_6144_G1G4_CONFIG,
-    HDCConfig,
+    DSHDCConfig,
 )
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
@@ -24,7 +24,7 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
-def generate(cfg: HDCConfig):
+def generate(cfg: DSHDCConfig):
     seed = 42
     seed_everything(seed)
 

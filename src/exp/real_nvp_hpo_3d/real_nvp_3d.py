@@ -119,7 +119,7 @@ class FlowConfig:
 
 
 @torch.no_grad()
-def fit_featurewise_standardization(model, loader, hv_dim: int, max_batches: int | None = None, device="cpu"):
+def fit_featurewise_standardization(model, loader, hv_count: int ,hv_dim: int, max_batches: int | None = None, device="cpu"):
     """
     Estimate per-feature mean and std (feature-wise) for the model’s standardized space.
     Works safely under mixed-precision and supports [B, 3D] inputs.
@@ -139,8 +139,8 @@ def fit_featurewise_standardization(model, loader, hv_dim: int, max_batches: int
     """
     cnt = 0
     accum_dtype = torch.float64
-    sum_vec = torch.zeros(3 * hv_dim, dtype=accum_dtype, device=device)
-    sumsq_vec = torch.zeros(3 * hv_dim, dtype=accum_dtype, device=device)
+    sum_vec = torch.zeros(hv_count * hv_dim, dtype=accum_dtype, device=device)
+    sumsq_vec = torch.zeros(hv_count * hv_dim, dtype=accum_dtype, device=device)
 
     for bi, batch in enumerate(loader):
         if max_batches is not None and bi >= max_batches:

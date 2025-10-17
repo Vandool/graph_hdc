@@ -32,7 +32,7 @@ from tqdm.auto import tqdm
 
 from src.datasets.zinc_pairs import ZincPairs
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import HDCConfig, FeatureConfig, Features, IndexRange
+from src.encoding.configs_and_constants import DSHDCConfig, FeatureConfig, Features, IndexRange
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import AbstractGraphEncoder, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
@@ -691,7 +691,7 @@ def run_experiment(cfg: Config):
     ds_name = "ZincPairsEncodings"
     zinc_feature_bins = [9, 6, 3, 4]
     device = torch.device(cfg.device)
-    dataset_config = HDCConfig(
+    dataset_config = DSHDCConfig(
         seed=cfg.seed,
         name=ds_name,
         vsa=cfg.vsa,

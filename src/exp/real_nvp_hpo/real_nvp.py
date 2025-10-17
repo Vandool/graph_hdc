@@ -1,4 +1,3 @@
-import contextlib
 import datetime
 import enum
 import json
@@ -17,14 +16,13 @@ import numpy as np
 import optuna
 import pandas as pd
 import torch
-from pytorch_lightning import LightningModule, Trainer, seed_everything
+from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
@@ -100,6 +98,7 @@ class FlowConfig:
     is_dev: bool = os.getenv("IS_DEV", "0") == "1"
 
     # HDC / encoder
+    hv_count: int = 3
     hv_dim: int = 40 * 40  # 1600
     vsa: VSAModel = VSAModel.HRR
     dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
@@ -119,25 +118,52 @@ class FlowConfig:
 
 
 @torch.no_grad()
-def fit_featurewise_standardization(model, loader, hv_dim: int, max_batches: int | None = None, device="cpu"):
-    # Accumulate sums per-dimension (feature-wise)
+def fit_featurewise_standardization(
+    model, loader, hv_count: int, hv_dim: int, max_batches: int | None = None, device="cpu"
+):
+    """
+    Estimate per-feature mean and std (feature-wise) for the model's standardized space.
+    Works safely under mixed-precision and supports [B, 3D] inputs.
+
+    Parameters
+    ----------
+    model : RealNVPV2Lightning
+        Model whose `_flat_from_batch` defines the feature layout.
+    loader : DataLoader
+        Provides graph batches.
+    hv_dim : int
+        Hypervector dimension D.
+    max_batches : int | None
+        Limit number of batches for faster estimation.
+    device : str | torch.device
+        Device to perform accumulation on.
+    """
     cnt = 0
-    sum_vec = torch.zeros(2 * hv_dim, dtype=torch.float64, device=device)
-    sumsq_vec = torch.zeros(2 * hv_dim, dtype=torch.float64, device=device)
+    accum_dtype = torch.float64
+    sum_vec = torch.zeros(hv_count * hv_dim, dtype=accum_dtype, device=device)
+    sumsq_vec = torch.zeros(hv_count * hv_dim, dtype=accum_dtype, device=device)
 
     for bi, batch in enumerate(loader):
         if max_batches is not None and bi >= max_batches:
             break
+
         batch = batch.to(device)
-        x = model._flat_from_batch(batch).to(torch.float64)  # [B, 2D]
+        x = model._flat_from_batch(batch).to(accum_dtype)  # [B, 3D]
         cnt += x.shape[0]
         sum_vec += x.sum(dim=0)
         sumsq_vec += (x * x).sum(dim=0)
 
-    mu = (sum_vec / max(1, cnt)).to(torch.float32)
-    var = (sumsq_vec / max(1, cnt) - (sum_vec / max(1, cnt)) ** 2).clamp_min_(0).to(torch.float32)
+    if cnt == 0:
+        msg = "fit_featurewise_standardization(): empty loader or no samples."
+        raise RuntimeError(msg)
+
+    mu = sum_vec / cnt
+    var = (sumsq_vec / cnt - mu**2).clamp_min_(0)
     sigma = var.sqrt().clamp_min_(1e-6)
-    model.set_standardization(mu, sigma)
+
+    # Match model’s dtype to avoid Double↔Half/Float mismatches
+    tgt_dtype = model.mu.dtype if hasattr(model, "mu") else torch.get_default_dtype()
+    model.set_standardization(mu.to(tgt_dtype), sigma.to(tgt_dtype))
 
 
 # ---------------------------------------------------------------------
@@ -260,88 +286,29 @@ def plot_train_val_loss(
     print(f"Saved train/val loss plot to {out} (cutoff ≥ {cutoff})")
 
 
-def pick_precision():
-    # Works on A100/H100 if BF16 is supported by the PyTorch/CUDA build.
+def on_a100() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        name = torch.cuda.get_device_name(0)
+    except Exception:
+        return False
+    return "A100" in name  # simple & reliable enough
+
+
+def pick_precision() -> int | str:
+    # explicit override via env if you want: PRECISION in {"64","32","bf16-mixed","16-mixed"}
+    p = os.getenv("PRECISION")
+    if p:  # trust user override
+        return int(p) if p.isdigit() else p
+
+    if torch.cuda.is_available() and on_a100():
+        return 64  # A100: run full FP64 as you requested
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return "bf16-mixed"  # local GPUs: fast & stable
     if torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
-            return "bf16-mixed"  # safest + fast on H100/A100
-        return "16-mixed"  # widely supported fallback
-    return 32  # CPU or MPS
-
-
-def sample_and_decode_preview(
-    model,
-    hypernet,
-    *,
-    max_print: int = 16,
-    logger=print,
-) -> None:
-    model.eval()
-    with torch.no_grad():
-        node_s, graph_s, _ = model.sample_split(max_print)  # [K, D] each
-
-    # If your tensors subclass needs to be enforced (as in your code)
-    node_s = node_s.as_subclass(HRRTensor)
-    graph_s = graph_s.as_subclass(HRRTensor)
-
-    logger(f"[preview] node_s device: {node_s.device}")
-    logger(f"[preview] graph_s device: {graph_s.device}")
-    with contextlib.suppress(Exception):
-        logger(f"[preview] Hypernet node codebook device: {hypernet.nodes_codebook.device}")
-
-    # Decode and print a few
-    node_counters = hypernet.decode_order_zero_counter(node_s)
-    for i, (n, ctr) in enumerate(node_counters.items()):
-        if i >= max_print:
-            break
-        logger(f"[preview] Sample {n}: nodes={ctr.total()}, edges={sum(e + 1 for _, e, _, _ in ctr)}\n{ctr}")
-
-
-class PeriodicSampleDecodeCallback(Callback):
-    r"""
-    Periodically samples from the model and decodes with the hypernet, printing
-    a small textual preview for quick qualitative inspection.
-
-    Triggers every ``interval_epochs`` epochs at train-epoch end.
-    """
-
-    def __init__(
-        self,
-        hypernet,
-        *,
-        interval_epochs: int = 10,
-        max_print: int = 16,
-    ):
-        super().__init__()
-        self.hypernet = hypernet
-        self.interval = int(interval_epochs)
-        self.max_print = int(max_print)
-
-    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        epoch = int(getattr(trainer, "current_epoch", 0))
-        if self.interval <= 0 or ((epoch + 1) % self.interval) != 0:
-            return
-
-        # Route logs to either W&B text panel (if available) or stdout
-        logs_buffer = []
-
-        def _collect(msg: str):
-            logs_buffer.append(str(msg))
-
-        sample_and_decode_preview(
-            pl_module,
-            self.hypernet,
-            max_print=self.max_print,
-            logger=_collect,
-        )
-
-        text_blob = "\n".join(logs_buffer)
-        try:
-            trainer.logger.log_text("preview/decoded_samples", text_blob)  # some loggers support this
-            print(text_blob, flush=True)
-        except Exception:
-            # Fallback to stdout
-            print(text_blob, flush=True)
+        return "16-mixed"  # widest fallback
+    return 32
 
 
 class TimeLoggingCallback(Callback):
@@ -376,7 +343,12 @@ class PeriodicNLLEval(Callback):
             return
 
         stats = _eval_flow_metrics(
-            pl_module, self.val_loader, pl_module.device, hv_dim=pl_module.D, max_batches=self.max_batches
+            pl_module,
+            self.val_loader,
+            pl_module.device,
+            hv_count=pl_module.hv_count,
+            hv_dim=pl_module.D,
+            max_batches=self.max_batches,
         )
         if not stats:
             return
@@ -404,7 +376,7 @@ def _norm_cdf(x):
 
 
 @torch.no_grad()
-def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | None = None):
+def _eval_flow_metrics(model, loader, device, hv_count: int, hv_dim: int, max_batches: int | None = None):
     """
     Eval for normalizing flows trained with exact likelihood.
 
@@ -434,7 +406,7 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
     """
     model.eval()
     ln2 = math.log(2.0)
-    dim = 2 * hv_dim
+    dim = hv_count * hv_dim
 
     # log p(z) of a standard normal factorizes; this is the constant term in nats
     const_term = 0.5 * dim * math.log(2 * math.pi)
@@ -462,7 +434,8 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
             break
 
         batch = batch.to(device)
-        flat = model._flat_from_batch(batch)  # [B, dim]
+        mdtype = next(model.parameters()).dtype
+        flat = model._flat_from_batch(batch).to(mdtype)  # [B, dim]
 
         # Standardize with your learned/fitted μ, σ.
         # This is a *determinantful* pre-transform; we track its log-det so that
@@ -675,24 +648,20 @@ def run_experiment(cfg: FlowConfig):
 
     log("Loading/creating hypernet …")
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
+    hypernet.depth = ds_cfg.hypernet_depth
     log("Hypernet ready.")
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    log("Hypernet ready.")
-
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert hypernet.nodes_codebook.dtype == torch.float64
     log("Hypernet ready.")
 
     # ----- datasets / loaders -----
-    log(f"Loading {cfg.dataset.value} pair datasets.")
-    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600:
-        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600")
-        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600")
-    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_7744:
-        train_dataset = ZincSmiles(split="train", enc_suffix="HRR7744")
-        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR7744")
+    log(f"Loading {cfg.dataset.default_cfg.base_dataset} pair datasets.")
+    train_dataset = get_split(split="train", ds_config=cfg.dataset.default_cfg)
+    validation_dataset = get_split(split="valid", ds_config=cfg.dataset.default_cfg)
     log(
-        f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+        f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
 
     # pick worker counts per GPU; tune for your cluster
@@ -710,7 +679,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 6,
+        prefetch_factor=None if local_dev else 8,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -720,7 +689,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        prefetch_factor=None if local_dev else 6,
+        prefetch_factor=None if local_dev else 8,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -732,7 +701,7 @@ def run_experiment(cfg: FlowConfig):
     log(f"Model device: {model.device}")
     log(f"Model hparams: {model.hparams}")
 
-    fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=device)
+    fit_featurewise_standardization(model, train_dataloader, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim, device=device)
 
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
@@ -742,7 +711,7 @@ def run_experiment(cfg: FlowConfig):
         dirpath=str(models_dir),
         auto_insert_metric_name=False,
         filename="epoch{epoch:02d}-val{val_loss:.4f}",
-        save_last=True,
+        save_last=False,
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     time_logger = TimeLoggingCallback()
@@ -762,20 +731,18 @@ def run_experiment(cfg: FlowConfig):
         verbose=True,
     )
 
-    sample_and_decode_cb = PeriodicSampleDecodeCallback(hypernet, interval_epochs=10, max_print=16)
-
     # ----- W&B -----
     loggers = [csv_logger]
 
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping, sample_and_decode_cb],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
         gradient_clip_val=1.0,
-        log_every_n_steps=100 if not local_dev else 1,
+        log_every_n_steps=500 if not local_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
         precision=pick_precision(),
@@ -820,6 +787,7 @@ def run_experiment(cfg: FlowConfig):
     best_model = retrieve_model("NVP").load_from_checkpoint(best_path)
     best_model.to(device).eval()
     best_model.to(dtype=torch.float64)
+
     # ---- per-sample NLL (really the KL objective) on validation ----
     val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)
     nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))
@@ -852,9 +820,13 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        node_s, graph_s, logs = best_model.sample_split(10_000)  # each [K, D]
+        samples = best_model.sample_split(10_000)  # each [K, D]
+        node_s = samples["node_terms"]
+        edge_s = samples["edge_terms"]
+        graph_s = samples["graph_terms"]
 
     node_s = node_s.as_subclass(HRRTensor)
+    edge_s = edge_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
 
     log(f"node_s device: {node_s.device!s}")
@@ -871,10 +843,12 @@ def run_experiment(cfg: FlowConfig):
     pprint(report)
 
     node_np = node_s.detach().cpu().numpy()
+    edge_np = edge_s.detach().cpu().numpy()
     graph_np = graph_s.detach().cpu().numpy()
 
     # per-branch norms and pairwise cosine samples
     node_norm = np.linalg.norm(node_np, axis=1)
+    edge_norm = np.linalg.norm(edge_np, axis=1)
     graph_norm = np.linalg.norm(graph_np, axis=1)
 
     def _pairwise_cosine(x: np.ndarray, m: int = 2000) -> np.ndarray:
@@ -889,23 +863,19 @@ def run_experiment(cfg: FlowConfig):
         return np.sum(an * bn, axis=1)
 
     node_cos = _pairwise_cosine(node_np, m=4000)
+    edge_cos = _pairwise_cosine(edge_np, m=4000)
     graph_cos = _pairwise_cosine(graph_np, m=4000)
 
     # plots
     _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
+    _hist(artefacts_dir / "sample_node_edge_hist.png", edge_norm, "Sample edge L2 norm", "||edge||")
     _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
     if node_cos.size:
         _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    if edge_cos.size:
+        _hist(artefacts_dir / "sample_edge_cos_hist.png", edge_cos, "Edge pairwise cosine", "cos")
     if graph_cos.size:
         _hist(artefacts_dir / "sample_graph_cos_hist.png", graph_cos, "Graph pairwise cosine", "cos")
-
-    # quick table
-    pd.DataFrame(
-        {
-            **{f"node_{i}": node_np[:16, i] for i in range(min(16, node_np.shape[1]))},
-            **{f"graph_{i}": graph_np[:16, i] for i in range(min(16, graph_np.shape[1]))},
-        }
-    ).to_parquet(evals_dir / "sample_head.parquet", index=False)
 
     log("Experiment completed.")
     log(f"Best val loss: {min_val_loss:.4f}")
@@ -913,7 +883,7 @@ def run_experiment(cfg: FlowConfig):
     return min_val_loss
 
 
-def get_cfg(trial: optuna.Trial, dataset: str):
+def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
     cfg = {
         "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
@@ -922,27 +892,33 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "num_flows": trial.suggest_int("num_flows", 4, 16),
-        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=128),
-        "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
-        "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
-        "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),
     }
     flow_cfg = FlowConfig()
     for k, v in cfg.items():
         setattr(flow_cfg, k, v)
-    flow_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
+    flow_cfg.exp_dir_name = make_run_folder_name(
+        cfg, dataset=dataset.default_cfg.base_dataset, prefix=f"nvp_{dataset.default_cfg.name}"
+    )
+    flow_cfg.dataset = dataset
+    flow_cfg.hv_dim = dataset.default_cfg.hv_dim
+    flow_cfg.hv_count = dataset.default_cfg.hv_count
+    flow_cfg.vsa = dataset.default_cfg.vsa
     return flow_cfg
 
 
-def run_zinc_trial(trial: optuna.Trial):
-    flow_cfg = get_cfg(trial, dataset="zinc")
-    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_7744
-    flow_cfg.hv_dim = 88 * 88
+def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
+    flow_cfg = get_cfg(trial, dataset=dataset)
+    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 6144, step=512)
+    flow_cfg.smax_initial = 2.5
+    flow_cfg.smax_final = 7
+    flow_cfg.smax_warmup_epochs = 17
     return run_experiment(flow_cfg)
 
 
-def run_qm9_trial(trial: optuna.Trial):
-    flow_cfg = get_cfg(trial, dataset="qm9")
-    flow_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600
-    flow_cfg.hv_dim = 40 * 40
+def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
+    flow_cfg = get_cfg(trial, dataset=dataset)
+    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 400, 1600, step=400)
+    flow_cfg.smax_initial = 2.2
+    flow_cfg.smax_final = 6.5
+    flow_cfg.smax_warmup_epochs = 16
     return run_experiment(flow_cfg)

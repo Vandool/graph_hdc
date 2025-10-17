@@ -259,6 +259,7 @@ def precompute_encodings(
         out = hypernet.forward(batch, normalize=normalize)  # expects batch.batch
 
         graph_terms = out["graph_embedding"].detach().cpu()
+        edge_terms = out["edge_terms"].detach().cpu()
         node_terms = out["node_terms"].detach().cpu()
 
         per_graph = batch.to_data_list()
@@ -266,6 +267,7 @@ def precompute_encodings(
         for i, d in enumerate(per_graph):
             d = d.clone()
             d.graph_terms = graph_terms[i]  # [Dg]
+            d.edge_terms = edge_terms[i]  # [Dg]
             d.node_terms = node_terms[i]  # [Ni, Dn]
             aug.append(d)
 

@@ -7,13 +7,13 @@ from src.datasets.qm9_smiles_generation import QM9Smiles, precompute_encodings
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG,
     QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG,
-    HDCConfig,
+    DSHDCConfig,
 )
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 
-def generate(cfg: HDCConfig):
+def generate(cfg: DSHDCConfig):
     seed = 42
     seed_everything(seed)
 

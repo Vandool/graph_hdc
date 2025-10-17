@@ -1,11 +1,16 @@
 import hashlib
 import random
 from collections.abc import Callable
+from typing import Literal
 
 import networkx as nx
 import torch
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.utils import degree, k_hop_subgraph, to_undirected
+
+from src.datasets.qm9_smiles_generation import QM9Smiles
+from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.encoding.configs_and_constants import DSHDCConfig, SupportedDataset
 
 IDX2COLOR = {
     0: ("R", "red"),
@@ -235,3 +240,9 @@ class Compose:
         for t in self.transforms:
             data = t(data)
         return data
+
+
+def get_split(split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig):
+    if ds_config.base_dataset == "qm9":
+        return QM9Smiles(split=split, enc_suffix=ds_config.name)
+    return ZincSmiles(split=split, enc_suffix=ds_config.name)

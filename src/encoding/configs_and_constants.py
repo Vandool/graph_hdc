@@ -56,13 +56,14 @@ class Features(enum.Enum):
 
 
 @dataclass
-class HDCConfig:
+class DSHDCConfig:
     """
     Configuration for hyperdimensional base encoding of a dataset.
     """
 
     name: str
     hv_dim: int = 10000
+    hv_count: int = 2
     vsa: VSAModel = field(default_factory=lambda: VSAModel.MAP)
     node_feature_configs: dict[Features, FeatureConfig] = field(default_factory=OrderedDict)
     edge_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
@@ -77,7 +78,7 @@ class HDCConfig:
     normalize: bool = False
 
 
-ZINC_CONFIG: HDCConfig = HDCConfig(
+ZINC_CONFIG: DSHDCConfig = DSHDCConfig(
     name="ZINC",
     base_dataset="zinc",
     hv_dim=10000,
@@ -106,7 +107,7 @@ ZINC_CONFIG: HDCConfig = HDCConfig(
 )
 
 # ZINC_ND has added node degrees as an extra feature to the original ZINC located in data.x
-ZINC_ND_CONFIG: HDCConfig = deepcopy(ZINC_CONFIG)
+ZINC_ND_CONFIG: DSHDCConfig = deepcopy(ZINC_CONFIG)
 ZINC_ND_CONFIG.name = "ZINC_ND"
 ZINC_ND_CONFIG.node_feature_configs[Features.NODE_DEGREE] = FeatureConfig(
     count=6,  # Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
@@ -115,7 +116,7 @@ ZINC_ND_CONFIG.node_feature_configs[Features.NODE_DEGREE] = FeatureConfig(
 )
 
 # ZINC_ND has added node degrees as an extra feature to the original ZINC located in data.x
-ZINC_ND_COMB_CONFIG: HDCConfig = deepcopy(ZINC_CONFIG)
+ZINC_ND_COMB_CONFIG: DSHDCConfig = deepcopy(ZINC_CONFIG)
 ZINC_ND_COMB_CONFIG.name = "ZINC_ND_COMB"
 ZINC_ND_COMB_CONFIG.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
     count=28 * 6,  # 28 Atom Types, 6 Unique Node Degrees: [0.0 (for ease of indexing), 1.0, 2.0, 3.0, 4.0, 5.0]
@@ -123,7 +124,7 @@ ZINC_ND_COMB_CONFIG.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
     index_range=IndexRange((0, 2)),
 )
 
-ZINC_ND_COMB_CONFIG_NHA: HDCConfig = deepcopy(ZINC_CONFIG)
+ZINC_ND_COMB_CONFIG_NHA: DSHDCConfig = deepcopy(ZINC_CONFIG)
 ZINC_ND_COMB_CONFIG_NHA.name = "ZINC_ND_COMB_NHA"
 ZINC_ND_COMB_CONFIG_NHA.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
     # Added Neighbourhood awareness encodings (3 distinct values)
@@ -132,7 +133,7 @@ ZINC_ND_COMB_CONFIG_NHA.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig
     index_range=IndexRange((0, 3)),
 )
 
-QM9_CONFIG: HDCConfig = HDCConfig(
+QM9_CONFIG: DSHDCConfig = DSHDCConfig(
     name="QM9",
     base_dataset="qm9",
     hv_dim=10000,
@@ -218,7 +219,7 @@ QM9_CONFIG: HDCConfig = HDCConfig(
     ),
 )
 
-ZINC_SMILES_CONFIG: HDCConfig = HDCConfig(
+ZINC_SMILES_CONFIG: DSHDCConfig = DSHDCConfig(
     name="ZINC_SMILES",
     node_feature_configs=OrderedDict(
         [
@@ -230,7 +231,7 @@ ZINC_SMILES_CONFIG: HDCConfig = HDCConfig(
     ),
 )
 
-ZINC_SMILES_HRR_7744_CONFIG = HDCConfig(
+ZINC_SMILES_HRR_7744_CONFIG = DSHDCConfig(
     seed=42,
     name="ZincSmilesHRR7744",
     base_dataset="zinc",
@@ -252,17 +253,18 @@ ZINC_SMILES_HRR_7744_CONFIG = HDCConfig(
     ),
 )
 
-ZINC_SMILES_HRR_7744_CONFIG_F64: HDCConfig = deepcopy(ZINC_SMILES_HRR_7744_CONFIG)
+ZINC_SMILES_HRR_7744_CONFIG_F64: DSHDCConfig = deepcopy(ZINC_SMILES_HRR_7744_CONFIG)
 ZINC_SMILES_HRR_7744_CONFIG_F64.name = "ZincSmilesHRR7744F64"
 ZINC_SMILES_HRR_7744_CONFIG_F64.dtype = "float64"
 
-ZINC_SMILES_HRR_6144_G1G4_CONFIG: HDCConfig = deepcopy(ZINC_SMILES_HRR_7744_CONFIG_F64)
+ZINC_SMILES_HRR_6144_G1G4_CONFIG: DSHDCConfig = deepcopy(ZINC_SMILES_HRR_7744_CONFIG_F64)
 ZINC_SMILES_HRR_6144_G1G4_CONFIG.name = "ZincSmilesHRR6144F64G1G4"
 ZINC_SMILES_HRR_6144_G1G4_CONFIG.hv_dim = 5120
 ZINC_SMILES_HRR_6144_G1G4_CONFIG.hypernet_depth = 4
+ZINC_SMILES_HRR_6144_G1G4_CONFIG.hv_count = 2
 
 
-QM9_SMILES_CONFIG = HDCConfig(
+QM9_SMILES_CONFIG = DSHDCConfig(
     seed=42,
     name="QM9Smiles",
     base_dataset="qm9",
@@ -292,21 +294,25 @@ QM9_SMILES_CONFIG = HDCConfig(
     ),
 )
 
-QM9_SMILES_HRR_1600_CONFIG: HDCConfig = deepcopy(QM9_SMILES_CONFIG)
+QM9_SMILES_HRR_1600_CONFIG: DSHDCConfig = deepcopy(QM9_SMILES_CONFIG)
 QM9_SMILES_HRR_1600_CONFIG.hv_dim = 1600
 QM9_SMILES_HRR_1600_CONFIG.name = "QM9SmilesHRR1600"
 
-QM9_SMILES_HRR_1600_CONFIG_F64: HDCConfig = deepcopy(QM9_SMILES_CONFIG)
+QM9_SMILES_HRR_1600_CONFIG_F64: DSHDCConfig = deepcopy(QM9_SMILES_CONFIG)
 QM9_SMILES_HRR_1600_CONFIG_F64.hv_dim = 1600
 QM9_SMILES_HRR_1600_CONFIG_F64.name = "QM9SmilesHRR1600F64"
 QM9_SMILES_HRR_1600_CONFIG_F64.dtype = "float64"
+QM9_SMILES_HRR_1600_CONFIG_F64.hv_count = 3
 
-QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG: HDCConfig = deepcopy(QM9_SMILES_HRR_1600_CONFIG_F64)
+
+QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG: DSHDCConfig = deepcopy(QM9_SMILES_HRR_1600_CONFIG_F64)
 QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG.name = "QM9SmilesHRR1600F64G1G3"
+QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG.hv_count = 2
 
-QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG: HDCConfig = deepcopy(QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG)
+QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG: DSHDCConfig = deepcopy(QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG)
 QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG.name = "QM9SmilesHRR1600F64G1NG3"
 QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG.normalize = True
+QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG.hv_count = 2
 
 
 class SupportedDataset(enum.Enum):
@@ -325,7 +331,7 @@ class SupportedDataset(enum.Enum):
     QM9_SMILES_HRR_1600_F64_G1G3 = ("QM9_SMILES_HRR_1600_F64_G1G3", QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG)
     QM9_SMILES_HRR_1600_F64_G1NG3 = ("QM9_SMILES_HRR_1600_F64_G1NG3", QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG)
 
-    def __new__(cls, value: str, default_cfg: HDCConfig):
+    def __new__(cls, value: str, default_cfg: DSHDCConfig):
         obj = object.__new__(cls)
         obj._value_ = value
         obj.default_cfg = default_cfg

@@ -5,6 +5,7 @@ import optuna
 import pandas as pd
 from optuna_integration import BoTorchSampler
 
+from src.encoding.configs_and_constants import SupportedDataset
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
 from src.exp.real_nvp_hpo.real_nvp import run_qm9_trial, run_zinc_trial
 
@@ -14,9 +15,6 @@ SPACE = {
     "weight_decay": optuna.distributions.CategoricalDistribution([0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
     "num_flows": optuna.distributions.IntDistribution(4, 16),
     "num_hidden_channels": optuna.distributions.IntDistribution(256, 2048, step=64),
-    "smax_initial": optuna.distributions.FloatDistribution(0.1, 3.0),
-    "smax_final": optuna.distributions.FloatDistribution(3.0, 8.0),
-    "smax_warmup_epochs": optuna.distributions.IntDistribution(10, 20),
 }
 DIRECTION = "minimize"
 
@@ -97,16 +95,23 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Real NVP V2 - HPO")
-    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    p.add_argument("--n_trials", type=int, default=5)
+    p.add_argument(
+        "--dataset",
+        type=str,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
+        choices=[ds.value for ds in SupportedDataset],
+    )
+    p.add_argument("--n_trials", type=int, default=1)
     args = p.parse_args()
+
+    ds = SupportedDataset(args.dataset)
 
     # Paths (per-dataset DB + CSV)
     here = pathlib.Path(__file__).parent
     study_base = here.parent.name
-    study_name = f"{study_base}_{args.dataset}"
-    db_path = here / f"real_nvp_hpo_{args.dataset}.db"
-    csv = here / f"trials_{args.dataset}.csv"
+    study_name = f"{study_base}_{ds.default_cfg.name}"
+    db_path = here / f"real_nvp_hpo_{ds.default_cfg.name}.db"
+    csv = here / f"trials_{ds.default_cfg.name}.csv"
 
     # Rebuild if DB missing, else load
     if not db_path.exists():
@@ -117,14 +122,14 @@ if __name__ == "__main__":
         study = load_study(study_name=study_name, sqlite_path=str(db_path))
 
     # Choose an objective provided by your code
-    base_objective = run_qm9_trial if args.dataset == "qm9" else run_zinc_trial
+    base_objective = run_qm9_trial if ds.default_cfg.base_dataset == "qm9" else run_zinc_trial
 
     # Wrapper to set exp_dir_name once params are known
     def objective(trial: optuna.Trial) -> float:
-        val = base_objective(trial)
+        val = base_objective(trial, dataset=ds)
         # After suggestions happened, params are available:
         cfg = dict(trial.params)
-        exp_dir = make_run_folder_name(cfg, dataset=args.dataset)
+        exp_dir = make_run_folder_name(cfg, dataset=ds.default_cfg.base_dataset, prefix=f"nvp_{ds.default_cfg.name}")
         trial.set_user_attr("exp_dir_name", exp_dir)
         return val
 
