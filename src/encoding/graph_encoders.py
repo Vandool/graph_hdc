@@ -1751,7 +1751,7 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    path: Path, cfg: HDCConfig, depth: int = 3, *, use_edge_codebook: bool = False
+    cfg: HDCConfig, path: Path = GLOBAL_MODEL_PATH, depth: int = 3, *, use_edge_codebook: bool = False
 ) -> HyperNet:
     dtype_sfx = "-f64" if cfg.dtype == "float64" else ""
     path = (

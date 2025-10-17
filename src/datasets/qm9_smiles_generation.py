@@ -42,6 +42,7 @@ from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
 from src.datasets.sa_score import calculateScore
+from src.encoding.graph_encoders import HyperNet
 from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
 
@@ -225,8 +226,9 @@ class QM9Smiles(InMemoryDataset):
 @torch.no_grad()
 def precompute_encodings(
     base_ds: QM9Smiles,
-    hypernet,
+    hypernet: HyperNet,
     *,
+    normalize: bool = False,
     batch_size: int = 1024,
     device: torch.device | None = None,
     out_suffix: str = "enc",  # writes data_<split>_enc.pt
@@ -254,7 +256,7 @@ def precompute_encodings(
     aug: list[Data] = []
     for batch in tqdm(loader, desc=f"encode[{base_ds.split}]", unit="batch", dynamic_ncols=True):
         batch = batch.to(device)
-        out = hypernet.forward(batch)  # expects batch.batch
+        out = hypernet.forward(batch, normalize=normalize)  # expects batch.batch
 
         graph_terms = out["graph_embedding"].detach().cpu()
         node_terms = out["node_terms"].detach().cpu()

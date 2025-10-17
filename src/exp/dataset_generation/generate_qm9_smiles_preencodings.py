@@ -3,8 +3,7 @@ from pathlib import Path
 
 from pytorch_lightning import seed_everything
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import precompute_encodings
+from src.datasets.qm9_smiles_generation import QM9Smiles, precompute_encodings
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG,
     QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG,
