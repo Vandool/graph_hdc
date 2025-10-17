@@ -916,7 +916,7 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
 
 def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
-    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 3072, step=512)
+    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 2048, step=512)
     flow_cfg.smax_initial = 2.5
     flow_cfg.smax_final = 7
     flow_cfg.smax_warmup_epochs = 17
