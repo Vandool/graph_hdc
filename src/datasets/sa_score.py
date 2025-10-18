@@ -27,7 +27,7 @@ def numBridgeheadsAndSpiro(mol, ri=None):
     return nBridge, nSpiro
 
 
-def calculateScore(m):
+def calculate_sa_score(m):
     global fragmentScore
     if fragmentScore is None:
         fragmentScore = readFragmentScores()

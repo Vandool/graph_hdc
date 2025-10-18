@@ -20,8 +20,8 @@ from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG,
     QM9_SMILES_HRR_1600_CONFIG_F64,
-    Features,
     DSHDCConfig,
+    Features,
     IndexRange,
 )
 from src.encoding.feature_encoders import (
@@ -986,13 +986,13 @@ class HyperNet(AbstractGraphEncoder):
         self._populate_edges_indexer()
 
         eps = 1e-6
+
         def target_reached(edges: list) -> bool:
             if len(edges) == 0:
                 return False
             available_edges_cnt = len(edges)  # undirected
             target_count = sum(u[1] + 1 for u, v in edges)
             return available_edges_cnt == target_count
-
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         # while not target_reached(decoded_edges):
@@ -1502,8 +1502,8 @@ class HyperNet(AbstractGraphEncoder):
         node_count = node_counter.total()
         edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
 
-        # decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
-        decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
+        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        # decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
 
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []
@@ -1686,62 +1686,63 @@ class HyperNet(AbstractGraphEncoder):
         are_final = [len(i) == 0 for i in edges_left]
         return graphs, are_final
 
-    # def decode_graph_2(
-    #     self,
-    #     node_counter: Counter,
-    #     edge_term: torch.Tensor,
-    #     graph_term: torch.Tensor,
-    #     decoder_settings: dict | None = None,
-    # ):
-    #     if decoder_settings is None:
-    #         decoder_settings = {}
-    #
-    #     def get_similarities(a, b):
-    #         if pruning_fn != "cos_sim":
-    #             diff = a[:, None, :] - b[None, :, :]
-    #             return torch.sum(diff**2, dim=-1)
-    #         return torchhd.cos(a, b)
-    #
-    #     def get_least_popular(ctr):
-    #         return ctr.most_common()[::-1]
-    #
-    #     node_count = node_counter.total()
-    #     edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
-    #
-    #     decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
-    #     edge_counter = Counter(decoded_edges)
-    #
-    #     ## We have the multiset of nodes and the multiset of edges
-    #     first_pop: list[tuple[nx.Graph, list[tuple]]] = []
-    #     global_seen: set = set()
-    #     for k, (u_t, v_t) in enumerate(decoded_edges):
-    #         G = nx.Graph()
-    #         uid = add_node_with_feat(G, Feat.from_tuple(u_t))
-    #         ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=node_count) is not None
-    #         if not ok:
-    #             continue
-    #         key = _hash(G)
-    #         if key in global_seen:
-    #             continue
-    #         global_seen.add(key)
-    #         remaining_edges = edge_counter.copy()
-    #         remaining_edges[(u_t, v_t)] -= 1
-    #         remaining_edges[(v_t, u_t)] -= 1
-    #         remaining_edges += Counter() # This cleans up the countre (removes all the zero entries)
-    #         first_pop.append((G, remaining_edges))
-    #
-    #     # Pick one child
-    #     # Start with a child with both anchors free / or not
-    #     selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
-    #     first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
-    #
-    #     gid = 1
-    #     history = defaultdict(list)
-    #     history[gid] = first_pop
-    #
-    #     breeder = first_pop
-    #     while True:
-    #         # We want expand in dfs manner
+    def decode_graph_edge_based(
+        self,
+        node_counter: Counter,
+        edge_term: torch.Tensor,
+        graph_term: torch.Tensor,
+        decoder_settings: dict | None = None,
+    ):
+        if decoder_settings is None:
+            decoder_settings = {}
+
+        def get_similarities(a, b):
+            if pruning_fn != "cos_sim":
+                diff = a[:, None, :] - b[None, :, :]
+                return torch.sum(diff**2, dim=-1)
+            return torchhd.cos(a, b)
+
+        def get_least_popular(ctr):
+            return ctr.most_common()[::-1]
+
+        node_count = node_counter.total()
+        edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
+
+        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        edge_counter = Counter(decoded_edges)
+
+        ## We have the multiset of nodes and the multiset of edges
+        first_pop: list[tuple[nx.Graph, list[tuple]]] = []
+        global_seen: set = set()
+        for k, (u_t, v_t) in enumerate(decoded_edges):
+            G = nx.Graph()
+            uid = add_node_with_feat(G, Feat.from_tuple(u_t))
+            ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=node_count) is not None
+            if not ok:
+                continue
+            key = _hash(G)
+            if key in global_seen:
+                continue
+            global_seen.add(key)
+            remaining_edges = edge_counter.copy()
+            remaining_edges[(u_t, v_t)] -= 1
+            remaining_edges[(v_t, u_t)] -= 1
+            remaining_edges += Counter()  # This cleans up the countre (removes all the zero entries)
+            first_pop.append((G, remaining_edges))
+
+        # Pick one child
+        # Start with a child with both anchors free / or not
+        selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
+        first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
+
+        gid = 1
+        history = defaultdict(list)
+        history[gid] = first_pop
+
+        breeder = first_pop
+        while True:
+            # We want expand in dfs manner
+            break
 
     def use_edge_features(self) -> bool:
         return len(self.edge_encoder_map) > 0
