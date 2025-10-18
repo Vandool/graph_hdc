@@ -69,9 +69,8 @@ def _normalize_act(act_val: Any) -> str:
 
 def make_run_folder_name(
     cfg: Mapping[str, Any],
-    dataset: str,
     *,
-    prefix: str = "lpr-3d-HRR5120D5",
+    prefix: str = "lpr",
     key_alias: Mapping[str, str] | None = None,
     ordered_keys: Sequence[str] = (
         "hidden",  # derived from depth/h1..h3 if not explicitly given
@@ -103,7 +102,7 @@ def make_run_folder_name(
         **(key_alias or {}),
     }
 
-    parts: list[str] = [prefix, dataset.lower()]
+    parts: list[str] = [prefix]
 
     # Ensure 'hidden' is present (derive from depth/h1..h3 if needed)
     derived_hidden = _derive_hidden(cfg)

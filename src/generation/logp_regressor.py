@@ -100,28 +100,28 @@ class LogPRegressor(pl.LightningModule):
         self.test_r2.reset()
 
     def _flat_from_batch(self, batch) -> torch.Tensor:
-        D = self.hparams.input_dim // 3
+        D = self.hparams.input_dim // 2
         B = batch.num_graphs
-        n = batch.node_terms.as_subclass(torch.Tensor)
+        # n = batch.node_terms.as_subclass(torch.Tensor)
         e = batch.edge_terms.as_subclass(torch.Tensor)
         g = batch.graph_terms.as_subclass(torch.Tensor)
 
         # cast to module dtype (fp64 on A100, fp32 locally)
         td = self.dtype
-        if n.dtype.is_floating_point:
-            n = n.to(td)
+        # if n.dtype.is_floating_point:
+        #     n = n.to(td)
         if e.dtype.is_floating_point:
             e = e.to(td)
         if g.dtype.is_floating_point:
             g = g.to(td)
 
-        if n.dim() == 1:
-            n = n.view(B, D)
+        # if n.dim() == 1:
+        #     n = n.view(B, D)
         if e.dim() == 1:
             e = e.view(B, D)
         if g.dim() == 1:
             g = g.view(B, D)
-        return torch.cat([n, e, g], dim=-1).contiguous()
+        return torch.cat([e, g], dim=-1).contiguous()
 
     def forward(self, batch) -> torch.Tensor:
         # batch.node_terms: [B*D], batch.graph_terms: [B*D]

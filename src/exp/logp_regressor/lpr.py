@@ -22,8 +22,7 @@ from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from torch_geometric.loader import DataLoader
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
@@ -250,15 +249,11 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     log("Hypernet ready.")
 
     # ----- datasets / loaders -----
-    log(f"Loading {cfg.dataset.value} pair datasets.")
-    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600_F64:
-        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600F64")
-        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600F64")
-    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_5120D5_F64:
-        train_dataset = ZincSmiles(split="train", enc_suffix="HRR5120D5")
-        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR5120D5")
+    log(f"Loading {ds_cfg.base_dataset} pair datasets.")
+    train_dataset = get_split(split="train", ds_config=ds_cfg)
+    validation_dataset = get_split(split="valid", ds_config=ds_cfg)
     log(
-        f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+        f"Pairs loaded for {ds_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
 
     # pick worker counts per GPU; tune for your cluster
@@ -291,10 +286,9 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # ----- model / trainer -----
-    # model = RealNVPV2Lightning(cfg)
     model = resolve_model(
         "LPR",
-        input_dim=3 * cfg.hv_dim,
+        input_dim=cfg.dataset.default_cfg.hv_count * cfg.hv_dim,
         hidden_dims=cfg.hidden_dims,
         activation=cfg.activation,
         dropout=cfg.dropout,
@@ -383,55 +377,59 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     return min_val_loss, best_epoch
 
 
-def get_cfg(trial: optuna.Trial, dataset: str):
-    cfg = {
+def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
+    if dataset.default_cfg.base_dataset == "qm9":
+        h1_min, h1_max = 512, 1536
+        h2_min, h2_max = 128, 1024
+    else:
+        h1_min, h1_max = 1024, 3072
+        h2_min, h2_max = 512, 1536
+
+    h3_min, h3_max = 64, 512
+    h4_min, h4_max = 32, 256
+
+    # Suggest all parameters
+    cfg_dict = {
         "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
-        "weight_decay": trial.suggest_categorical(
-            "weight_decay",
-            [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
-        ),
+        "weight_decay": trial.suggest_categorical("weight_decay", [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
         "depth": trial.suggest_categorical("depth", [2, 3, 4]),
-        "h1": trial.suggest_int("h1", 256, 2560, step=256),
-        "h2": trial.suggest_int("h2", 128, 1280, step=128),
-        "h3": trial.suggest_int("h3", 64, 512, step=64),
-        "h4": trial.suggest_int("h4", 32, 256, step=32),
-        "activation": trial.suggest_categorical("activation", ACTS.keys()),
+        "h1": trial.suggest_int("h1", h1_min, h1_max, step=256),
+        "h2": trial.suggest_int("h2", h2_min, h2_max, step=128),
+        "h3": trial.suggest_int("h3", h3_min, h3_max, step=64),
+        "h4": trial.suggest_int("h4", h4_min, h4_max, step=32),
+        "activation": trial.suggest_categorical("activation", list(ACTS.keys())),
+        "norm": trial.suggest_categorical("norm", list(NORMS.keys())),
         "dropout": trial.suggest_float("dropout", 0.0, 0.2),
-        "norm": trial.suggest_categorical("norm", NORMS.keys()),
     }
 
-    # build hidden_dims from depth
-    hidden_dims = [cfg["h1"]]
-    if cfg["depth"] >= 2:
-        hidden_dims.append(cfg["h2"])
-    if cfg["depth"] >= 3:
-        hidden_dims.append(cfg["h3"])
-    if cfg["depth"] >= 4:
-        hidden_dims.append(cfg["h4"])
+    # Build hidden_dims from depth
+    depth = cfg_dict["depth"]
+    hidden_dims = [cfg_dict["h1"]]
+    if depth >= 2:
+        hidden_dims.append(cfg_dict["h2"])
+    if depth >= 3:
+        hidden_dims.append(cfg_dict["h3"])
+    if depth >= 4:
+        hidden_dims.append(cfg_dict["h4"])
+    hidden_dims = sorted(hidden_dims, reverse=True)
 
+    # Create Config object
     lpr_cfg = Config()
-    lpr_cfg.batch_size = cfg["batch_size"]
-    lpr_cfg.lr = cfg["lr"]
-    lpr_cfg.weight_decay = cfg["weight_decay"]
-    lpr_cfg.hidden_dims = sorted(hidden_dims, reverse=True)
-    lpr_cfg.activation = cfg["activation"]
-    lpr_cfg.norm = cfg["norm"]
-    lpr_cfg.dropout = cfg["dropout"]
+    lpr_cfg.batch_size = cfg_dict["batch_size"]
+    lpr_cfg.lr = cfg_dict["lr"]
+    lpr_cfg.weight_decay = cfg_dict["weight_decay"]
+    lpr_cfg.activation = cfg_dict["activation"]
+    lpr_cfg.norm = cfg_dict["norm"]
+    lpr_cfg.dropout = cfg_dict["dropout"]
+    lpr_cfg.hidden_dims = hidden_dims
+    lpr_cfg.dataset = dataset
+    lpr_cfg.hv_dim = dataset.default_cfg.hv_dim
+    lpr_cfg.exp_dir_name = make_run_folder_name(cfg_dict, prefix=f"lpr_{dataset.default_cfg.name}")
 
-    lpr_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
     return lpr_cfg
 
 
-def run_qm9_trial(trial: optuna.Trial):
-    lpr_cfg = get_cfg(trial, dataset="qm9")
-    lpr_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64
-    lpr_cfg.hv_dim = 40 * 40
-    return run_experiment(lpr_cfg, trial)
-
-
-def run_zinc_trial(trial: optuna.Trial):
-    lpr_cfg = get_cfg(trial, dataset="zinc")
-    lpr_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_5120D5_F64
-    lpr_cfg.hv_dim = 5120
+def run_trial(trial: optuna.Trial, dataset: SupportedDataset):
+    lpr_cfg = get_cfg(trial, dataset=dataset)
     return run_experiment(lpr_cfg, trial)

@@ -37,12 +37,12 @@ def rebuild_study_from_csv(
 
     if not csv.exists():
         print("No CSV; nothing to rebuild.")
-        return None
+        return study
 
     df = pd.read_csv(csv)
     if df.empty:
         print(f"Empty CSV@{csv}; nothing to rebuild.")
-        return None
+        return study
 
     added = 0
     for _, r in df.iterrows():
@@ -75,7 +75,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
     rows = []
     for t in study.get_trials(deepcopy=False):
         # Preferred: use stored user_attr; fallback: recompute from params
-        exp_dir = t.user_attrs.get("exp_dir_name") or make_run_folder_name(t.params)
+        exp_dir = t.user_attrs.get("exp_dir_name")
         row = {
             "dataset": dataset,
             "exp_dir_name": exp_dir,  # <-- include in CSV
