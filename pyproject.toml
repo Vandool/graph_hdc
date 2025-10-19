@@ -53,6 +53,7 @@ botorch            = "*"
 gpytorch           = "*"
 setuptools         = "*"
 altair-all         = "*"
+z3-solver          = "*"
 
 [tool.pixi.pypi-dependencies]
 graph_hdc        = { path = ".", editable = true }
