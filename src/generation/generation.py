@@ -10,6 +10,7 @@ import torch
 import torchhd
 from networkx import Graph
 from torch_geometric.data import Batch
+from torchhd import VSATensor
 from tqdm.auto import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
@@ -80,19 +81,19 @@ class AbstractGenerator(abc.ABC):
         node_terms = samples["node_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
         edge_terms = samples["edge_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
         graph_terms = samples["graph_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
-        return self.decode(node_terms, edge_terms, graph_terms)
+        return self.decode(node_terms=node_terms, edge_terms=edge_terms, graph_terms=graph_terms)
 
     def decode(
         self,
-        edge_terms: torch.Tensor,
-        graph_terms: torch.Tensor,
-        node_terms: torch.Tensor | None = None,
+        edge_terms: VSATensor,
+        graph_terms: VSATensor,
+        node_terms: VSATensor | None = None,
         *,
         only_final_graphs: bool = False,
     ):
         n_samples = graph_terms.shape[0]
         full_ctrs: dict[int, Counter[tuple[int, ...]]] | None = None
-        if node_terms:
+        if node_terms is not None:
             full_ctrs: dict[int, Counter[tuple[int, ...]]] = self.hypernet.decode_order_zero_counter(node_terms)
 
         best_graphs: list[Graph] = []
@@ -100,6 +101,7 @@ class AbstractGenerator(abc.ABC):
         all_similarities: list[list[float]] = []
 
         for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
+            full_ctr = None
             if full_ctrs:
                 full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
                 total_node_limit = 20 if self.base_dataset == "qm9" else 50
@@ -166,15 +168,29 @@ class HDCGenerator(AbstractGenerator):
         graph_term: torch.Tensor,
         node_counter: Counter[tuple[int, ...]] | None = None,
     ) -> tuple[list[nx.Graph], list[bool]]:
-        if node_counter:
-            return self.hypernet.decode_graph(
-                node_counter=node_counter,
-                edge_term=edge_term,
-                graph_term=graph_term,
-                decoder_settings=self.decoder_settings,
-            )
-        return self.hypernet.decode_graph()
+        # TODO: Here we expand the 2D type
+        return self.hypernet.decode_graph(
+            node_counter=node_counter,
+            edge_term=edge_term,
+            graph_term=graph_term,
+            decoder_settings=self.decoder_settings,
+        )
 
+@attr.define(slots=True, kw_only=True)
+class HDCZ3Generator(AbstractGenerator):
+    def _decode_single_graph(
+            self,
+            edge_term: torch.Tensor,
+            graph_term: torch.Tensor,
+            node_counter: Counter[tuple[int, ...]] | None = None,
+    ) -> tuple[list[nx.Graph], list[bool]]:
+        # TODO: Here we expand the 2D type
+        return self.hypernet.decode_graph_z3(
+            node_counter=node_counter,
+            edge_term=edge_term,
+            graph_term=graph_term,
+            decoder_settings=self.decoder_settings,
+        )
 
 @attr.define(slots=True, kw_only=True)
 class OracleGenerator(AbstractGenerator):

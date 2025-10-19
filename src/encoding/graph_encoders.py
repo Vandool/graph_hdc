@@ -33,6 +33,7 @@ from src.encoding.feature_encoders import (
     TrueFalseEncoder,
 )
 from src.encoding.the_types import Feat, VSAModel
+from src.encoding.z3_decoder import enumerate_graphs
 from src.utils.nx_utils import (
     _hash,
     add_node_and_connect,
@@ -1499,12 +1500,25 @@ class HyperNet(AbstractGraphEncoder):
         if decoder_settings is None:
             decoder_settings = {}
 
+        # Case 2D/3D vectors with G0 encoded
+        if node_counter:
+            decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        else:
+            decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
+            edge_count = len(decoded_edges) // 2  # bidirectional edges
+            # Only using the edges and the degree of the nodes we can count the number of nodes
+            node_degree_counter = Counter()
+            for u, v in decoded_edges:
+                # First we count the node types that have an outgoing edge
+                _, deg_idx, _, _ = u
+                node_degree_counter[u] += 1
+            node_counter = Counter()
+            for k, v in node_degree_counter.items():
+                # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
+                node_counter[k] = v // (k[1] + 1)
+
         node_count = node_counter.total()
         edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
-
-        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
-        # decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
-
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []
         global_seen: set = set()
@@ -1686,63 +1700,41 @@ class HyperNet(AbstractGraphEncoder):
         are_final = [len(i) == 0 for i in edges_left]
         return graphs, are_final
 
-    def decode_graph_edge_based(
+    def decode_graph_z3(
         self,
-        node_counter: Counter,
         edge_term: torch.Tensor,
-        graph_term: torch.Tensor,
+        graph_term: torch.Tensor | None = None,
+        node_counter: Counter | None = None,
         decoder_settings: dict | None = None,
     ):
         if decoder_settings is None:
             decoder_settings = {}
+        max_solutions = decoder_settings.get("max_solutions", 1000)
 
-        def get_similarities(a, b):
-            if pruning_fn != "cos_sim":
-                diff = a[:, None, :] - b[None, :, :]
-                return torch.sum(diff**2, dim=-1)
-            return torchhd.cos(a, b)
+        # Case 2D/3D vectors with G0 encoded
+        if node_counter:
+            decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+        else:
+            decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
+            # Only using the edges and the degree of the nodes we can count the number of nodes
+            node_degree_counter = Counter()
+            for u, v in decoded_edges:
+                # First we count the node types that have an outgoing edge
+                _, deg_idx, _, _ = u
+                node_degree_counter[u] += 1
+            node_counter = Counter()
+            for k, v in node_degree_counter.items():
+                # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
+                node_counter[k] = v // (k[1] + 1)
 
-        def get_least_popular(ctr):
-            return ctr.most_common()[::-1]
+        candidates = enumerate_graphs(
+            nodes_multiset=list(node_counter.elements()), edges_multiset=decoded_edges, max_solutions=max_solutions
+        )
 
-        node_count = node_counter.total()
-        edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
-
-        decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
-        edge_counter = Counter(decoded_edges)
-
-        ## We have the multiset of nodes and the multiset of edges
-        first_pop: list[tuple[nx.Graph, list[tuple]]] = []
-        global_seen: set = set()
-        for k, (u_t, v_t) in enumerate(decoded_edges):
-            G = nx.Graph()
-            uid = add_node_with_feat(G, Feat.from_tuple(u_t))
-            ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=node_count) is not None
-            if not ok:
-                continue
-            key = _hash(G)
-            if key in global_seen:
-                continue
-            global_seen.add(key)
-            remaining_edges = edge_counter.copy()
-            remaining_edges[(u_t, v_t)] -= 1
-            remaining_edges[(v_t, u_t)] -= 1
-            remaining_edges += Counter()  # This cleans up the countre (removes all the zero entries)
-            first_pop.append((G, remaining_edges))
-
-        # Pick one child
-        # Start with a child with both anchors free / or not
-        selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
-        first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
-
-        gid = 1
-        history = defaultdict(list)
-        history[gid] = first_pop
-
-        breeder = first_pop
-        while True:
-            # We want expand in dfs manner
-            break
+        return [
+            DataTransformer.z3_res_to_nx(ordered_nodes=c["ordered_nodes"], edge_indexes=c["associated_edge_idxs"])
+            for c in candidates
+        ], [True] * len(candidates)  # z3 results are all final
 
     def use_edge_features(self) -> bool:
         return len(self.edge_encoder_map) > 0
@@ -1752,7 +1744,12 @@ class HyperNet(AbstractGraphEncoder):
 
 
 def load_or_create_hypernet(
-    cfg: DSHDCConfig, path: Path = GLOBAL_MODEL_PATH, depth: int = 3, *, use_edge_codebook: bool = False
+    cfg: DSHDCConfig,
+    path: Path = GLOBAL_MODEL_PATH,
+    depth: int = 3,
+    *,
+    use_edge_codebook: bool = False,
+    do_print: bool = True,
 ) -> HyperNet:
     dtype_sfx = "-f64" if cfg.dtype == "float64" else ""
     path = (
@@ -1760,15 +1757,17 @@ def load_or_create_hypernet(
         / f"hypernet_{cfg.name}_{cfg.vsa.value}_dim{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}{dtype_sfx}.pt"
     )
     if path.exists():
-        print(f"Loading existing HyperNet from {path}")
+        if do_print:
+            print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet.load(path=path)
     else:
-        print("Creating new HyperNet instance.")
-        dtype = torch.float64 if cfg.dtype == "float64" else torch.float32
+        if do_print:
+            print("Creating new HyperNet instance.")
         encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
         encoder.populate_codebooks()
         encoder.save_to_path(path)
-        print(f"Saved new HyperNet to {path}")
+        if do_print:
+            print(f"Saved new HyperNet to {path}")
     return encoder
 
 

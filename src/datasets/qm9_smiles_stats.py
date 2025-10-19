@@ -1,11 +1,10 @@
-import random
 from collections import Counter
 from pathlib import Path
 
 import torch
-from torch_geometric.data import Data
-
 from rdkit import Chem
+from rdkit.Chem import rdmolops
+from torch_geometric.data import Data
 
 root: Path = Path("/home/akaveh/Projects/kit/graph_hdc")
 smiles_dir: Path = root / "Smiles/QM9_smile"
@@ -16,6 +15,7 @@ files: list[Path] = [
 ]
 N: int = 100  # target count
 
+
 def atom_key(a):
     """
     Create the categorical 'atom type' key similar to the one
@@ -25,11 +25,12 @@ def atom_key(a):
     -> Its not fully aligned with ZINC yet since it generates 45 categories, where ZINC250 has 28 distinct atom types
     """
     return (
-        a.GetSymbol(),              # element
-        a.GetFormalCharge(),        # e.g. +1 in [NH3+]
-        a.GetIsAromatic(),          # boolean
+        a.GetSymbol(),  # element
+        a.GetFormalCharge(),  # e.g. +1 in [NH3+]
+        a.GetIsAromatic(),  # boolean
         a.GetTotalNumHs(includeNeighbors=True),
     )
+
 
 def iter_smiles(file: Path):
     """Yield SMILES strings from each file, skipping an optional header."""
@@ -41,10 +42,9 @@ def iter_smiles(file: Path):
             if s:
                 yield s
 
+
 def build_lookup_pyg_aligned(mols):
-    keys = sorted({atom_key(a)
-                   for m in mols
-                   for a in m.GetAtoms()})
+    keys = sorted({atom_key(a) for m in mols for a in m.GetAtoms()})
     atom2idx = {k: i for i, k in enumerate(keys)}
     idx2atom = {i: k for k, i in atom2idx.items()}
     return atom2idx, idx2atom
@@ -61,19 +61,23 @@ def mol_to_data_pyg_aligned(m, atom2idx):
     x, ei_src, ei_dst = [], [], []
     for a in m.GetAtoms():
         k = atom_key(a)
-        x.append([
-            float(atom2idx[k]),                 # categorical index
-            float(a.GetDegree()),               # degree
-            float(a.GetTotalNumHs())  # #H
-        ])
+        x.append(
+            [
+                float(atom2idx[k]),  # categorical index
+                float(a.GetDegree()),  # degree
+                float(a.GetTotalNumHs()),  # #H
+            ]
+        )
     for b in m.GetBonds():
         i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-        ei_src += [i, j];  ei_dst += [j, i]
+        ei_src += [i, j]
+        ei_dst += [j, i]
     return Data(
         x=torch.tensor(x, dtype=torch.float32),
         edge_index=torch.tensor([ei_src, ei_dst], dtype=torch.long),
-        smiles=Chem.MolToSmiles(m)
+        smiles=Chem.MolToSmiles(m),
     )
+
 
 def mol_to_data(mol: Chem.rdchem.Mol, atom2idx: dict):
     x = [
@@ -101,10 +105,24 @@ if __name__ == "__main__":
     test_smiles = list(iter_smiles(files[1]))
     valid_smiles = list(iter_smiles(files[2]))
 
-
     train_mols = [Chem.MolFromSmiles(s) for s in train_smiles]
     test_mols = [Chem.MolFromSmiles(s) for s in test_smiles]
     valid_mols = [Chem.MolFromSmiles(s) for s in valid_smiles]
+
+    # --- Simple connectivity analysis ---
+    for name, mols, smiles in [
+        ("train", train_mols, train_smiles),
+        ("test", test_mols, test_smiles),
+        ("valid", valid_mols, valid_smiles),
+    ]:
+        not_connected = 0
+        for i, m in enumerate(mols):
+            if m is None:
+                continue
+            if len(rdmolops.GetMolFrags(m)) > 1:
+                print(f"[{name}-{i}] {smiles[i]} is not fully connected")
+                not_connected += 1
+        print(f"[{name}] not fully connected molecules: {not_connected} / {len(mols)}")
 
     atom_types = set()
     degrees = set()
@@ -226,13 +244,13 @@ while any open_slots > 0:
 Add the “nice-to-haves” as constraints and the search collapses from astronomically large to something solvable for normal drug-like molecules.
 """
 
-    # ## Pyg Aligned
-    # atom2idx_pyg, idx2atom_pyg = build_lookup_pyg_aligned(set(train_mols + valid_mols + test_mols))
-    # train_dataset = [mol_to_data_pyg_aligned(m, atom2idx_pyg) for m in train_mols]
-    # test_dataset = [mol_to_data_pyg_aligned(m, atom2idx_pyg) for m in test_mols]
-    # valid_dataset = [mol_to_data_pyg_aligned(m, atom2idx_pyg) for m in valid_mols]
-    #
-    # print(len(debug_set))
-    # ---- results ----
-    # dataset : list[Data] ready for PyG loaders
-    # idx2atom: {int: str}  reverse mapping for atom indices
+# ## Pyg Aligned
+# atom2idx_pyg, idx2atom_pyg = build_lookup_pyg_aligned(set(train_mols + valid_mols + test_mols))
+# train_dataset = [mol_to_data_pyg_aligned(m, atom2idx_pyg) for m in train_mols]
+# test_dataset = [mol_to_data_pyg_aligned(m, atom2idx_pyg) for m in test_mols]
+# valid_dataset = [mol_to_data_pyg_aligned(m, atom2idx_pyg) for m in valid_mols]
+#
+# print(len(debug_set))
+# ---- results ----
+# dataset : list[Data] ready for PyG loaders
+# idx2atom: {int: str}  reverse mapping for atom indices

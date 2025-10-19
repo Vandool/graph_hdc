@@ -10,6 +10,7 @@ artifacts/
 datasests/
 _datasets/
 _models/
+_artefacts/
 
 # VS Code
 .idea/

@@ -597,6 +597,44 @@ class DataTransformer:
         return G
 
     @staticmethod
+    def z3_res_to_nx(
+        ordered_nodes: list[tuple[int, int, int, int]],
+        edge_indexes: list[list[int, int]],
+    ) -> nx.Graph:
+        """
+        Build an undirected NetworkX graph from an enumeration result.
+
+        :param ordered_nodes: Node features in canonical order; each entry is a 4-tuple
+            (atom_type, degree_idx, formal_charge_idx, explicit_hs).
+        :param edge_indexes: Edge list as [u, v] pairs (may contain both directions).
+        :returns: Undirected nx.Graph with node attribute ``feat: Feat``.
+        :raises ValueError: If an edge index is out of range or malformed.
+        """
+        G = nx.Graph()
+
+        # Add nodes with Feat
+        for i, t in enumerate(ordered_nodes):
+            G.add_node(i, feat=Feat.from_tuple(t))
+
+        n = len(ordered_nodes)
+
+        # Deduplicate and add undirected edges
+        undirected_edges = set()
+        for pair in edge_indexes:
+            if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
+                raise ValueError(f"Malformed edge pair: {pair!r}")
+            u, v = int(pair[0]), int(pair[1])
+            if u == v:
+                continue  # ignore self-loops (problem disallows them)
+            if not (0 <= u < n and 0 <= v < n):
+                raise ValueError(f"Edge index out of range: ({u}, {v}) for n={n}")
+            a, b = (u, v) if u < v else (v, u)
+            undirected_edges.add((a, b))
+
+        G.add_edges_from(undirected_edges)
+        return G
+
+    @staticmethod
     def to_tuple_list(edge_index: Tensor) -> list[tuple[int, ...]]:
         return list(map(tuple, edge_index.T.tolist()))
 

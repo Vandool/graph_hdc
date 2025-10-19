@@ -899,14 +899,11 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
             "weight_decay",
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
-        "num_flows": trial.suggest_int("num_flows", 4, 16),
     }
     flow_cfg = FlowConfig()
     for k, v in cfg.items():
         setattr(flow_cfg, k, v)
-    flow_cfg.exp_dir_name = make_run_folder_name(
-        cfg, prefix=f"nvp_{dataset.default_cfg.name}"
-    )
+    flow_cfg.exp_dir_name = make_run_folder_name(cfg, prefix=f"nvp_{dataset.default_cfg.name}")
     flow_cfg.dataset = dataset
     flow_cfg.hv_dim = dataset.default_cfg.hv_dim
     flow_cfg.hv_count = dataset.default_cfg.hv_count
@@ -917,6 +914,7 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
 def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
     flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 2048, step=512)
+    flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 12)
     flow_cfg.smax_initial = 2.5
     flow_cfg.smax_final = 7
     flow_cfg.smax_warmup_epochs = 17
@@ -926,6 +924,7 @@ def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
 def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
     flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 400, 1600, step=400)
+    flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 16)
     flow_cfg.smax_initial = 2.2
     flow_cfg.smax_final = 6.5
     flow_cfg.smax_warmup_epochs = 16

@@ -121,30 +121,23 @@ def eval_generation(
     if plot:
         # --- dataset side ---
         ds = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
-        ds_num_nodes = [int(d.num_nodes) for d in ds]
-        ds_num_edges = [int(d.num_edges) // 2 for d in ds]  # PyG stores undirected edges twice
-
-        ds_logp, ds_qed, ds_sa = [], [], []
+        ds_num_nodes, ds_num_edges, ds_logp, ds_qed, ds_sa = [], [], [], [], []
         for d in ds:
-            if hasattr(d, "logp"):
-                lp = d.logp
-                lp = float(lp.detach().cpu().reshape(-1)[0]) if isinstance(lp, torch.Tensor) else float(lp)
-                ds_logp.append(lp)
-            if hasattr(d, "qed"):
-                q = d.qed
-                q = float(q.detach().cpu().reshape(-1)[0]) if isinstance(q, torch.Tensor) else float(q)
-                ds_qed.append(q)
-            if hasattr(d, "sa_score"):
-                s = d.sa_score
-                s = float(s.detach().cpu().reshape(-1)[0]) if isinstance(s, torch.Tensor) else float(s)
-                ds_sa.append(s)
+            ds_num_nodes.append(int(d.num_nodes))
+            ds_num_edges.append(int(d.num_edges))
+            ds_logp.append(float(d.logp.detach().cpu().reshape(-1)[0]))
+            ds_qed.append(float(d.qed.detach().cpu().reshape(-1)[0]))
+            ds_sa.append(float(d.sa_score.detach().cpu().reshape(-1)[0]))
 
         # --- generated side (valid molecules only) ---
-        gen_num_nodes = [g.number_of_nodes() for g, f in zip(nx_graphs, final_flags, strict=False) if f]
-        gen_num_edges = [g.number_of_edges() for g, f in zip(nx_graphs, final_flags, strict=False) if f]
-        gen_logp = logp_gen_list.tolist() if isinstance(logp_gen_list, np.ndarray) else list(logp_gen_list)
-        gen_qed = [float(QED.qed(m)) for m, v in zip(mols, valid_flags, strict=False) if v]
-        gen_sa = [float(calculate_sa_score(m)) for m, v in zip(mols, valid_flags, strict=False) if v]
+        gen_num_nodes, gen_num_edges, gen_logp, gen_qed, gen_sa = [], [], [], [], []
+        for mol, valid in zip(mols, valid_flags, strict=False):
+            if valid:
+                gen_num_nodes.append(int(mol.GetNumAtoms()))
+                gen_num_edges.append(int(mol.GetNumBonds()))
+                gen_logp.append(float(rdkit_logp(mol)))
+                gen_qed.append(float(QED.qed(mol)))
+                gen_sa.append(float(calculate_sa_score(mol)))
 
         def kde_overlay(a, b, xlabel, title, path):
             a, b = np.array(a), np.array(b)
@@ -214,6 +207,33 @@ def eval_generation(
         sns_kde_overlay(ds_logp, gen_logp, "logP", "logP distribution", base_dir / "seaborn_logp.pdf")
         sns_kde_overlay(ds_qed, gen_qed, "QED", "QED distribution", base_dir / "seaborn_qed.pdf")
         sns_kde_overlay(ds_sa, gen_sa, "SA score", "SA distribution", base_dir / "seaborn_sa.pdf")
+
+        # Sims distribution
+        sims_valid = [float(s) for s, v in zip(sims, valid_flags, strict=False) if v]
+        sims_valid = np.asarray(sims_valid, dtype=float)
+        x = np.linspace(sims_valid.min(), sims_valid.max(), 512)
+
+        # Matplotlib
+        plt.figure(figsize=(5.5, 3.8))
+        plt.plot(x, gaussian_kde(sims_valid)(x), linewidth=2, label="Generated (valid)")
+        plt.xlabel("Similarity")
+        plt.ylabel("Density")
+        plt.title(f"{base_dataset} – Similarity distribution")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(base_dir / "matplotlib_sims.pdf", bbox_inches="tight")
+        plt.close()
+
+        # Seaborn
+        plt.figure(figsize=(5.5, 3.8))
+        sns.kdeplot(sims_valid, label="Generated (valid)", linewidth=2)
+        plt.xlabel("Similarity")
+        plt.ylabel("Density")
+        plt.title(f"{base_dataset} – Similarity distribution")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(base_dir / "seaborn_sims.pdf", bbox_inches="tight")
+        plt.close()
 
     return results
 
