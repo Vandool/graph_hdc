@@ -65,6 +65,7 @@ rich-click       = ">=1.8.0"
 jsonpickle       = ">=4.0.0"
 python-decouple  = ">=3.6"
 z3-solver          = "*"
+deepchem           = "*"
 
 # CUDA ONLY for local-gpu env
 [tool.pixi.feature.gpu.dependencies]
