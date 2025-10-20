@@ -7,7 +7,6 @@ import random
 import shutil
 import string
 import time
-from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pprint
@@ -28,8 +27,9 @@ from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
+from src.generation.analyze import analyze_terms_only
 from src.utils.registery import resolve_model, retrieve_model
-from src.utils.utils import GLOBAL_MODEL_PATH, generated_node_edge_dist, pick_device
+from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 LOCAL_DEV = "LOCAL_HDC_miss"
 
@@ -356,9 +356,9 @@ class PeriodicNLLEval(Callback):
 
         # persist arrays (with epoch in file for easier joins)
         self.artefacts_dir.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame(stats)
-        df["epoch"] = epoch
-        df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
+        # df = pd.DataFrame(stats)
+        # df["epoch"] = epoch
+        # df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
 
         # compact scalar summary with consistent names
         summary = _summarize_arrays(stats)
@@ -695,7 +695,6 @@ def run_experiment(cfg: FlowConfig):
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # ----- model / trainer -----
-    # model = RealNVPV2Lightning(cfg)
     model = resolve_model("NVP", cfg=cfg).to(device=device)
 
     log(f"Model: {model!s}")
@@ -821,7 +820,8 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        samples = best_model.sample_split(10)  # each [K, D]
+        samples = best_model.sample_split(1000)  # each [K, D]
+        analyze_terms_only(samples, name=ds_cfg.name, pdf_dir=artefacts_dir)
         # node_s = samples["node_terms"]
         edge_s = samples["edge_terms"]
         graph_s = samples["graph_terms"]
@@ -834,21 +834,21 @@ def run_experiment(cfg: FlowConfig):
     log(f"graph_s device: {graph_s.device!s}")
     log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
 
-    # node_counters = hypernet.decode_order_zero_counter(node_s)
-    nodes_set = set(map(tuple, get_split("train", ds_config=cfg.dataset.default_cfg).x.long().tolist()))
-    hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
-    node_counters: dict[int, Counter] = {}
-    for i in range(edge_s.shape[0]):
-        node_counters[i] = Counter(
-            [pair for group in hypernet.decode_order_one_no_node_terms(edge_term=edge_s[i]) for pair in group]
-        )
-    report = generated_node_edge_dist(
-        generated_node_types=node_counters,
-        artefact_dir=artefacts_dir,
-        dataset_val=cfg.dataset.value,
-        dataset=train_dataset,
-    )
-    pprint(report)
+    # # node_counters = hypernet.decode_order_zero_counter(node_s)
+    # nodes_set = set(map(tuple, get_split("train", ds_config=cfg.dataset.default_cfg).x.long().tolist()))
+    # hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
+    # node_counters: dict[int, Counter] = {}
+    # for i in range(edge_s.shape[0]):
+    #     node_counters[i] = Counter(
+    #         [pair for group in hypernet.decode_order_one_no_node_terms(edge_term=edge_s[i]) for pair in group]
+    #     )
+    # report = generated_node_edge_dist(
+    #     generated_node_types=node_counters,
+    #     artefact_dir=artefacts_dir,
+    #     dataset_val=cfg.dataset.value,
+    #     dataset=train_dataset,
+    # )
+    # pprint(report)
 
     # node_np = node_s.detach().cpu().numpy()
     edge_np = edge_s.detach().cpu().numpy()
@@ -914,10 +914,12 @@ def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
     flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 2048, step=512)
     flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 12)
-    flow_cfg.exp_dir_name = make_run_folder_name(flow_cfg.__dict__, prefix=f"nvp_{dataset.default_cfg.name}")
     flow_cfg.smax_initial = 2.5
     flow_cfg.smax_final = 7
     flow_cfg.smax_warmup_epochs = 17
+    flow_cfg.exp_dir_name = make_run_folder_name(
+        {k: getattr(flow_cfg, k) for k in keys if k in flow_cfg.__dict__}, prefix=f"nvp_{dataset.default_cfg.name}"
+    )
     return run_experiment(flow_cfg)
 
 
@@ -925,8 +927,22 @@ def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
     flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 400, 1600, step=400)
     flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 16)
-    flow_cfg.exp_dir_name = make_run_folder_name(flow_cfg.__dict__, prefix=f"nvp_{dataset.default_cfg.name}")
     flow_cfg.smax_initial = 2.2
     flow_cfg.smax_final = 6.5
     flow_cfg.smax_warmup_epochs = 16
+    flow_cfg.exp_dir_name = make_run_folder_name(
+        {k: getattr(flow_cfg, k) for k in keys if k in flow_cfg.__dict__}, prefix=f"nvp_{dataset.default_cfg.name}"
+    )
     return run_experiment(flow_cfg)
+
+
+keys = {
+    "batch_size",
+    "lr",
+    "weight_decay",
+    "num_flows",
+    "num_hidden_channels",
+    "smax_initial",
+    "smax_final",
+    "smax_warmup_epochs",
+}
