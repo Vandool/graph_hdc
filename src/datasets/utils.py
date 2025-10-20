@@ -243,9 +243,10 @@ class Compose:
         return data
 
 
-def get_split(split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig):
+def get_split(split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig) -> DSHDCConfig:
     if ds_config.base_dataset == "qm9":
-        ds = QM9Smiles(split=split, enc_suffix=ds_config.name)
+        enc_suffix = ds_config.name if ds_config is not None else ""
+        ds = QM9Smiles(split=split, enc_suffix=enc_suffix)
 
         # --- Filter known disconnected molecules ---
         if split == "train":

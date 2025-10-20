@@ -390,116 +390,116 @@ def enumerate_graphs(
         print("No solution found.")
     return unique_final_graphs
 
-
-if __name__ == "__main__":
-    import random
-    import time
-    from pathlib import Path
-
-    import torch
-    import torchhd
-    import z3
-    from matplotlib import pyplot as plt
-    from torch_geometric.data import Batch, Data
-
-    from src.datasets.qm9_smiles_generation import QM9Smiles
-    from src.datasets.zinc_smiles_generation import ZincSmiles
-    from src.encoding.configs_and_constants import (
-        QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG,
-        ZINC_SMILES_HRR_6144_G1G4_CONFIG,
-    )
-    from src.encoding.graph_encoders import load_or_create_hypernet
-    from src.utils.chem import draw_mol
-    from src.utils.utils import DataTransformer
-    from src.utils.visualisations import draw_nx_with_atom_colorings
-
-    qm9 = QM9Smiles(split="train")
-    zinc = ZincSmiles(split="train")
-
-    sorted_qm9 = sorted(qm9, key=lambda x: len(x.x))
-    sorted_zinc = sorted(zinc, key=lambda x: len(x.x))
-
-    samples = {
-        "debug1": (qm9[0], "QM9Smiles"),
-        "debug2": (qm9[102], "QM9Smiles"),
-        "debug3": (qm9[103], "QM9Smiles"),
-        "small_1": (sorted_qm9[100], "QM9Smiles"),
-        "small_2": (sorted_qm9[10000], "QM9Smiles"),
-        "small_3": (sorted_qm9[-1], "QM9Smiles"),
-        "large_1": (sorted_zinc[1000], "ZincSmiles"),
-        "large_2": (zinc[10], "ZincSmiles"),
-        "large_3": (sorted_zinc[-100000], "ZincSmiles"),
-        "large_4": (sorted_zinc[-5000], "ZincSmiles"),
-        "large_5": (sorted_zinc[-1000], "ZincSmiles"),
-        "large_6": (ZincSmiles(split="test")[10], "ZincSmiles"),
-        "large_7": (sorted_zinc[-1], "ZincSmiles"),
-    }
-    examples = []
-    out = Path() / "plots"
-    out.mkdir(exist_ok=True, parents=True)
-    for i, (name, (data, dataset)) in enumerate(samples.items()):
-        res = {}
-        nx_g = DataTransformer.pyg_to_nx(data)
-        draw_nx_with_atom_colorings(nx_g, dataset=dataset)
-        plt.savefig(out / f"{name}_nx.png")
-        plt.show()
-        mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset="qm9" if dataset == "QM9Smiles" else "zinc")
-        draw_mol(mol=mol, save_path=str(out / f"{name}_mol.png"), fmt="png")
-        node_tuples = [tuple(i) for i in data.x.int().tolist()]
-        edge_idxs = [tuple(e) for e in data.edge_index.t().cpu().int().tolist()]
-        edge_tuples = [(node_tuples[u], node_tuples[v]) for u, v in edge_idxs]
-
-        # Input
-        print(f"{name}: |V|:{nx_g.number_of_nodes()} |E|:{nx_g.number_of_edges()}============================")
-        for max_sol in [1, 10, 100]:
-            t0 = time.perf_counter()
-            solutions = enumerate_graphs(
-                nodes_multiset=[tuple(e) for e in random.sample(node_tuples, k=len(node_tuples))],
-                edges_multiset=edge_tuples,
-                max_solutions=max_sol,
-            )
-            t_enum = time.perf_counter() - t0
-
-            def to_pyg_data(ordered_nodes, edge_indexes):
-                return Data(
-                    x=torch.tensor(ordered_nodes, dtype=torch.float),
-                    edge_index=(torch.tensor(edge_indexes, dtype=torch.long).t().contiguous()),
-                )
-
-            pygs = [to_pyg_data(sol["ordered_nodes"], sol["associated_edge_idxs"]) for sol in solutions]
-
-            ds_config = (
-                QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG
-                if dataset == "QM9Smiles"
-                else ZINC_SMILES_HRR_6144_G1G4_CONFIG
-            )
-            hypernet = load_or_create_hypernet(cfg=ds_config, do_print=False).to(torch.device("cpu")).eval()
-
-            target_hdc = hypernet.forward(Batch.from_data_list([data]))["graph_embedding"]
-            decoded_hdc = hypernet.forward(Batch.from_data_list(pygs))["graph_embedding"]
-            sims_t = torchhd.cos(target_hdc, decoded_hdc).flatten()
-
-            # Top-k (largest first)
-            k = min(3, sims_t.numel())
-            topk = torch.topk(sims_t, k=k)
-            top_idxs = topk.indices.tolist()
-            top_vals = topk.values.tolist()
-            print(f"Enumerated {len(solutions)} graphs in {t_enum:.2f}s - Best cos sim: {float(top_vals[0]):.2f}")
-            # Plot
-            fig, axes = plt.subplots(1, k, figsize=(4 * k, 4), constrained_layout=True)
-            if k == 1:
-                axes = [axes]
-
-            for ax, idx, val in zip(axes, top_idxs, top_vals, strict=False):
-                pyg = pygs[idx]
-                nx_g = DataTransformer.pyg_to_nx(pyg)
-
-                plt.sca(ax)  # draw_* uses current axes
-                draw_nx_with_atom_colorings(nx_g, dataset=dataset, label=f"[{name}-{idx}] sim {float(val):.2f}")
-                ax.set_axis_off()
-
-            plt.show()
-
-# Debug
-# nodes: [(0, 1, 0, 1), (0, 1, 0, 1), (0, 2, 0, 0), (2, 0, 0, 0), (2, 0, 0, 0), (2, 0, 0, 0), (1, 0, 0, 0), (1, 0, 0, 0), (0, 1, 0, 0)]
-# edgges: [((0, 1, 0, 1), (0, 2, 0, 0)), ((0, 2, 0, 0), (0, 1, 0, 1)), ((0, 1, 0, 1), (2, 0, 0, 0)), ((2, 0, 0, 0), (0, 1, 0, 1)), ((1, 0, 0, 0), (1, 0, 0, 0)), ((1, 0, 0, 0), (1, 0, 0, 0)), ((0, 1, 0, 1), (0, 2, 0, 0)), ((0, 2, 0, 0), (0, 1, 0, 1)), ((0, 1, 0, 0), (0, 2, 0, 0)), ((0, 2, 0, 0), (0, 1, 0, 0)), ((0, 1, 0, 0), (2, 0, 0, 0)), ((2, 0, 0, 0), (0, 1, 0, 0)), ((0, 1, 0, 1), (2, 0, 0, 0)), ((2, 0, 0, 0), (0, 1, 0, 1))]
+#
+# if __name__ == "__main__":
+#     import random
+#     import time
+#     from pathlib import Path
+#
+#     import torch
+#     import torchhd
+#     import z3
+#     from matplotlib import pyplot as plt
+#     from torch_geometric.data import Batch, Data
+#
+#     from src.datasets.qm9_smiles_generation import QM9Smiles
+#     from src.datasets.zinc_smiles_generation import ZincSmiles
+#     from src.encoding.configs_and_constants import (
+#         QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG,
+#         ZINC_SMILES_HRR_6144_G1G4_CONFIG,
+#     )
+#     from src.encoding.graph_encoders import load_or_create_hypernet
+#     from src.utils.chem import draw_mol
+#     from src.utils.utils import DataTransformer
+#     from src.utils.visualisations import draw_nx_with_atom_colorings
+#
+#     qm9 = QM9Smiles(split="train")
+#     zinc = ZincSmiles(split="train")
+#
+#     sorted_qm9 = sorted(qm9, key=lambda x: len(x.x))
+#     sorted_zinc = sorted(zinc, key=lambda x: len(x.x))
+#
+#     samples = {
+#         "debug1": (qm9[0], "QM9Smiles"),
+#         "debug2": (qm9[102], "QM9Smiles"),
+#         "debug3": (qm9[103], "QM9Smiles"),
+#         "small_1": (sorted_qm9[100], "QM9Smiles"),
+#         "small_2": (sorted_qm9[10000], "QM9Smiles"),
+#         "small_3": (sorted_qm9[-1], "QM9Smiles"),
+#         "large_1": (sorted_zinc[1000], "ZincSmiles"),
+#         "large_2": (zinc[10], "ZincSmiles"),
+#         "large_3": (sorted_zinc[-100000], "ZincSmiles"),
+#         "large_4": (sorted_zinc[-5000], "ZincSmiles"),
+#         "large_5": (sorted_zinc[-1000], "ZincSmiles"),
+#         "large_6": (ZincSmiles(split="test")[10], "ZincSmiles"),
+#         "large_7": (sorted_zinc[-1], "ZincSmiles"),
+#     }
+#     examples = []
+#     out = Path() / "plots"
+#     out.mkdir(exist_ok=True, parents=True)
+#     for i, (name, (data, dataset)) in enumerate(samples.items()):
+#         res = {}
+#         nx_g = DataTransformer.pyg_to_nx(data)
+#         draw_nx_with_atom_colorings(nx_g, dataset=dataset)
+#         plt.savefig(out / f"{name}_nx.png")
+#         plt.show()
+#         mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset="qm9" if dataset == "QM9Smiles" else "zinc")
+#         draw_mol(mol=mol, save_path=str(out / f"{name}_mol.png"), fmt="png")
+#         node_tuples = [tuple(i) for i in data.x.int().tolist()]
+#         edge_idxs = [tuple(e) for e in data.edge_index.t().cpu().int().tolist()]
+#         edge_tuples = [(node_tuples[u], node_tuples[v]) for u, v in edge_idxs]
+#
+#         # Input
+#         print(f"{name}: |V|:{nx_g.number_of_nodes()} |E|:{nx_g.number_of_edges()}============================")
+#         for max_sol in [1, 10, 100]:
+#             t0 = time.perf_counter()
+#             solutions = enumerate_graphs(
+#                 nodes_multiset=[tuple(e) for e in random.sample(node_tuples, k=len(node_tuples))],
+#                 edges_multiset=edge_tuples,
+#                 max_solutions=max_sol,
+#             )
+#             t_enum = time.perf_counter() - t0
+#
+#             def to_pyg_data(ordered_nodes, edge_indexes):
+#                 return Data(
+#                     x=torch.tensor(ordered_nodes, dtype=torch.float),
+#                     edge_index=(torch.tensor(edge_indexes, dtype=torch.long).t().contiguous()),
+#                 )
+#
+#             pygs = [to_pyg_data(sol["ordered_nodes"], sol["associated_edge_idxs"]) for sol in solutions]
+#
+#             ds_config = (
+#                 QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG
+#                 if dataset == "QM9Smiles"
+#                 else ZINC_SMILES_HRR_6144_G1G4_CONFIG
+#             )
+#             hypernet = load_or_create_hypernet(cfg=ds_config, do_print=False).to(torch.device("cpu")).eval()
+#
+#             target_hdc = hypernet.forward(Batch.from_data_list([data]))["graph_embedding"]
+#             decoded_hdc = hypernet.forward(Batch.from_data_list(pygs))["graph_embedding"]
+#             sims_t = torchhd.cos(target_hdc, decoded_hdc).flatten()
+#
+#             # Top-k (largest first)
+#             k = min(3, sims_t.numel())
+#             topk = torch.topk(sims_t, k=k)
+#             top_idxs = topk.indices.tolist()
+#             top_vals = topk.values.tolist()
+#             print(f"Enumerated {len(solutions)} graphs in {t_enum:.2f}s - Best cos sim: {float(top_vals[0]):.2f}")
+#             # Plot
+#             fig, axes = plt.subplots(1, k, figsize=(4 * k, 4), constrained_layout=True)
+#             if k == 1:
+#                 axes = [axes]
+#
+#             for ax, idx, val in zip(axes, top_idxs, top_vals, strict=False):
+#                 pyg = pygs[idx]
+#                 nx_g = DataTransformer.pyg_to_nx(pyg)
+#
+#                 plt.sca(ax)  # draw_* uses current axes
+#                 draw_nx_with_atom_colorings(nx_g, dataset=dataset, label=f"[{name}-{idx}] sim {float(val):.2f}")
+#                 ax.set_axis_off()
+#
+#             plt.show()
+#
+# # Debug
+# # nodes: [(0, 1, 0, 1), (0, 1, 0, 1), (0, 2, 0, 0), (2, 0, 0, 0), (2, 0, 0, 0), (2, 0, 0, 0), (1, 0, 0, 0), (1, 0, 0, 0), (0, 1, 0, 0)]
+# # edgges: [((0, 1, 0, 1), (0, 2, 0, 0)), ((0, 2, 0, 0), (0, 1, 0, 1)), ((0, 1, 0, 1), (2, 0, 0, 0)), ((2, 0, 0, 0), (0, 1, 0, 1)), ((1, 0, 0, 0), (1, 0, 0, 0)), ((1, 0, 0, 0), (1, 0, 0, 0)), ((0, 1, 0, 1), (0, 2, 0, 0)), ((0, 2, 0, 0), (0, 1, 0, 1)), ((0, 1, 0, 0), (0, 2, 0, 0)), ((0, 2, 0, 0), (0, 1, 0, 0)), ((0, 1, 0, 0), (2, 0, 0, 0)), ((2, 0, 0, 0), (0, 1, 0, 0)), ((0, 1, 0, 1), (2, 0, 0, 0)), ((2, 0, 0, 0), (0, 1, 0, 1))]

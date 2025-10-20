@@ -17,7 +17,7 @@ from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.sa_score import calculate_sa_score
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import (
-    QM9_SMILES_HRR_1600_CONFIG_F64,
+    SupportedDataset,
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import HDCGenerator
@@ -56,11 +56,20 @@ EVALUATOR = None
 
 
 def eval_generation(
-    base_dataset: str, n_samples: int, gen_mod_hint: str, *, draw: bool, plot: bool, out_suffix: str = ""
+    ds: SupportedDataset, n_samples: int, gen_mod_hint: str, *, draw: bool, plot: bool, out_suffix: str = ""
 ) -> dict[str, Any]:
     global EVALUATOR  # noqa: PLW0603
-
-    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=QM9_SMILES_HRR_1600_CONFIG_F64, device=device)
+    base_dataset = ds.default_cfg.base_dataset
+    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
+    generator.decoder_settings = {
+        "initial_limit": 2048,
+        "limit": 1024,
+        "beam_size": 512,
+        "pruning_method": "cos_sim",
+        "use_size_aware_pruning": True,
+        "use_one_initial_population": True,
+        "use_g3_instead_of_h3": True,
+    }
 
     t0_gen = time.perf_counter()
     samples = generator.generate_most_similar(n_samples=n_samples)
@@ -240,27 +249,35 @@ def eval_generation(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Generate samples from a trained model with plots.")
-    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
+    p.add_argument(
+        "--dataset",
+        type=str,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
+        choices=[ds.value for ds in SupportedDataset],
+    )
     p.add_argument("--n_samples", type=int, default=10)
     args = p.parse_args()
+    ds = SupportedDataset(args.dataset)
     models = {
         "qm9": {
             "gen_models": [
                 # "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
                 # "nvp-3d-f64_qm9_f8_hid1536_lr0.000503983_wd1e-5_bs384_smf7.43606_smi1.94892_smw15_an",
-                "nvp-3d-f64_qm9_f8_hid800_lr0.000373182_wd1e-5_bs384_smf6.54123_smi2.25695_smw16_an"
+                "nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
+                "nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
             ],
         },
     }
     n_samples = args.n_samples
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    dataset = args.dataset
-    for g in models[dataset]["gen_models"]:
-        res = eval_generation(
-            base_dataset=dataset,
-            n_samples=n_samples,
-            gen_mod_hint=g,
-            draw=False,
-            plot=True,
-            out_suffix="_all_plots_test",
-        )
+
+    for g in models[ds.default_cfg.base_dataset]["gen_models"]:
+        if ds.default_cfg.name in g:
+            res = eval_generation(
+                ds=ds,
+                n_samples=n_samples,
+                gen_mod_hint=g,
+                draw=False,
+                plot=True,
+                out_suffix="_all_plots_test",
+            )

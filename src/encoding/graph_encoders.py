@@ -18,8 +18,6 @@ from tqdm import tqdm
 
 from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import (
-    QM9_SMILES_HRR_1600_CONFIG,
-    QM9_SMILES_HRR_1600_CONFIG_F64,
     DSHDCConfig,
     Features,
     IndexRange,
@@ -977,29 +975,17 @@ class HyperNet(AbstractGraphEncoder):
 
         :returns: A list of edges represented as tuples of (u, v) where u and v are node tuples
         """
-
-        hd_a = self.nodes_codebook
-        hd_b = self.nodes_codebook
-
-        # Vectorized bind operation
-        edges_hdc = hd_a.bind(hd_b)
         self.populate_edges_codebook()
         self._populate_edges_indexer()
 
+        # TODO: We can determine the eps based on the largest step that the a found edge can take
         eps = 1e-6
-
-        def target_reached(edges: list) -> bool:
-            if len(edges) == 0:
-                return False
-            available_edges_cnt = len(edges)  # undirected
-            target_count = sum(u[1] + 1 for u, v in edges)
-            return available_edges_cnt == target_count
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         # while not target_reached(decoded_edges):
-        while not torch.all(torch.abs(edge_term - torch.zeros_like(edge_term)) < eps):
-            #    or torch.isclose(
-            # edge_term, torch.zeros_like(edge_term), rtol=1e-5, atol=1e-8
+        while not target_reached(decoded_edges) or not torch.all(
+            torch.abs(edge_term - torch.zeros_like(edge_term)) < eps
+        ):
             sims = torchhd.cos(edge_term, self.edges_codebook)
             idx_max = torch.argmax(sims).item()
             a_found, b_found = self.edges_indexer.get_tuple(idx_max)
@@ -1503,22 +1489,13 @@ class HyperNet(AbstractGraphEncoder):
         # Case 2D/3D vectors with G0 encoded
         if node_counter:
             decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
+            edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         else:
             decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
             edge_count = len(decoded_edges) // 2  # bidirectional edges
-            # Only using the edges and the degree of the nodes we can count the number of nodes
-            node_degree_counter = Counter()
-            for u, v in decoded_edges:
-                # First we count the node types that have an outgoing edge
-                _, deg_idx, _, _ = u
-                node_degree_counter[u] += 1
-            node_counter = Counter()
-            for k, v in node_degree_counter.items():
-                # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-                node_counter[k] = v // (k[1] + 1)
+            node_counter = get_node_counter(decoded_edges)
 
         node_count = node_counter.total()
-        edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []
         global_seen: set = set()
@@ -1717,15 +1694,7 @@ class HyperNet(AbstractGraphEncoder):
         else:
             decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
             # Only using the edges and the degree of the nodes we can count the number of nodes
-            node_degree_counter = Counter()
-            for u, v in decoded_edges:
-                # First we count the node types that have an outgoing edge
-                _, deg_idx, _, _ = u
-                node_degree_counter[u] += 1
-            node_counter = Counter()
-            for k, v in node_degree_counter.items():
-                # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-                node_counter[k] = v // (k[1] + 1)
+            node_counter = get_node_counter(decoded_edges)
 
         candidates = enumerate_graphs(
             nodes_multiset=list(node_counter.elements()), edges_multiset=decoded_edges, max_solutions=max_solutions
@@ -1741,6 +1710,27 @@ class HyperNet(AbstractGraphEncoder):
 
     def use_graph_features(self) -> bool:
         return len(self.graph_encoder_map) > 0
+
+
+def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
+    # Only using the edges and the degree of the nodes we can count the number of nodes
+    node_degree_counter = Counter()
+    for u, v in edges:
+        # First we count the node types that have an outgoing edge
+        node_degree_counter[u] += 1
+    node_counter = Counter()
+    for k, v in node_degree_counter.items():
+        # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
+        node_counter[k] = max(1, v // (k[1] + 1))
+    return node_counter
+
+
+def target_reached(edges: list) -> bool:
+    if len(edges) == 0:
+        return False
+    available_edges_cnt = len(edges)  # undirected
+    target_count = sum(u[1] + 1 for u, v in edges)
+    return available_edges_cnt == target_count * 2
 
 
 def load_or_create_hypernet(
@@ -1769,13 +1759,3 @@ def load_or_create_hypernet(
         if do_print:
             print(f"Saved new HyperNet to {path}")
     return encoder
-
-
-if __name__ == "__main__":
-    hn64 = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=QM9_SMILES_HRR_1600_CONFIG_F64, use_edge_codebook=False)
-    hn32_load = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=QM9_SMILES_HRR_1600_CONFIG, use_edge_codebook=False)
-
-    h64_load = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=QM9_SMILES_HRR_1600_CONFIG_F64, use_edge_codebook=False)
-
-    assert h64_load.nodes_codebook.dtype == torch.float64
-    assert hn32_load.nodes_codebook.dtype == torch.float32
