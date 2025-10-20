@@ -259,7 +259,7 @@ def get_split(split: Literal["train", "valid", "test", "simple"], ds_config: DSH
 
         if disconnected_graphs_idxs:
             keep_idx = [i for i in range(len(ds)) if i not in disconnected_graphs_idxs]
-            ds = Subset(ds, keep_idx)
+            ds = ds.index_select(keep_idx)
             print(
                 f"[QM9:{split}] filtered {len(disconnected_graphs_idxs)} disconnected molecules → kept {len(keep_idx)}"
             )
