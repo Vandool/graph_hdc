@@ -15,8 +15,7 @@ from tqdm import tqdm
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import (
-    QM9_SMILES_HRR_1600_CONFIG_F64,
-    ZINC_SMILES_HRR_7744_CONFIG_F64,
+    SupportedDataset,
 )
 from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
@@ -47,8 +46,9 @@ DECODER_SETTINGS = {
 }
 
 
-def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
-    ds_config = QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64
+def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
+    ds_config = ds.default_cfg
+    base_dataset = ds_config.base_dataset
     for hv_dim in HV_DIMS[base_dataset]:
         for d in [
             3,
@@ -59,7 +59,6 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                 device = pick_device()
                 device = torch.device("cpu")
                 print(f"Running on {device}")
-                # device = torch.device("cpu")
                 ds_config.hv_dim = hv_dim
                 ds_config.device = device
                 hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
@@ -166,12 +165,19 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                 metrics_df.to_parquet(parquet_path, index=False)
                 metrics_df.to_csv(csv_path, index=False)
 
-
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
+    p.add_argument(
+        "--dataset",
+        type=str,
+        default=SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3.value,
+        choices=[ds.value for ds in SupportedDataset],
+    )
     p.add_argument("--n_samples", type=int, default=100)
     args = p.parse_args()
+    ds = SupportedDataset(args.dataset)
+
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
     pprint(args)
-    eval_retrieval(n_samples=args.n_samples, base_dataset=args.dataset)
+    eval_retrieval(n_samples=args.n_samples, ds=ds)

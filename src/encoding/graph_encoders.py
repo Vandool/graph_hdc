@@ -1495,6 +1495,11 @@ class HyperNet(AbstractGraphEncoder):
             edge_count = len(decoded_edges) // 2  # bidirectional edges
             node_counter = get_node_counter(decoded_edges)
 
+        if node_counter.total() > 20:
+            print(f"Skipping graph with {node_counter.total()} nodes")
+            # TODO: Correct this for ZINC
+            return [nx.Graph()], [False]
+
         node_count = node_counter.total()
         ## We have the multiset of nodes and the multiset of edges
         first_pop: list[tuple[nx.Graph, list[tuple]]] = []

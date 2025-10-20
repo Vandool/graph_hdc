@@ -76,12 +76,21 @@ class AbstractGenerator(abc.ABC):
         nodes_set = set(map(tuple, ds.x.long().tolist()))
         self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
 
+    def get_raw_samples(self, n_samples: int = 16) -> dict:
+        return self.gen_model.sample_split(n_samples)
+
     def generate_most_similar(self, n_samples: int = 16) -> dict:
         samples = self.gen_model.sample_split(n_samples)
-        node_terms = samples["node_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
-        edge_terms = samples["edge_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
-        graph_terms = samples["graph_terms"].to(torch.float64).as_subclass(self.vsa.tensor_class)
-        return self.decode(node_terms=node_terms, edge_terms=edge_terms, graph_terms=graph_terms)
+        nt = samples.get("node_terms")
+        if nt is not None:
+            nt = nt.to(torch.float64).as_subclass(self.vsa.tensor_class)
+        et = samples.get("edge_terms")
+        if et is not None:
+            et = et.to(torch.float64).as_subclass(self.vsa.tensor_class)
+        gt = samples.get("graph_terms")
+        if gt is not None:
+            gt = gt.to(torch.float64).as_subclass(self.vsa.tensor_class)
+        return {**self.decode(node_terms=nt, edge_terms=et, graph_terms=gt), **samples}
 
     def decode(
         self,
@@ -129,7 +138,7 @@ class AbstractGenerator(abc.ABC):
             data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
             try:
                 batch = Batch.from_data_list(data_list)
-                enc_out = self.hypernet.forward(batch)
+                enc_out = self.hypernet.forward(batch, normalize=self.ds_config.normalize)
                 g_terms = enc_out["graph_embedding"]  # [B, D]
             except Exception:
                 best_graphs.append(nx.Graph())
@@ -176,13 +185,14 @@ class HDCGenerator(AbstractGenerator):
             decoder_settings=self.decoder_settings,
         )
 
+
 @attr.define(slots=True, kw_only=True)
 class HDCZ3Generator(AbstractGenerator):
     def _decode_single_graph(
-            self,
-            edge_term: torch.Tensor,
-            graph_term: torch.Tensor,
-            node_counter: Counter[tuple[int, ...]] | None = None,
+        self,
+        edge_term: torch.Tensor,
+        graph_term: torch.Tensor,
+        node_counter: Counter[tuple[int, ...]] | None = None,
     ) -> tuple[list[nx.Graph], list[bool]]:
         # TODO: Here we expand the 2D type
         return self.hypernet.decode_graph_z3(
@@ -191,6 +201,7 @@ class HDCZ3Generator(AbstractGenerator):
             graph_term=graph_term,
             decoder_settings=self.decoder_settings,
         )
+
 
 @attr.define(slots=True, kw_only=True)
 class OracleGenerator(AbstractGenerator):

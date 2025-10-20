@@ -268,7 +268,7 @@ def precompute_encodings(
             d = d.clone()
             d.graph_terms = graph_terms[i]  # [Dg]
             d.edge_terms = edge_terms[i]  # [Dg]
-            d.node_terms = node_terms[i]  # [Ni, Dn]
+            d.node_terms = node_terms[i]  # [Dn]
             aug.append(d)
 
     data, slices = InMemoryDataset.collate(aug)
