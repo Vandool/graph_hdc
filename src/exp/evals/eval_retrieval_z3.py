@@ -12,8 +12,7 @@ from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
@@ -29,7 +28,7 @@ HV_DIMS = {
     "qm9": [
         # 1024, 1280, 1536,
         1600,
-        # 1792
+        1792,
     ],
     "zinc": [
         # 5120, 5632,
@@ -39,7 +38,7 @@ HV_DIMS = {
 }
 
 DECODER_SETTINGS = {
-    "qm9": [{"max_solutions": 100}],
+    "qm9": [{"max_solutions": 1000}],
     "zinc": [
         {"max_solutions": 1000},
     ],
@@ -53,18 +52,20 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
         for d in [
             3,
             4,
-            # 5, 6
+            5,
+            # 6
         ]:
             for decoder_setting in DECODER_SETTINGS[base_dataset]:
                 device = pick_device()
-                device = torch.device("cpu")
+                # device = torch.device("cpu")
                 print(f"Running on {device}")
                 ds_config.hv_dim = hv_dim
                 ds_config.device = device
                 hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
                 hypernet.depth = d
+                hypernet.decoding_limit = ds
 
-                dataset = QM9Smiles(split="train") if ds_config.base_dataset == "qm9" else ZincSmiles(split="train")
+                dataset = get_split(split="train", ds_config=ds.default_cfg, use_no_suffix=True)
 
                 nodes_set = set(map(tuple, dataset.x.long().tolist()))
                 hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
@@ -100,8 +101,12 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                         finals.append(False)
                         sims.append(0.0)
                     else:
-                        if len(candidates) == 0:
+                        if len(candidates) == 0 or (len(candidates) == 1 and candidates[0].number_of_nodes() == 0):
+                            hits.append(False)
+                            finals.append(False)
+                            sims.append(0.0)
                             print("No candidates found")
+                            continue
                         data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
                         batch = Batch.from_data_list(data_list)
                         enc_out = hypernet.forward(batch)
@@ -153,8 +158,8 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 asset_dir = GLOBAL_ARTEFACTS_PATH / "retrieval"
                 asset_dir.mkdir(parents=True, exist_ok=True)
 
-                parquet_path = asset_dir / "retrieval_z3.parquet"
-                csv_path = asset_dir / "retrieval_z3.csv"
+                parquet_path = asset_dir / "retrieval_z3_new_decoder_constraints.parquet"
+                csv_path = asset_dir / "retrieval_z3_new_decoder_constraints.csv"
 
                 metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 
@@ -165,19 +170,20 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 metrics_df.to_parquet(parquet_path, index=False)
                 metrics_df.to_csv(csv_path, index=False)
 
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3.value,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
-    p.add_argument("--n_samples", type=int, default=100)
+    p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
     ds = SupportedDataset(args.dataset)
 
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
     pprint(args)
     eval_retrieval(n_samples=args.n_samples, ds=ds)

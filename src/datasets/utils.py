@@ -5,7 +5,6 @@ from typing import Literal
 
 import networkx as nx
 import torch
-from torch.utils.data import Subset
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.utils import degree, k_hop_subgraph, to_undirected
 
@@ -243,9 +242,13 @@ class Compose:
         return data
 
 
-def get_split(split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig) -> DSHDCConfig:
+def get_split(
+    split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig, use_no_suffix: bool = False
+) -> DSHDCConfig:
+    enc_suffix = ""
     if ds_config.base_dataset == "qm9":
-        enc_suffix = ds_config.name if ds_config is not None else ""
+        if not use_no_suffix:
+            enc_suffix = ds_config.name if ds_config is not None else ""
         ds = QM9Smiles(split=split, enc_suffix=enc_suffix)
 
         # --- Filter known disconnected molecules ---

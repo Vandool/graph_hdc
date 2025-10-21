@@ -21,6 +21,7 @@ from src.encoding.configs_and_constants import (
     DSHDCConfig,
     Features,
     IndexRange,
+    SupportedDataset,
 )
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
@@ -284,6 +285,10 @@ class HyperNet(AbstractGraphEncoder):
         self.vsa = self._validate_vsa(config.vsa)
         self.hv_dim = config.hv_dim
 
+        # Relate to decoding limits to prevent endless loops
+        self._directed_decoded_edge_limit: int = 50  # Default for zinc
+        self._max_step_delta: float | None = None  # will be set after first run
+
         self._cfg_device = torch.device(getattr(config, "device", "cpu"))
 
         self.node_encoder_map: EncoderMap = {
@@ -331,8 +336,20 @@ class HyperNet(AbstractGraphEncoder):
         }
         self.seed = config.seed
 
-        ### Attributes that will be populated after initialisation
+        ### Attributes that will be populated after initialization
         self._init_lazy_fields()
+
+    @property
+    def decoding_limit(self) -> int:
+        return self._directed_decoded_edge_limit
+
+    @decoding_limit.setter
+    def decoding_limit(self, ds: SupportedDataset) -> None:
+        if ds.default_cfg.base_dataset == "qm9":
+            self._directed_decoded_edge_limit = 50
+        elif ds.default_cfg.base_dataset == "zinc":
+            # already the default
+            self._directed_decoded_edge_limit = 150
 
     def _init_lazy_fields(self) -> None:
         """Create attributes that __init__ normally sets but load() may bypass."""
@@ -345,6 +362,7 @@ class HyperNet(AbstractGraphEncoder):
         # Contains hypervectors that represents an edge including the nodes and edge features
         self.edges_codebook = None
         self.edges_indexer = None
+        self._max_step_delta: float | None = None
 
     def to(self, device):
         # normalize + store; also move nn.Module state if any
@@ -949,48 +967,45 @@ class HyperNet(AbstractGraphEncoder):
 
     def decode_order_one_no_node_terms(self, edge_term: torch.Tensor) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
         """
-        Returns information about the kind and number of edges (order one information) that were contained in the
-        original graph represented by the given ``embedding`` vector.
-
-        **Edge Decoding**
-
-        The aim of this method is to reconstruct the first order information about what kinds of edges existed in
-        the original graph based on the given graph embedding vector ``embedding``. The way in which this works is
-        that we already get the zero oder constraints (==informations about which nodes are present) passed as an
-        argument. Based on that we construct all possible combinations of node pairs (==edges) and calculate the
-        corresponding binding of the hypervector representations. Then we can multiply each of these edge hypervectors
-        with the final graph embedding to get a projection along that edge type's dimension. The magnitude of this
-        projection should be proportional to the number of times that edge type was present in the original graph
-        (except for a correction factor).
-
-        Therefore, we iterate over all the possible node pairs and calculate the projection of the graph embedding
-        along the direction of the edge hypervector. If the magnitude of this projection is non-zero we can assume
-        that this edge type was present in the original graph and we derive the number of times it was present from
-        the magnitude of the projection.
+        extracts the list of edge tuples from the given ``edge_term`` tensor.
 
         :param edge_term: Graph representation with HDC message passing depth 1.
-        :param node_tuples: The list of constraints that represent the zero order information about the
-            nodes that were present in the original graph.
-
-
         :returns: A list of edges represented as tuples of (u, v) where u and v are node tuples
+        :rtype: list[tuple[tuple[int, ...], tuple[int, ...]]]]
         """
         self.populate_edges_codebook()
         self._populate_edges_indexer()
 
-        # TODO: We can determine the eps based on the largest step that the a found edge can take
-        eps = 1e-6
+        # Determine the lowest energy (norm) required to extract an edge
+        if not self._max_step_delta:
+            norms = []
+            for hd_a in self.nodes_codebook:
+                for hd_b in self.nodes_codebook:
+                    delta = hd_a.bind(hd_b) + hd_b.bind(hd_a)
+                    norms.append(delta.norm().item())
+
+            min_norm = min(norms)
+            print(f"[delta-norm] min={min_norm:.6f}")
+
+            self._max_step_delta = min_norm
+
+        eps = self._max_step_delta * 0.8  # small relative tolerance
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         # while not target_reached(decoded_edges):
-        while not target_reached(decoded_edges) or not torch.all(
-            torch.abs(edge_term - torch.zeros_like(edge_term)) < eps
+        while (
+            # not target_reached(decoded_edges)
+            # essentially by getting the norm of het edge_term we know how many edges we have
+            # roughly for each ||edge_term|| // 2 tells us how many edges since the hv resulted as binding of
+            # two nodes has norm ~1.0. We could prune earlier, but we might reach a target and be able to decode
+            # something, so we keep going.
+            edge_term.norm().item() > eps
+            # this will almost certainly cause an invalid setup, should be caught by the caller
+            and len(decoded_edges) <= self.decoding_limit
         ):
             sims = torchhd.cos(edge_term, self.edges_codebook)
             idx_max = torch.argmax(sims).item()
             a_found, b_found = self.edges_indexer.get_tuple(idx_max)
-            if not a_found or not b_found:
-                break
             hd_a_found: VSATensor = self.nodes_codebook[a_found]
             hd_b_found: VSATensor = self.nodes_codebook[b_found]
             edge_term -= hd_a_found.bind(hd_b_found)
@@ -1728,23 +1743,26 @@ class HyperNet(AbstractGraphEncoder):
 
 def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     # Only using the edges and the degree of the nodes we can count the number of nodes
-    node_degree_counter = Counter()
-    for u, v in edges:
-        # First we count the node types that have an outgoing edge
-        node_degree_counter[u] += 1
+    node_degree_counter = Counter(u for u, _ in edges)
+    diagonals = Counter(u for u, v in edges if u == v)
     node_counter = Counter()
     for k, v in node_degree_counter.items():
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-        node_counter[k] = max(1, v // (k[1] + 1))
+        node_counter[k] = v // (k[1] + 1)
+
+    for k, v in node_counter.items():
+        if k in diagonals and v % 2 == 1 and 2 * v != diagonals[k]:
+            node_counter[k] = node_counter[k] + 1
+
     return node_counter
 
 
 def target_reached(edges: list) -> bool:
     if len(edges) == 0:
         return False
-    available_edges_cnt = len(edges)  # undirected
-    target_count = sum(u[1] + 1 for u, v in edges)
-    return available_edges_cnt == target_count * 2
+    available_edges_cnt = len(edges)  # directed
+    target_count = sum((k[1] + 1) * v for k, v in get_node_counter(edges).items())
+    return available_edges_cnt == target_count
 
 
 def load_or_create_hypernet(

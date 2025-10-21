@@ -11,15 +11,13 @@ from torch_geometric.data import Batch
 from torch_geometric.datasets import ZINC
 
 from src import evaluation_metrics
-from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.utils import AddNeighbourhoodEncodings, AddNodeDegree, Compose, get_split
 from src.encoding.configs_and_constants import (
+    QM9_CONFIG,
     FeatureConfig,
     Features,
     IndexRange,
     SupportedDataset,
-    QM9_CONFIG,
-    DSHDCConfig,
 )
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import HyperNet, get_node_counter, load_or_create_hypernet, target_reached
@@ -1446,21 +1444,23 @@ def test_hypernet_decode_order_one_is_good_enough_counter_comb_one_hv_two_levels
 def test_get_counter_and_termination_criteria():
     ds_cfg = QM9_CONFIG
     ds_cfg.name = ""
-    qm9 = get_split(split="test", ds_config=ds_cfg)
+    qm9 = get_split(split="train", ds_config=ds_cfg)
     for i, data in enumerate(qm9):
+        # if i != 1:
+        #     continue
         node_tuples = [tuple(i) for i in data.x.int().tolist()]
+        if len(node_tuples) == 1:
+            continue
         edge_idxs = [tuple(e) for e in data.edge_index.t().cpu().int().tolist()]
         edge_tuples = [(node_tuples[u], node_tuples[v]) for u, v in edge_idxs]
 
         expected_ctr = Counter(node_tuples)
         actual_ctr = get_node_counter(edge_tuples)
-        print(i)
         assert actual_ctr == expected_ctr
 
-        for i in range(2, len(edge_tuples), 2):
-            subset = edge_tuples[:i]
-            reached = target_reached(subset)
-            if len(subset) != len(edge_tuples):
-                assert not reached
-            else:
-                assert reached
+        assert target_reached(edge_tuples)
+        for j in range(2, len(edge_tuples) - 1, 2):
+            print(f"{i}-{j}")
+            subset = edge_tuples[:j]
+            # not fully decoded edge_tuples has not reached the target count yet
+            assert not target_reached(subset)

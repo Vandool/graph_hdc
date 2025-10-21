@@ -80,7 +80,7 @@ class AbstractGenerator(abc.ABC):
         return self.gen_model.sample_split(n_samples)
 
     def generate_most_similar(self, n_samples: int = 16) -> dict:
-        samples = self.gen_model.sample_split(n_samples)
+        samples = self.get_raw_samples(n_samples)
         nt = samples.get("node_terms")
         if nt is not None:
             nt = nt.to(torch.float64).as_subclass(self.vsa.tensor_class)
@@ -90,7 +90,7 @@ class AbstractGenerator(abc.ABC):
         gt = samples.get("graph_terms")
         if gt is not None:
             gt = gt.to(torch.float64).as_subclass(self.vsa.tensor_class)
-        return {**self.decode(node_terms=nt, edge_terms=et, graph_terms=gt), **samples}
+        return self.decode(node_terms=nt, edge_terms=et, graph_terms=gt)
 
     def decode(
         self,

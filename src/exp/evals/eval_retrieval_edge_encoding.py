@@ -20,7 +20,7 @@ from src.encoding.configs_and_constants import (
 from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.utils.nx_utils import is_induced_subgraph_by_features
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransformer, pick_device
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, DataTransformer, pick_device
 
 HV_DIMS = {
     "qm9": [1024, 1280, 1536, 1600, 1792],
@@ -32,7 +32,7 @@ DECODER_SETTINGS = {
         {
             "initial_limit": 2048,
             "limit": 1024,
-            "beam_size": 256,
+            "beam_size": 512,
             "pruning_method": "negative_euclidean_distance",
             "use_size_aware_pruning": True,
             "use_one_initial_population": True,
@@ -64,18 +64,18 @@ DECODER_SETTINGS = {
 def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
     ds_config = QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64
     for hv_dim in HV_DIMS[base_dataset]:
-        for d in [3, 4, 5, 6]:
+        for d in [
+            3,
+            4,
+            5,
+            # 6
+        ]:
             for decoder_setting in DECODER_SETTINGS[base_dataset]:
                 device = pick_device()
-                # device = torch.device("cpu")
                 print(f"Running on {device}")
-                # device = torch.device("cpu")
-                ds_config = ds_config
                 ds_config.hv_dim = hv_dim
                 ds_config.device = device
-                hypernet: HyperNet = (
-                    load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=ds_config, use_edge_codebook=False).to(device).eval()
-                )
+                hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
                 hypernet.depth = d
 
                 dataset = QM9Smiles(split="train") if ds_config.base_dataset == "qm9" else ZincSmiles(split="train")
@@ -158,8 +158,8 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                 asset_dir = GLOBAL_ARTEFACTS_PATH / "retrieval"
                 asset_dir.mkdir(parents=True, exist_ok=True)
 
-                parquet_path = asset_dir / "edge_decoding.parquet"
-                csv_path = asset_dir / "edge_decoding.csv"
+                parquet_path = asset_dir / "edge_decoding_new_constraint.parquet"
+                csv_path = asset_dir / "edge_decoding_new_constraint.csv"
 
                 metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 
@@ -176,6 +176,6 @@ if __name__ == "__main__":
     p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
     p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     pprint(args)
     eval_retrieval(n_samples=args.n_samples, base_dataset=args.dataset)

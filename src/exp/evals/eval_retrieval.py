@@ -11,8 +11,7 @@ from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG_F64,
     ZINC_SMILES_HRR_7744_CONFIG_F64,
@@ -20,10 +19,14 @@ from src.encoding.configs_and_constants import (
 from src.encoding.decoder import new_decoder  # noqa: F401
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.utils.nx_utils import is_induced_subgraph_by_features
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, DataTransformer, pick_device
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, DataTransformer, pick_device
 
 HV_DIMS = {
-    "qm9": [1024, 1280, 1536, 1600, 1792],
+    "qm9": [
+        # 1024, 1280, 1536,
+        1600,
+        # 1792
+    ],
     "zinc": [5120, 5632, 6144, 7168, 7744, 8192],
 }
 
@@ -32,7 +35,7 @@ DECODER_SETTINGS = {
         {
             "initial_limit": 2048,
             "limit": 1024,
-            "beam_size": 256,
+            "beam_size": 512,
             "pruning_method": "negative_euclidean_distance",
             "use_size_aware_pruning": True,
             "use_one_initial_population": True,
@@ -67,18 +70,13 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
         for d in [3, 4, 5, 6]:
             for decoder_setting in DECODER_SETTINGS[base_dataset]:
                 device = pick_device()
-                # device = torch.device("cpu")
                 print(f"Running on {device}")
-                # device = torch.device("cpu")
-                ds_config = ds_config
                 ds_config.hv_dim = hv_dim
                 ds_config.device = device
-                hypernet: HyperNet = (
-                    load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=ds_config, use_edge_codebook=False).to(device).eval()
-                )
+                hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
                 hypernet.depth = d
 
-                dataset = QM9Smiles(split="train") if ds_config.base_dataset == "qm9" else ZincSmiles(split="train")
+                dataset = get_split(split="train", ds_config=ds_config, use_no_suffix=True)
 
                 nodes_set = set(map(tuple, dataset.x.long().tolist()))
                 hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
@@ -173,9 +171,9 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
-    p.add_argument("--dataset", type=str, default="zinc", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=10)
+    p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
+    p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     pprint(args)
     eval_retrieval(n_samples=args.n_samples, base_dataset=args.dataset)

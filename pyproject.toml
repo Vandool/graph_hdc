@@ -25,7 +25,6 @@ solve-group = "linux-64"
 
 [tool.pixi.feature.base.dependencies]
 python            = "3.11.*"
-pytorch           = "*"
 pyg               = "*"
 pytorch-lightning = "*"
 numpy             = "*"
@@ -51,7 +50,7 @@ optuna             = "*"
 optuna-integration = "*"
 botorch            = "*"
 gpytorch           = "*"
-setuptools         = "*"
+setuptools         = ">=80"
 altair-all         = "*"
 
 
@@ -69,5 +68,4 @@ deepchem           = "*"
 
 # CUDA ONLY for local-gpu env
 [tool.pixi.feature.gpu.dependencies]
-pytorch-cuda = "12.1.*"
 libcurand    = "!=10.4.0.35"
