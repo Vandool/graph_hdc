@@ -257,16 +257,25 @@ if __name__ == "__main__":
         default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=100)
     args = p.parse_args()
     models = {
         "qm9": {
             "gen_models": [
-                # "nvp-3d-f64_qm9_f8_hid1792_lr0.000747838_wd1e-5_bs384_smf5.9223_smi2.08013_smw16_an",
-                # "nvp-3d-f64_qm9_f8_hid1536_lr0.000503983_wd1e-5_bs384_smf7.43606_smi1.94892_smw15_an",
-                # "nvp-3d-f64_qm9_f8_hid800_lr0.000373182_wd1e-5_bs384_smf6.54123_smi2.25695_smw16_an"
-                "nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f4_lr0.000862736_wd0.0001_bs192_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f4_lr8.69904e-5_wd0_bs288_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f7_lr9.4456e-5_wd0.0003_bs448_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f8_lr0.00057532_wd0.0003_bs32_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f8_lr6.69953e-5_wd0.0001_bs160_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f9_lr0.000179976_wd0.0003_bs288_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f14_lr0.000112721_wd0.0005_bs224_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f14_lr0.000132447_wd3e-6_bs160_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f15_hid800_s42_lr0.000160949_wd3e-6_bs224_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
                 "nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f15_lr6.29685e-5_wd3e-6_bs128_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f16_hid400_s42_lr0.000154612_wd3e-6_bs32_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f16_hid800_s42_lr0.000430683_wd3e-6_bs512_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
+                "nvp_QM9SmilesHRR1600F64G1G3_f16_lr0.000525421_wd0.0005_bs256_an",
             ],
         },
     }
@@ -275,11 +284,15 @@ if __name__ == "__main__":
     ds = SupportedDataset(args.dataset)
     for g in models[ds.default_cfg.base_dataset]["gen_models"]:
         if ds.default_cfg.name in g:
-            res = eval_generation(
-                ds=ds,
-                n_samples=n_samples,
-                gen_mod_hint=g,
-                draw=False,
-                plot=True,
-                out_suffix="_normalize_vs_not",
-            )
+            try:
+                eval_generation(
+                    ds=ds,
+                    n_samples=n_samples,
+                    gen_mod_hint=g,
+                    draw=False,
+                    plot=True,
+                    out_suffix="_normalize_vs_not",
+                )
+            except Exception as e:
+                print(f"Error for {g}: {e}")
+                continue
