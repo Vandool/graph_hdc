@@ -22,14 +22,14 @@ from pytorch_lightning.loggers import CSVLogger
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
-from src.exp.real_nvp_hpo_3d.hpo.folder_name import make_run_folder_name
+from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
+from src.generation.analyze import analyze_terms_only
 from src.utils.registery import resolve_model, retrieve_model
-from src.utils.utils import GLOBAL_MODEL_PATH, generated_node_edge_dist, pick_device
+from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 LOCAL_DEV = "LOCAL_HDC_miss"
 
@@ -102,7 +102,7 @@ class FlowConfig:
     hv_count: int = 3
     hv_dim: int = 40 * 40  # 1600
     vsa: VSAModel = VSAModel.HRR
-    dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600_F64
+    dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
 
     num_flows: int = 4
     num_hidden_channels: int = 256
@@ -123,7 +123,7 @@ def fit_featurewise_standardization(
     model, loader, hv_count: int, hv_dim: int, max_batches: int | None = None, device="cpu"
 ):
     """
-    Estimate per-feature mean and std (feature-wise) for the model’s standardized space.
+    Estimate per-feature mean and std (feature-wise) for the model's standardized space.
     Works safely under mixed-precision and supports [B, 3D] inputs.
 
     Parameters
@@ -344,16 +344,21 @@ class PeriodicNLLEval(Callback):
             return
 
         stats = _eval_flow_metrics(
-            pl_module, self.val_loader, pl_module.device, hv_dim=pl_module.D, max_batches=self.max_batches
+            pl_module,
+            self.val_loader,
+            pl_module.device,
+            hv_count=pl_module.hv_count,
+            hv_dim=pl_module.D,
+            max_batches=self.max_batches,
         )
         if not stats:
             return
 
         # persist arrays (with epoch in file for easier joins)
         self.artefacts_dir.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame(stats)
-        df["epoch"] = epoch
-        df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
+        # df = pd.DataFrame(stats)
+        # df["epoch"] = epoch
+        # df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
 
         # compact scalar summary with consistent names
         summary = _summarize_arrays(stats)
@@ -372,7 +377,7 @@ def _norm_cdf(x):
 
 
 @torch.no_grad()
-def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | None = None):
+def _eval_flow_metrics(model, loader, device, hv_count: int, hv_dim: int, max_batches: int | None = None):
     """
     Eval for normalizing flows trained with exact likelihood.
 
@@ -402,7 +407,7 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
     """
     model.eval()
     ln2 = math.log(2.0)
-    dim = 3 * hv_dim
+    dim = hv_count * hv_dim
 
     # log p(z) of a standard normal factorizes; this is the constant term in nats
     const_term = 0.5 * dim * math.log(2 * math.pi)
@@ -430,7 +435,6 @@ def _eval_flow_metrics(model, loader, device, hv_dim: int, max_batches: int | No
             break
 
         batch = batch.to(device)
-
         mdtype = next(model.parameters()).dtype
         flat = model._flat_from_batch(batch).to(mdtype)  # [B, dim]
 
@@ -654,15 +658,11 @@ def run_experiment(cfg: FlowConfig):
     log("Hypernet ready.")
 
     # ----- datasets / loaders -----
-    log(f"Loading {cfg.dataset.value} pair datasets.")
-    if cfg.dataset == SupportedDataset.QM9_SMILES_HRR_1600_F64:
-        train_dataset = QM9Smiles(split="train", enc_suffix="HRR1600F64")
-        validation_dataset = QM9Smiles(split="valid", enc_suffix="HRR1600F64")
-    elif cfg.dataset == SupportedDataset.ZINC_SMILES_HRR_5120D5_F64:
-        train_dataset = ZincSmiles(split="train", enc_suffix="HRR5120D5F64")
-        validation_dataset = ZincSmiles(split="valid", enc_suffix="HRR5120D5F64")
+    log(f"Loading {cfg.dataset.default_cfg.base_dataset} pair datasets.")
+    train_dataset = get_split(split="train", ds_config=cfg.dataset.default_cfg)
+    validation_dataset = get_split(split="valid", ds_config=cfg.dataset.default_cfg)
     log(
-        f"Pairs loaded for {cfg.dataset.value}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+        f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
 
     # pick worker counts per GPU; tune for your cluster
@@ -695,14 +695,13 @@ def run_experiment(cfg: FlowConfig):
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # ----- model / trainer -----
-    # model = RealNVPV2Lightning(cfg)
     model = resolve_model("NVP", cfg=cfg).to(device=device)
 
     log(f"Model: {model!s}")
     log(f"Model device: {model.device}")
     log(f"Model hparams: {model.hparams}")
 
-    fit_featurewise_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=device)
+    fit_featurewise_standardization(model, train_dataloader, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim, device=device)
 
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
@@ -790,7 +789,7 @@ def run_experiment(cfg: FlowConfig):
     best_model.to(dtype=torch.float64)
 
     # ---- per-sample NLL (really the KL objective) on validation ----
-    val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_dim=cfg.hv_dim)
+    val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim)
     nll_arr = val_stats.get("nll_model", np.empty((0,), dtype=np.float32))
     if nll_arr.size:
         # save full arrays for later deep-dive
@@ -821,34 +820,36 @@ def run_experiment(cfg: FlowConfig):
 
     # ---- sample from the flow ----
     with torch.no_grad():
-        samples = best_model.sample_split(10_000)  # each [K, D]
-        node_s = samples["node_terms"]
+        samples = best_model.sample_split(1000)  # each [K, D]
+        analyze_terms_only(samples, name=ds_cfg.name, pdf_dir=artefacts_dir)
+        # node_s = samples["node_terms"]
         edge_s = samples["edge_terms"]
         graph_s = samples["graph_terms"]
 
-    node_s = node_s.as_subclass(HRRTensor)
+    # node_s = node_s.as_subclass(HRRTensor)
     edge_s = edge_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
 
-    log(f"node_s device: {node_s.device!s}")
+    decoded_edge_sizes = [len(hypernet.decode_order_one_no_node_terms(et)) for et in edge_s]
+    np_des = np.asarray(decoded_edge_sizes)
+    decoded_edge_sizes = {
+        "mean": np.mean(np_des),
+        "std": np.std(np_des),
+        "median": np.median(np_des),
+        "min": np.min(np_des),
+        "max": np.max(np_des),
+    }
+    (artefacts_dir / "decoded_edge_sizes.json").write_text(json.dumps(decoded_edge_sizes, indent=2))
+
+    # log(f"node_s device: {node_s.device!s}")
     log(f"graph_s device: {graph_s.device!s}")
     log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
 
-    node_counters = hypernet.decode_order_zero_counter(node_s)
-    report = generated_node_edge_dist(
-        generated_node_types=node_counters,
-        artefact_dir=artefacts_dir,
-        dataset_val=cfg.dataset.value,
-        dataset=train_dataset,
-    )
-    pprint(report)
-
-    node_np = node_s.detach().cpu().numpy()
     edge_np = edge_s.detach().cpu().numpy()
     graph_np = graph_s.detach().cpu().numpy()
 
     # per-branch norms and pairwise cosine samples
-    node_norm = np.linalg.norm(node_np, axis=1)
+    # node_norm = np.linalg.norm(node_np, axis=1)
     edge_norm = np.linalg.norm(edge_np, axis=1)
     graph_norm = np.linalg.norm(graph_np, axis=1)
 
@@ -863,16 +864,16 @@ def run_experiment(cfg: FlowConfig):
         bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-8)
         return np.sum(an * bn, axis=1)
 
-    node_cos = _pairwise_cosine(node_np, m=4000)
+    # node_cos = _pairwise_cosine(node_np, m=4000)
     edge_cos = _pairwise_cosine(edge_np, m=4000)
     graph_cos = _pairwise_cosine(graph_np, m=4000)
 
     # plots
-    _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
+    # _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
     _hist(artefacts_dir / "sample_node_edge_hist.png", edge_norm, "Sample edge L2 norm", "||edge||")
     _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
-    if node_cos.size:
-        _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    # if node_cos.size:
+    #     _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
     if edge_cos.size:
         _hist(artefacts_dir / "sample_edge_cos_hist.png", edge_cos, "Edge pairwise cosine", "cos")
     if graph_cos.size:
@@ -881,10 +882,42 @@ def run_experiment(cfg: FlowConfig):
     log("Experiment completed.")
     log(f"Best val loss: {min_val_loss:.4f}")
     log(f"Best checkpoint: {best_path}")
-    return min_val_loss
+    return min_val_loss, decoded_edge_sizes
 
 
-def get_cfg(trial: optuna.Trial, dataset: str):
+# def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
+#     cfg = {
+#         "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
+#         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
+#         "weight_decay": trial.suggest_categorical(
+#             "weight_decay",
+#             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
+#         ),
+#     }
+#     flow_cfg = FlowConfig()
+#     for k, v in cfg.items():
+#         setattr(flow_cfg, k, v)
+#     flow_cfg.dataset = dataset
+#     flow_cfg.hv_dim = dataset.default_cfg.hv_dim
+#     flow_cfg.hv_count = dataset.default_cfg.hv_count
+#     flow_cfg.vsa = dataset.default_cfg.vsa
+#     return flow_cfg
+#
+#
+# def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
+#     flow_cfg = get_cfg(trial, dataset=dataset)
+#     flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 2048, step=512)
+#     flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 12)
+#     flow_cfg.smax_initial = 2.5
+#     flow_cfg.smax_final = 7
+#     flow_cfg.smax_warmup_epochs = 17
+#     flow_cfg.exp_dir_name = make_run_folder_name(
+#         {k: getattr(flow_cfg, k) for k in keys if k in flow_cfg.__dict__}, prefix=f"nvp_{dataset.default_cfg.name}"
+#     )
+#     return run_experiment(flow_cfg)
+
+
+def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
     cfg = {
         "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
@@ -893,7 +926,8 @@ def get_cfg(trial: optuna.Trial, dataset: str):
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "num_flows": trial.suggest_int("num_flows", 4, 16),
-        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 512, 2560, step=512),
+        # "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=128),
+        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 800, 800, step=400),
         "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
         "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
         "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),
@@ -901,19 +935,9 @@ def get_cfg(trial: optuna.Trial, dataset: str):
     flow_cfg = FlowConfig()
     for k, v in cfg.items():
         setattr(flow_cfg, k, v)
-    flow_cfg.exp_dir_name = make_run_folder_name(cfg, dataset=dataset)
-    return flow_cfg
-
-
-def run_zinc_trial(trial: optuna.Trial):
-    flow_cfg = get_cfg(trial, dataset="zinc")
-    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_5120D5_F64
-    flow_cfg.hv_dim = SupportedDataset.ZINC_SMILES_HRR_5120D5_F64.default_cfg.hv_dim
-    return run_experiment(flow_cfg)
-
-
-def run_qm9_trial(trial: optuna.Trial):
-    flow_cfg = get_cfg(trial, dataset="qm9")
-    flow_cfg.dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64
-    flow_cfg.hv_dim = 40 * 40
+    flow_cfg.exp_dir_name = make_run_folder_name(cfg)
+    flow_cfg.dataset = dataset
+    flow_cfg.hv_dim = dataset.default_cfg.hv_dim
+    flow_cfg.hv_count = dataset.default_cfg.hv_count
+    flow_cfg.vsa = dataset.default_cfg.vsa
     return run_experiment(flow_cfg)
