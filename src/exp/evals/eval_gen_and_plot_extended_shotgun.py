@@ -20,9 +20,9 @@ from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import HDCGenerator
+from src.generation.generation import HDCGenerator, HDCZ3Generator
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, pick_device
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
 from src.utils.visualisations import plot_logp_kde
 
 # --- scientific paper style ---
@@ -51,7 +51,7 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 seed = 42
 seed_everything(seed)
 device = pick_device()
-device = torch.device("cpu")
+# device = torch.device("cpu")
 EVALUATOR = None
 
 
@@ -60,8 +60,8 @@ def eval_generation(
 ) -> dict[str, Any]:
     global EVALUATOR  # noqa: PLW0603
     base_dataset = ds.default_cfg.base_dataset
-    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
-    # generator = HDCZ3Generator(gen_model_hint=gen_mod_hint, ds_config=QM9_SMILES_HRR_1600_CONFIG_F64, device=device)
+    # generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
+    generator = HDCZ3Generator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
 
     generator.decoder_settings = {
         "initial_limit": 2048,
@@ -229,7 +229,7 @@ def eval_generation(
         plt.plot(x, gaussian_kde(sims_valid)(x), linewidth=2, label="Generated (valid)")
         plt.xlabel("Similarity")
         plt.ylabel("Density")
-        plt.title(f"{base_dataset} – Similarity distribution")
+        plt.title(f"{base_dataset} - Similarity distribution")
         plt.legend()
         plt.tight_layout()
         plt.savefig(base_dir / "matplotlib_sims.pdf", bbox_inches="tight")
@@ -240,7 +240,7 @@ def eval_generation(
         sns.kdeplot(sims_valid, label="Generated (valid)", linewidth=2)
         plt.xlabel("Similarity")
         plt.ylabel("Density")
-        plt.title(f"{base_dataset} – Similarity distribution")
+        plt.title(f"{base_dataset} - Similarity distribution")
         plt.legend()
         plt.tight_layout()
         plt.savefig(base_dir / "seaborn_sims.pdf", bbox_inches="tight")
@@ -251,48 +251,30 @@ def eval_generation(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Generate samples from a trained model with plots.")
-    p.add_argument(
-        "--dataset",
-        type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
-        choices=[ds.value for ds in SupportedDataset],
-    )
     p.add_argument("--n_samples", type=int, default=100)
     args = p.parse_args()
-    models = {
-        "qm9": {
-            "gen_models": [
-                "nvp_QM9SmilesHRR1600F64G1G3_f4_lr0.000862736_wd0.0001_bs192_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f4_lr8.69904e-5_wd0_bs288_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f7_lr9.4456e-5_wd0.0003_bs448_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f8_lr0.00057532_wd0.0003_bs32_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f8_lr6.69953e-5_wd0.0001_bs160_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f9_lr0.000179976_wd0.0003_bs288_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f14_lr0.000112721_wd0.0005_bs224_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f14_lr0.000132447_wd3e-6_bs160_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f15_hid800_s42_lr0.000160949_wd3e-6_bs224_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f15_lr6.29685e-5_wd3e-6_bs128_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f16_hid400_s42_lr0.000154612_wd3e-6_bs32_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f16_hid800_s42_lr0.000430683_wd3e-6_bs512_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f16_lr0.000525421_wd0.0005_bs256_an",
-            ],
-        },
-    }
     n_samples = args.n_samples
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    ds = SupportedDataset(args.dataset)
-    for g in models[ds.default_cfg.base_dataset]["gen_models"]:
-        if ds.default_cfg.name in g:
-            try:
-                eval_generation(
-                    ds=ds,
-                    n_samples=n_samples,
-                    gen_mod_hint=g,
-                    draw=False,
-                    plot=True,
-                    out_suffix="_normalize_vs_not",
-                )
-            except Exception as e:
-                print(f"Error for {g}: {e}")
-                continue
+
+    datasests = [
+        SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3,
+        SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3,
+        SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3,
+    ]
+    for p in find_files(start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2", prefixes=("epoch",), desired_ending=".ckpt"):
+        name = p.parent.parent.name
+        if (ds_config := next((d for d in datasests if d.default_cfg.name in name), None)) is None:
+            print(f"[SKIPPED] {p}")
+            continue
+        try:
+            eval_generation(
+                ds=ds_config,
+                n_samples=n_samples,
+                gen_mod_hint=name,
+                draw=False,
+                plot=True,
+                out_suffix="_safe_to_delete_after_inspection",
+            )
+        except Exception as e:
+            print(f"[ERROR] {p}: {e}")
+            continue

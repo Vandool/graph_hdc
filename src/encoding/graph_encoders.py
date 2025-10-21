@@ -1701,9 +1701,18 @@ class HyperNet(AbstractGraphEncoder):
             # Only using the edges and the degree of the nodes we can count the number of nodes
             node_counter = get_node_counter(decoded_edges)
 
-        candidates = enumerate_graphs(
-            nodes_multiset=list(node_counter.elements()), edges_multiset=decoded_edges, max_solutions=max_solutions
-        )
+        if node_counter.total() > 20:
+            print(f"Skipping graph with {node_counter.total()} nodes")
+            # TODO: Correct this for ZINC
+            return [nx.Graph()], [False]
+
+        try:
+            candidates = enumerate_graphs(
+                nodes_multiset=list(node_counter.elements()), edges_multiset=decoded_edges, max_solutions=max_solutions
+            )
+        except ValueError as err:
+            print(f"[ERROR] While decoding graph: {err}")
+            return [nx.Graph()], [False]
 
         return [
             DataTransformer.z3_res_to_nx(ordered_nodes=c["ordered_nodes"], edge_indexes=c["associated_edge_idxs"])
