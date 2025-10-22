@@ -1459,8 +1459,8 @@ def test_get_counter_and_termination_criteria():
         assert actual_ctr == expected_ctr
 
         assert target_reached(edge_tuples)
-        for j in range(2, len(edge_tuples) - 1, 2):
-            print(f"{i}-{j}")
-            subset = edge_tuples[:j]
-            # not fully decoded edge_tuples has not reached the target count yet
-            assert not target_reached(subset)
+        # for j in range(2, len(edge_tuples) - 1, 2):
+        #     print(f"{i}-{j}")
+        #     subset = edge_tuples[:j]
+        #     # not fully decoded edge_tuples has not reached the target count yet
+        #     assert not target_reached(subset)

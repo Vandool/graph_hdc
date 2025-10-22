@@ -344,10 +344,10 @@ class HyperNet(AbstractGraphEncoder):
         return self._directed_decoded_edge_limit
 
     @decoding_limit.setter
-    def decoding_limit(self, ds: SupportedDataset) -> None:
-        if ds.default_cfg.base_dataset == "qm9":
+    def decoding_limit(self, base_dataset: str) -> None:
+        if base_dataset == "qm9":
             self._directed_decoded_edge_limit = 50
-        elif ds.default_cfg.base_dataset == "zinc":
+        elif base_dataset == "zinc":
             # already the default
             self._directed_decoded_edge_limit = 150
 
@@ -363,6 +363,7 @@ class HyperNet(AbstractGraphEncoder):
         self.edges_codebook = None
         self.edges_indexer = None
         self._max_step_delta: float | None = None
+        self._directed_decoded_edge_limit: int = 50  # Default for zin
 
     def to(self, device):
         # normalize + store; also move nn.Module state if any
@@ -989,7 +990,7 @@ class HyperNet(AbstractGraphEncoder):
 
             self._max_step_delta = min_norm
 
-        eps = self._max_step_delta * 0.8  # small relative tolerance
+        eps = self._max_step_delta * 0.7  # small relative tolerance
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         # while not target_reached(decoded_edges):
@@ -1750,10 +1751,6 @@ def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
         node_counter[k] = v // (k[1] + 1)
 
-    for k, v in node_counter.items():
-        if k in diagonals and v % 2 == 1 and 2 * v != diagonals[k]:
-            node_counter[k] = node_counter[k] + 1
-
     return node_counter
 
 
@@ -1782,6 +1779,8 @@ def load_or_create_hypernet(
         if do_print:
             print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet.load(path=path)
+        encoder.depth = cfg.hypernet_depth
+        encoder.decoding_limit = cfg
     else:
         if do_print:
             print("Creating new HyperNet instance.")

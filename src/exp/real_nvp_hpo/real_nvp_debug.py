@@ -24,7 +24,7 @@ from torchhd import HRRTensor
 
 from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import Features, SupportedDataset
-from src.encoding.graph_encoders import load_or_create_hypernet
+from src.encoding.graph_encoders import load_or_create_hypernet, target_reached
 from src.encoding.the_types import VSAModel
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
 from src.generation.analyze import analyze_terms_only
@@ -92,7 +92,8 @@ def setup_exp(dir_name: str | None = None) -> dict:
 class FlowConfig:
     exp_dir_name: str | None = None
     seed: int = 42
-    epochs: int = 700
+    # epochs: int = 700
+    epochs: int = 1
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 0.0
@@ -647,16 +648,6 @@ def run_experiment(cfg: FlowConfig):
     device = pick_device()
     log(f"Using device: {device!s}")
 
-    log("Loading/creating hypernet …")
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
-    log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
-    hypernet.depth = ds_cfg.hypernet_depth
-    log("Hypernet ready.")
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert hypernet.nodes_codebook.dtype == torch.float64
-    log("Hypernet ready.")
-
     # ----- datasets / loaders -----
     log(f"Loading {cfg.dataset.default_cfg.base_dataset} pair datasets.")
     train_dataset = get_split(split="train", ds_config=cfg.dataset.default_cfg)
@@ -664,6 +655,16 @@ def run_experiment(cfg: FlowConfig):
     log(
         f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
+
+    log("Loading/creating hypernet …")
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    nodes_set = set(map(tuple, train_dataset.x.long().tolist()))
+    hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
+    log("Hypernet ready.")
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert hypernet.nodes_codebook.dtype == torch.float64
+    log("Hypernet ready.")
 
     # pick worker counts per GPU; tune for your cluster
     num_workers = 16 if torch.cuda.is_available() else 0
@@ -830,16 +831,23 @@ def run_experiment(cfg: FlowConfig):
     edge_s = edge_s.as_subclass(HRRTensor)
     graph_s = graph_s.as_subclass(HRRTensor)
 
-    decoded_edge_sizes = [len(hypernet.decode_order_one_no_node_terms(et)) for et in edge_s]
-    np_des = np.asarray(decoded_edge_sizes)
-    decoded_edge_sizes = {
-        "mean": np.mean(np_des),
-        "std": np.std(np_des),
-        "median": np.median(np_des),
-        "min": np.min(np_des),
-        "max": np.max(np_des),
+    dec_edges, dec_edge_lengths, hits = [], [], []
+    for et in edge_s:
+        dec_edge = hypernet.decode_order_one_no_node_terms(et)
+        dec_edges.append(dec_edge)
+        dec_edge_lengths.append(len(dec_edge))
+        hits.append(target_reached(dec_edge))
+
+    np_des = np.asarray(dec_edge_lengths)
+    decoded_edges_meta = {
+        "hits": float(sum(hits) / len(hits)),
+        "mean": float(np.mean(np_des)),
+        "std": float(np.std(np_des)),
+        "median": float(np.median(np_des)),
+        "min": float(np.min(np_des)),
+        "max": float(np.max(np_des)),
     }
-    (artefacts_dir / "decoded_edge_sizes.json").write_text(json.dumps(decoded_edge_sizes, indent=2))
+    (artefacts_dir / "decoded_edges_meta.json").write_text(json.dumps(decoded_edges_meta, indent=2))
 
     # log(f"node_s device: {node_s.device!s}")
     log(f"graph_s device: {graph_s.device!s}")
@@ -882,7 +890,7 @@ def run_experiment(cfg: FlowConfig):
     log("Experiment completed.")
     log(f"Best val loss: {min_val_loss:.4f}")
     log(f"Best checkpoint: {best_path}")
-    return min_val_loss, decoded_edge_sizes
+    return min_val_loss, decoded_edges_meta
 
 
 # def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
