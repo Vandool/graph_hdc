@@ -92,8 +92,7 @@ def setup_exp(dir_name: str | None = None) -> dict:
 class FlowConfig:
     exp_dir_name: str | None = None
     seed: int = 42
-    # epochs: int = 700
-    epochs: int = 1
+    epochs: int = 700
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 0.0
