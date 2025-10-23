@@ -244,7 +244,7 @@ class Compose:
 
 def get_split(
     split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig, use_no_suffix: bool = False
-) -> DSHDCConfig:
+) -> InMemoryDataset:
     enc_suffix = ""
     if ds_config.base_dataset == "qm9":
         if not use_no_suffix:

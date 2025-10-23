@@ -98,7 +98,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_trials", type=int, default=1)
@@ -134,7 +134,8 @@ if __name__ == "__main__":
         trial.set_user_attr("dataset", ds.default_cfg.name)
         for k, v in decoded_edges_sizes.items():
             trial.set_user_attr(f"decoded_edges_size_{k}", v)
-        return val
+        # TODO: Testing optimizing on the hits
+        return decoded_edges_sizes["hits"]
 
     # Run optimization
     study.optimize(objective, n_trials=args.n_trials)

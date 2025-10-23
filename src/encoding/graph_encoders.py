@@ -594,7 +594,7 @@ class HyperNet(AbstractGraphEncoder):
             ## Prepare level 1 Embeddings: Only edge terms (not bounded with level 0)
             ## Prepare Level 0 Embedding: Only node terms
             edge_terms = scatter_hd(src=edge_terms, index=data.batch, op="bundle")
-            mp2_terms = scatter_hd(mp2_terms, index=data.batch, op="bundle")
+            # mp2_terms = scatter_hd(mp2_terms, index=data.batch, op="bundle")
 
         return {
             # This the main result of the forward pass which is the individual graph embedding vectors of the
@@ -604,8 +604,8 @@ class HyperNet(AbstractGraphEncoder):
             # As additional information that might be useful we also pass the stack of the node embeddings across
             # the various convolutional depths.
             # node_hv_stack: (batch_size * num_nodes, num_layers + 1, hv_dim)
-            "mp2_terms": mp2_terms,
-            "node_hv_stack": node_hv_stack,
+            # "mp2_terms": mp2_terms,
+            # "node_hv_stack": node_hv_stack,
             "node_terms": node_terms,
             "edge_terms": edge_terms,
         }

@@ -19,6 +19,7 @@ import torch
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
+from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
@@ -103,6 +104,8 @@ class FlowConfig:
     hv_dim: int = 40 * 40  # 1600
     vsa: VSAModel = VSAModel.HRR
     dataset: SupportedDataset = SupportedDataset.QM9_SMILES_HRR_1600
+    num_workers: int = 12
+    prefetch_factor: int = 6
 
     num_flows: int = 4
     num_hidden_channels: int = 256
@@ -170,13 +173,6 @@ def fit_featurewise_standardization(
 # ---------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------
-
-
-def _first_existing(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
 
 
 def plot_train_val_loss(
@@ -321,55 +317,55 @@ class TimeLoggingCallback(Callback):
         trainer.logger.log_metrics({"elapsed_time_sec": elapsed}, step=trainer.current_epoch)
 
 
-class PeriodicNLLEval(Callback):
-    def __init__(
-        self,
-        val_loader,
-        artefacts_dir: Path,
-        every_n_epochs: int = 50,
-        max_batches: int | None = 200,
-        log_hist: bool = False,
-    ):
-        super().__init__()
-        self.val_loader = val_loader
-        self.artefacts_dir = Path(artefacts_dir)
-        self.every = int(every_n_epochs)
-        self.max_batches = max_batches
-        self.log_hist = log_hist
-
-    @torch.no_grad()
-    def on_validation_epoch_end(self, trainer, pl_module):
-        epoch = int(trainer.current_epoch) + 1
-        if self.every <= 0 or (epoch % self.every) != 0:
-            return
-
-        stats = _eval_flow_metrics(
-            pl_module,
-            self.val_loader,
-            pl_module.device,
-            hv_count=pl_module.hv_count,
-            hv_dim=pl_module.D,
-            max_batches=self.max_batches,
-        )
-        if not stats:
-            return
-
-        # persist arrays (with epoch in file for easier joins)
-        self.artefacts_dir.mkdir(parents=True, exist_ok=True)
-        # df = pd.DataFrame(stats)
-        # df["epoch"] = epoch
-        # df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
-
-        # compact scalar summary with consistent names
-        summary = _summarize_arrays(stats)
-        log_payload = {f"val/{k}": v for k, v in summary.items()}
-        log_payload["epoch"] = epoch
-
-        # log scalars to all attached loggers (CSV & W&B if present)
-        try:
-            trainer.logger.log_metrics(log_payload, step=trainer.global_step)
-        except Exception:
-            log(log_payload)
+# class PeriodicNLLEval(Callback):
+#     def __init__(
+#         self,
+#         val_loader,
+#         artefacts_dir: Path,
+#         every_n_epochs: int = 50,
+#         max_batches: int | None = 200,
+#         log_hist: bool = False,
+#     ):
+#         super().__init__()
+#         self.val_loader = val_loader
+#         self.artefacts_dir = Path(artefacts_dir)
+#         self.every = int(every_n_epochs)
+#         self.max_batches = max_batches
+#         self.log_hist = log_hist
+#
+#     @torch.no_grad()
+#     def on_validation_epoch_end(self, trainer, pl_module):
+#         epoch = int(trainer.current_epoch) + 1
+#         if self.every <= 0 or (epoch % self.every) != 0:
+#             return
+#
+#         stats = _eval_flow_metrics(
+#             pl_module,
+#             self.val_loader,
+#             pl_module.device,
+#             hv_count=pl_module.hv_count,
+#             hv_dim=pl_module.D,
+#             max_batches=self.max_batches,
+#         )
+#         if not stats:
+#             return
+#
+#         # persist arrays (with epoch in file for easier joins)
+#         self.artefacts_dir.mkdir(parents=True, exist_ok=True)
+#         # df = pd.DataFrame(stats)
+#         # df["epoch"] = epoch
+#         # df.to_parquet(self.artefacts_dir / f"val_metrics_epoch{epoch:04d}.parquet", index=False)
+#
+#         # compact scalar summary with consistent names
+#         summary = _summarize_arrays(stats)
+#         log_payload = {f"val/{k}": v for k, v in summary.items()}
+#         log_payload["epoch"] = epoch
+#
+#         # log scalars to all attached loggers (CSV & W&B if present)
+#         try:
+#             trainer.logger.log_metrics(log_payload, step=trainer.global_step)
+#         except Exception:
+#             log(log_payload)
 
 
 def _norm_cdf(x):
@@ -648,11 +644,11 @@ def run_experiment(cfg: FlowConfig):
     log(f"Using device: {device!s}")
 
     # ----- datasets / loaders -----
-    log(f"Loading {cfg.dataset.default_cfg.base_dataset} pair datasets.")
-    train_dataset = get_split(split="train", ds_config=cfg.dataset.default_cfg)
-    validation_dataset = get_split(split="valid", ds_config=cfg.dataset.default_cfg)
+    log(f"Loading {ds_cfg.base_dataset} pair datasets.")
+    train_dataset = get_split(split="train", ds_config=ds_cfg)
+    validation_dataset = get_split(split="valid", ds_config=ds_cfg)
     log(
-        f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
+        f"Pairs loaded for {ds_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
 
     log("Loading/creating hypernet …")
@@ -660,37 +656,38 @@ def run_experiment(cfg: FlowConfig):
     nodes_set = set(map(tuple, train_dataset.x.long().tolist()))
     hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
     log("Hypernet ready.")
+    assert torch.allclose(
+        hypernet.forward(Batch.from_data_list([train_dataset[42]]))["edge_terms"],
+        train_dataset[42].edge_terms.to(device),
+    ), "edge terms are not equal"
+    assert torch.allclose(
+        hypernet.forward(Batch.from_data_list([train_dataset[0]]))["edge_terms"], train_dataset[0].edge_terms.to(device)
+    ), "edge terms are not equal"
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert hypernet.nodes_codebook.dtype == torch.float64
     log("Hypernet ready.")
 
     # pick worker counts per GPU; tune for your cluster
-    num_workers = 16 if torch.cuda.is_available() else 0
-    if local_dev:
-        train_dataset = train_dataset[: cfg.batch_size]
-        validation_dataset = validation_dataset[: cfg.batch_size]
-        num_workers = 0
-
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        num_workers=num_workers,
+        num_workers=cfg.num_workers if os.getenv("CLUSTER") != "local" else 4,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=bool(num_workers > 0),
+        persistent_workers=bool(cfg.num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 8,
+        prefetch_factor=None if local_dev else 8 if os.getenv("CLUSTER") != "local" else 3,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        persistent_workers=bool(num_workers > 0),
+        num_workers=cfg.num_workers if os.getenv("CLUSTER") != "local" else 3,
+        pin_memory=False,  # TODO
+        persistent_workers=bool(cfg.num_workers > 0),
         drop_last=False,
-        prefetch_factor=None if local_dev else 8,
+        prefetch_factor=cfg.num_workers if os.getenv("CLUSTER") != "local" else 2,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -715,12 +712,12 @@ def run_experiment(cfg: FlowConfig):
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     time_logger = TimeLoggingCallback()
-    periodic_nll = PeriodicNLLEval(
-        val_loader=validation_dataloader,
-        artefacts_dir=artefacts_dir,
-        every_n_epochs=50 if not local_dev else 1,
-        max_batches=200 if not local_dev else 1,
-    )
+    # periodic_nll = PeriodicNLLEval(
+    #     val_loader=validation_dataloader,
+    #     artefacts_dir=artefacts_dir,
+    #     every_n_epochs=50 if not local_dev else 1,
+    #     max_batches=200 if not local_dev else 1,
+    # )
 
     early_stopping = EarlyStopping(
         monitor="val_loss",
@@ -737,7 +734,7 @@ def run_experiment(cfg: FlowConfig):
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
@@ -933,8 +930,8 @@ def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
             choices=[0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4],
         ),
         "num_flows": trial.suggest_int("num_flows", 4, 16),
-        # "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 2048, step=128),
-        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 800, 800, step=400),
+        "num_hidden_channels": trial.suggest_int("num_hidden_channels", 256, 1024, step=128),
+        # "num_hidden_channels": trial.suggest_int("num_hidden_channels", 800, 800, step=400),
         "smax_initial": trial.suggest_float("smax_initial", 0.1, 3.0),
         "smax_final": trial.suggest_float("smax_final", 3.0, 8.0),
         "smax_warmup_epochs": trial.suggest_int("smax_warmup_epochs", 10, 20),

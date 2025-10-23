@@ -14,6 +14,7 @@ from tqdm import tqdm
 from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG_F64,
+
     ZINC_SMILES_HRR_7744_CONFIG_F64,
 )
 from src.encoding.decoder import new_decoder  # noqa: F401
@@ -67,7 +68,11 @@ DECODER_SETTINGS = {
 def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
     ds_config = QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG_F64
     for hv_dim in HV_DIMS[base_dataset]:
-        for d in [3, 4, 5, 6]:
+        for d in [
+            # 3,
+                  4,
+            # 5, 6
+        ]:
             for decoder_setting in DECODER_SETTINGS[base_dataset]:
                 device = pick_device()
                 print(f"Running on {device}")
@@ -172,7 +177,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Evaluation retrieval of full graph from encoded graph")
     p.add_argument("--dataset", type=str, default="qm9", choices=["zinc", "qm9"])
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=100)
     args = p.parse_args()
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     pprint(args)

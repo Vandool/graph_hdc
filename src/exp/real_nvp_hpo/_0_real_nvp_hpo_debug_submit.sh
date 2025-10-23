@@ -15,7 +15,6 @@ echo "DryRun  : ${DRY_RUN}"
 # User-configurable parameters
 # -----------------------------
 CLUSTER="${CLUSTER:-local}"
-
 GPUS="${GPUS:-1}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
 NODES="${NODES:-1}"
@@ -25,8 +24,8 @@ NTASKS="${NTASKS:-1}"
 # QM9_SMILES_HRR_1600_F64_G1G3
 # QM9_SMILES_HRR_1600_F64_G1NG3
 # ZINC_SMILES_HRR_6144_F64_G1G3
-DATASET="${DATASET:-QM9_SMILES_HRR_1600_F64_G1G3}"
-N_TRIALS="${N_TRIALS:-20}"
+DATASET="${DATASET:-QM9_SMILES_HRR_1600_F64_G1NG3}"
+N_TRIALS="${N_TRIALS:-10}"
 IS_DEV="${IS_DEV:-False}"
 
 MODULE_LOAD_DEFAULT=''
@@ -61,7 +60,7 @@ case "$CLUSTER" in
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'debug|01:00:00|24G'
+    TUPLES=$'debug|24:00:00|30G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"
@@ -115,12 +114,14 @@ submit_one() {
       cat <<WRAP
 set -euo pipefail
 $MODULE_LOAD
+echo 'Cluster:' ${CLUSTER}
 echo 'Node:' \$(hostname)
 echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
+export CLUSTER=${CLUSTER}
 cd '${EXPERIMENTS_PATH}'
 pixi run --frozen -e '${PIXI_ENV}' python ${QUOTED_ARGS}
 WRAP
