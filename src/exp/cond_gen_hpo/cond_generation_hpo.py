@@ -14,8 +14,7 @@ from torchhd import HRRTensor
 from tqdm.auto import tqdm
 
 from src.encoding.configs_and_constants import (
-    QM9_SMILES_HRR_1600_CONFIG_F64,
-    ZINC_SMILES_HRR_7744_CONFIG,
+    SupportedDataset,
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import HDCGenerator
@@ -243,7 +242,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     decoder_settings = {
         "initial_limit": 2048,
         "limit": 1024,
-        "beam_size": 256,
+        "beam_size": 512,
         "pruning_method": "cos_sim",
         "use_size_aware_pruning": True,
         "use_one_initial_population": True,
@@ -251,7 +250,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
 
     generator = HDCGenerator(
         gen_model_hint=gen_model_hint,
-        ds_config=QM9_SMILES_HRR_1600_CONFIG_F64 if base_dataset == "qm9" else ZINC_SMILES_HRR_7744_CONFIG,
+        ds_config=cfg.get("dataset"),
         decoder_settings=decoder_settings,
         device=device,
     )
@@ -308,7 +307,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     return results
 
 
-def run_qm9_cond_gen(trial: optuna.Trial):
+def run_qm9_cond_gen(trial: optuna.Trial, dataset: SupportedDataset):
     cfg = {
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
         "steps": trial.suggest_int("steps", 50, 1500),
@@ -318,13 +317,14 @@ def run_qm9_cond_gen(trial: optuna.Trial):
         "draw": False,
         "n_samples": 1000,
         "base_dataset": "qm9",
+        "dataset": dataset,
     }
     pprint(cfg)
 
     return eval_cond_gen(cfg=cfg)
 
 
-def run_zinc_cond_gen(trial: optuna.Trial):
+def run_zinc_cond_gen(trial: optuna.Trial, dataset: SupportedDataset):
     cfg = {
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
         "steps": trial.suggest_int("steps", 50, 1500),
@@ -334,6 +334,7 @@ def run_zinc_cond_gen(trial: optuna.Trial):
         "draw": False,
         "n_samples": 100,
         "base_dataset": "zinc",
+        "dataset": dataset,
     }
     pprint(cfg)
 

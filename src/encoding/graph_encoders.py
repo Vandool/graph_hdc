@@ -1,4 +1,5 @@
 import itertools
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, ClassVar
@@ -1530,9 +1531,10 @@ class HyperNet(AbstractGraphEncoder):
             decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
             edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
         else:
-            decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term)
+            decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term.clone())
             edge_count = len(decoded_edges) // 2  # bidirectional edges
-            node_counter = get_node_counter(decoded_edges)
+            node_counter = get_node_counter_corrective(decoded_edges)
+            decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
         if node_counter.total() > 20:
             print(f"Skipping graph with {node_counter.total()} nodes")
@@ -1773,6 +1775,16 @@ def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     for k, v in node_degree_counter.items():
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
         node_counter[k] = v // (k[1] + 1)
+
+    return node_counter
+
+def get_node_counter_corrective(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
+    # Only using the edges and the degree of the nodes we can count the number of nodes
+    node_degree_counter = Counter(u for u, _ in edges)
+    node_counter = Counter()
+    for k, v in node_degree_counter.items():
+        # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
+        node_counter[k] = math.ceil(v / (k[1] + 1))
 
     return node_counter
 
