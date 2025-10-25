@@ -10,6 +10,7 @@ import numpy as np
 import seaborn as sns
 import torch
 from pytorch_lightning import seed_everything
+from rdkit import Chem
 from rdkit.Chem import QED
 from scipy.stats import gaussian_kde
 
@@ -20,7 +21,7 @@ from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import HDCGenerator, HDCZ3Generator
+from src.generation.generation import HDCGenerator
 from src.utils.chem import draw_mol
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
 from src.utils.visualisations import plot_logp_kde
@@ -60,8 +61,8 @@ def eval_generation(
 ) -> dict[str, Any]:
     global EVALUATOR  # noqa: PLW0603
     base_dataset = ds.default_cfg.base_dataset
-    # generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
-    generator = HDCZ3Generator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
+    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
+    # generator = HDCZ3Generator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
 
     generator.decoder_settings = {
         "initial_limit": 2048,
@@ -98,7 +99,7 @@ def eval_generation(
 
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
-        / "generation_and_plots"
+        / "generation_and_plots_new_termination_criterion_c"
         / f"{base_dataset}_{gen_mod_hint}_hdc-decoder_{n_samples}-samples{out_suffix}"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -134,8 +135,8 @@ def eval_generation(
         ds = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
         ds_num_nodes, ds_num_edges, ds_logp, ds_qed, ds_sa = [], [], [], [], []
         for d in ds:
-            ds_num_nodes.append(int(d.num_nodes))
-            ds_num_edges.append(int(d.num_edges))
+            ds_num_nodes.append(int(Chem.MolFromSmiles(d.smiles).GetNumAtoms()))
+            ds_num_edges.append(int(Chem.MolFromSmiles(d.smiles).GetNumBonds()))
             ds_logp.append(float(d.logp.detach().cpu().reshape(-1)[0]))
             ds_qed.append(float(d.qed.detach().cpu().reshape(-1)[0]))
             ds_sa.append(float(d.sa_score.detach().cpu().reshape(-1)[0]))
@@ -251,10 +252,10 @@ def eval_generation(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Generate samples from a trained model with plots.")
-    p.add_argument("--n_samples", type=int, default=100)
+    p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
     n_samples = args.n_samples
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
     datasests = [
         SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3,

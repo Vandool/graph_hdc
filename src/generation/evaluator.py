@@ -2,6 +2,7 @@ import math
 from collections.abc import Callable
 
 import networkx as nx
+import numpy as np
 from rdkit import Chem
 from rdkit.Chem import QED, AllChem, Crippen, DataStructs
 
@@ -48,10 +49,10 @@ class GenerationEvaluator:
         def sim_stats(values: list[float], prefix: str) -> dict[str, float]:
             if not values:
                 return {f"{prefix}_sim_mean": 0.0, f"{prefix}_sim_min": 0.0, f"{prefix}_sim_max": 0.0}
+            v = np.array(values)
             return {
-                f"{prefix}_sim_mean": sum(values) / len(values),
-                f"{prefix}_sim_min": min(values),
-                f"{prefix}_sim_max": max(values),
+                f"{prefix}_sim_mean": v.mean(),
+                f"{prefix}_sim_std": v.std(),
             }
 
         # split sims by final vs nonfinal

@@ -111,7 +111,7 @@ class AbstractGenerator(abc.ABC):
 
         for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
             full_ctr = None
-            if full_ctrs:
+            if full_ctrs is not None:
                 full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
                 total_node_limit = 20 if self.base_dataset == "qm9" else 50
                 if full_ctr is None or sum(full_ctr.values()) == 0 or full_ctr.total() > total_node_limit:

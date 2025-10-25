@@ -21,7 +21,6 @@ from src.encoding.configs_and_constants import (
     DSHDCConfig,
     Features,
     IndexRange,
-    SupportedDataset,
 )
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
@@ -966,7 +965,9 @@ class HyperNet(AbstractGraphEncoder):
 
         return decoded_edges
 
-    def decode_order_one_no_node_terms(self, edge_term: torch.Tensor) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+    def decode_order_one_no_node_terms(
+        self, edge_term: torch.Tensor, debug: bool = False
+    ) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
         """
         extracts the list of edge tuples from the given ``edge_term`` tensor.
 
@@ -994,27 +995,49 @@ class HyperNet(AbstractGraphEncoder):
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         # while not target_reached(decoded_edges):
+        norms = []
+        prev_edge_term = edge_term.clone()
+        similarities = []
         while (
             # not target_reached(decoded_edges)
             # essentially by getting the norm of het edge_term we know how many edges we have
             # roughly for each ||edge_term|| // 2 tells us how many edges since the hv resulted as binding of
             # two nodes has norm ~1.0. We could prune earlier, but we might reach a target and be able to decode
             # something, so we keep going.
-            edge_term.norm().item() > eps
+            # edge_term.norm().item() > eps
             # this will almost certainly cause an invalid setup, should be caught by the caller
-            and len(decoded_edges) <= self.decoding_limit
+            len(decoded_edges) <= self.decoding_limit
         ):
+            curr_norm = edge_term.norm().item()
+            norms.append(curr_norm)
+            if curr_norm <= eps:
+                break
             sims = torchhd.cos(edge_term, self.edges_codebook)
             idx_max = torch.argmax(sims).item()
+            similarities.append(sims[idx_max].item())
             a_found, b_found = self.edges_indexer.get_tuple(idx_max)
             hd_a_found: VSATensor = self.nodes_codebook[a_found]
             hd_b_found: VSATensor = self.nodes_codebook[b_found]
             edge_term -= hd_a_found.bind(hd_b_found)
             edge_term -= hd_b_found.bind(hd_a_found)
+            if edge_term.norm().item() > prev_edge_term.norm().item():
+                if not target_reached(decoded_edges) and target_reached(
+                    [
+                        *decoded_edges,
+                        (self.nodes_indexer.get_tuple(a_found), self.nodes_indexer.get_tuple(b_found)),
+                        (self.nodes_indexer.get_tuple(b_found), self.nodes_indexer.get_tuple(a_found)),
+                    ]
+                ):
+                    decoded_edges.append((self.nodes_indexer.get_tuple(a_found), self.nodes_indexer.get_tuple(b_found)))
+                    decoded_edges.append((self.nodes_indexer.get_tuple(b_found), self.nodes_indexer.get_tuple(a_found)))
+                break
+            prev_edge_term = edge_term.clone()
 
             decoded_edges.append((self.nodes_indexer.get_tuple(a_found), self.nodes_indexer.get_tuple(b_found)))
             decoded_edges.append((self.nodes_indexer.get_tuple(b_found), self.nodes_indexer.get_tuple(a_found)))
 
+        if debug:
+            return decoded_edges, norms, similarities
         return decoded_edges
 
     def _populate_edge_feature_indexer(self) -> None:
