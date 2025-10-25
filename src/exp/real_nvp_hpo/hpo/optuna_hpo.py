@@ -98,7 +98,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
+        default=SupportedDataset.ZINC_SMILES_HRR_5120_F64_G1G3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_trials", type=int, default=1)
