@@ -19,11 +19,12 @@ import torch
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
+from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
 from src.datasets.utils import get_split
-from src.encoding.configs_and_constants import Features, SupportedDataset
+from src.encoding.configs_and_constants import Features, SupportedDataset, ZINC_SMILES_HRR_5120_G1G4_CONFIG
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
@@ -647,16 +648,6 @@ def run_experiment(cfg: FlowConfig):
     device = pick_device()
     log(f"Using device: {device!s}")
 
-    log("Loading/creating hypernet …")
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
-    log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
-    hypernet.depth = ds_cfg.hypernet_depth
-    log("Hypernet ready.")
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert hypernet.nodes_codebook.dtype == torch.float64
-    log("Hypernet ready.")
-
     # ----- datasets / loaders -----
     log(f"Loading {cfg.dataset.default_cfg.base_dataset} pair datasets.")
     train_dataset = get_split(split="train", ds_config=cfg.dataset.default_cfg)
@@ -664,6 +655,26 @@ def run_experiment(cfg: FlowConfig):
     log(
         f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
+
+
+    log("Loading/creating hypernet …")
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
+    hypernet.depth = ds_cfg.hypernet_depth
+    log("Hypernet ready.")
+    assert torch.allclose(
+        hypernet.forward(Batch.from_data_list([train_dataset[42]]))["edge_terms"],
+        train_dataset[42].edge_terms.to(device),
+    ), "edge terms are not equal"
+    assert torch.allclose(
+        hypernet.forward(Batch.from_data_list([train_dataset[0]]))["edge_terms"], train_dataset[0].edge_terms.to(device)
+    ), "edge terms are not equal"
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert hypernet.nodes_codebook.dtype == torch.float64
+    log("Hypernet ready.")
+
+
 
     # pick worker counts per GPU; tune for your cluster
     num_workers = 16 if torch.cuda.is_available() else 0
@@ -903,7 +914,7 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = FlowConfig()
     for k, v in cfg.items():
         setattr(flow_cfg, k, v)
-    flow_cfg.dataset = dataset
+    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_5120_F64_G1G3 #TODO
     flow_cfg.hv_dim = dataset.default_cfg.hv_dim
     flow_cfg.hv_count = dataset.default_cfg.hv_count
     flow_cfg.vsa = dataset.default_cfg.vsa
