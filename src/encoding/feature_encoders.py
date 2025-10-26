@@ -247,7 +247,7 @@ class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
         """
         # Advanced indexing: each integer index pulls one row from codebook
         # make sure the last dim is just a singleton index
-        self.codebook = self.codebook.to(torch.float64).as_subclass(VSAModel(self.vsa).tensor_class)
+        # self.codebook = self.codebook.to(torch.float64).as_subclass(VSAModel(self.vsa).tensor_class)
         if data.shape[-1] == 1:
             msg = f"Expected last dim>1, got {data.shape[-1]}"
             raise ValueError(msg)

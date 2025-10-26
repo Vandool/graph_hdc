@@ -10,13 +10,13 @@ import normflows as nf
 import optuna
 import torch
 from pytorch_lightning import seed_everything
+from torch_geometric.data import Batch
 from torchhd import HRRTensor
 from tqdm.auto import tqdm
 
 from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
-from src.encoding.graph_encoders import load_or_create_hypernet
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import HDCGenerator
 from src.generation.logp_regressor import LogPRegressor
@@ -37,7 +37,8 @@ torch.set_num_threads(num)
 torch.set_num_interop_threads(max(1, min(2, num)))  # coordination threads
 
 # by defualt float64
-torch.set_default_dtype(torch.float64)
+DTYPE = torch.float32
+torch.set_default_dtype(DTYPE)
 
 
 # (optional but often helps BLAS backends)
@@ -47,7 +48,6 @@ os.environ.setdefault("MKL_NUM_THREADS", str(num))
 seed = 42
 seed_everything(seed)
 device = pick_device()
-# device = torch.device("cpu")
 EVALUATOR = None
 
 logp_stats = {
@@ -169,6 +169,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     gen_model_hint = os.getenv("GEN_MODEL")
     assert gen_model_hint is not None
     assert os.getenv("CLASSIFIER") is not None
+    print(f"Using device: {device}")
 
     gen_ckpt_path = get_gen_model(hint=gen_model_hint)
     print(f"Generator Checkpoint: {gen_ckpt_path}")
@@ -192,6 +193,8 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
 
     gen_model.to(device)
     logp_regressor.to(device)
+    print(f"Gen model device: {gen_model.device}")
+    print(f"LPR model device: {logp_regressor.device}")
 
     # ---- Hyperparams ----
     base_dataset = cfg.get("base_dataset", "zinc")
@@ -262,6 +265,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         ds_config=dataset.default_cfg,
         decoder_settings=decoder_settings,
         device=device,
+        dtype=DTYPE,
     )
 
     decoded = generator.decode(node_terms=None, edge_terms=e, graph_terms=g)
@@ -270,11 +274,10 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     sims = decoded["similarities"]
 
     # Second filter nx -> hdc -> log -> is in eps?
-    batch = [DataTransformer.nx_to_pyg(g) for g in nx_graphs]
-    hypernet = load_or_create_hypernet(cfg=dataset.default_cfg)
+    batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in nx_graphs])
+    hypernet = generator.hypernet
     res = hypernet.forward(batch)
-    res["edge_terms"]
-    hdc_round_2 = torch.cat((res["edge_terms"], res["graph_terms"]), dim=1)
+    hdc_round_2 = torch.cat((res["edge_terms"], res["graph_embedding"]), dim=1)
     y_pred_round_2 = logp_regressor.gen_forward(hdc_round_2)
     hits_round_2 = (y_pred_round_2 - target).abs() <= epsilon
     success_rate_round_2 = hits_round_2.float().sum().item()
@@ -293,7 +296,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         "lr": lr,
         "epsilon": epsilon,
         "initial_success_rate": success_rate,
-        "final_success_rate": success_rate_round_2,
+        "final_success_rate": success_rate_round_2 / n_samples,
         **decoder_settings,
     }
 
@@ -302,7 +305,12 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     if EVALUATOR is None:
         EVALUATOR = GenerationEvaluator(base_dataset=base_dataset, device=device)
     evals = EVALUATOR.evaluate_conditional(
-        samples=nx_graphs, target=target, final_flags=final_flags, eps=epsilon, total_samples=n_samples, sims=sims
+        samples=[g for g, hit in zip(nx_graphs, hits_round_2.tolist(), strict=True) if hit],
+        target=target,
+        final_flags=final_flags,
+        eps=epsilon,
+        total_samples=n_samples,
+        sims=sims,
     )
     # Flatten the evals
     results.update(

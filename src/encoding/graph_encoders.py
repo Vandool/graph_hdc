@@ -365,27 +365,30 @@ class HyperNet(AbstractGraphEncoder):
         self._max_step_delta: float | None = None
         self._directed_decoded_edge_limit: int = 50  # Default for zinc
 
-    def to(self, device):
+    def to(self, device, dtype=None):
         # normalize + store; also move nn.Module state if any
         device = torch.device(device)
         super().to(device)  # safe even if there are no nn.Parameters
+        if dtype is not None:
+            super().to(dtype)
 
         self.populate_codebooks()  # ensure they exist before moving
 
         # move codebooks (non-parameter buffers)
         if self.nodes_codebook is not None:
-            self.nodes_codebook = self.nodes_codebook.to(device)
+            self.nodes_codebook = self.nodes_codebook.to(device=self.device, dtype=self.dtype)
         if getattr(self, "edge_feature_codebook", None) is not None:
-            self.edge_feature_codebook = self.edge_feature_codebook.to(device)
+            self.edge_feature_codebook = self.edge_feature_codebook.device = self.device, dtype = self.dtype
         if self.use_edge_codebook and self.edges_codebook is not None:
-            self.edges_codebook = self.edges_codebook.to(device)
+            self.edges_codebook = self.edges_codebook.device = self.device, dtype = self.dtype
 
         # move encoder codebooks & record their device
         for enc_map in (self.node_encoder_map, self.edge_encoder_map, self.graph_encoder_map):
             for enc, _ in enc_map.values():
-                enc.device = device
+                enc.device = self.device
+                enc.dtype = self.dtype
                 if getattr(enc, "codebook", None) is not None:
-                    enc.codebook = enc.codebook.to(device)
+                    enc.codebook = enc.codebook.to(device=self.device, dtype=self.dtype)
 
         return self
 
@@ -1537,7 +1540,7 @@ class HyperNet(AbstractGraphEncoder):
             if not target_reached(decoded_edges):
                 decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
-        if node_counter.total() > 20:
+        if node_counter.total() > 16:
             print(f"Skipping graph with {node_counter.total()} nodes")
             # TODO: Correct this for ZINC
             return [nx.Graph()], [False]

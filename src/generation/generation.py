@@ -47,6 +47,7 @@ class AbstractGenerator(abc.ABC):
     ds_config: DSHDCConfig
     device: torch.device | None = None
     decoder_settings: dict[str, Any] = attr.Factory(dict)
+    dtype: torch.dtype = torch.float32
 
     # Post init stuff
     gen_model: RealNVPV2Lightning = attr.field(init=False)
@@ -67,9 +68,14 @@ class AbstractGenerator(abc.ABC):
         self.gen_model = (
             registery.retrieve_model(model_type)
             .load_from_checkpoint(gen_ckpt_path, map_location="cpu", strict=True)
-            .to(self.device)
+            .to(device=self.device, dtype=self.dtype)
+            .eval()
         )
-        self.hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=self.ds_config).to(self.device).eval()
+        self.hypernet = (
+            load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=self.ds_config)
+            .to(device=self.device, dtype=self.dtype)
+            .eval()
+        )
         self.vsa = self.ds_config.vsa
         self.base_dataset = "zinc" if "zinc" in self.ds_config.name.lower() else "qm9"
         # Limit the node codebook so we encode only valid nodes

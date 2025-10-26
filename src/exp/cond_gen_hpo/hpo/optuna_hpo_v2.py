@@ -6,7 +6,7 @@ import pandas as pd
 from optuna_integration import BoTorchSampler
 
 from src.encoding.configs_and_constants import SupportedDataset
-from src.exp.cond_gen_hpo.cond_generation_hpo_v2 import run_qm9_cond_gen, run_zinc_cond_gen
+from src.exp.cond_gen_hpo.cond_generation_hpo_v2 import run_qm9_cond_gen
 
 SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 5e-3, log=True),
@@ -94,7 +94,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 if __name__ == "__main__":
     dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3
     base_dataset = dataset.default_cfg.base_dataset
-    base_objective = run_qm9_cond_gen if base_dataset == "qm9" else run_zinc_cond_gen
+    base_objective = run_qm9_cond_gen
     for gen_model in [
         "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_s42_lr0.000167245_wd3e-6_bs128",
         "R1_nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
@@ -111,9 +111,9 @@ if __name__ == "__main__":
             # Paths (per-dataset DB + CSV)
             here = pathlib.Path(__file__).parent
             # study_base = here.parent.name
-            study_name = f"{gen_model}_{classifier}_{base_dataset}_mae"
-            db_path = here / f"{gen_model}_{classifier}_{base_dataset}_mae.db"
-            csv = here / f"trials_{gen_model}_{classifier}_{base_dataset}_mae.csv"
+            study_name = f"{gen_model}_{classifier}_{dataset.default_cfg.name}"
+            db_path = here / f"{gen_model}_{classifier}_{dataset.default_cfg.name}.db"
+            csv = here / f"trials_{gen_model}_{classifier}_{dataset.default_cfg.name}.csv"
 
             # Rebuild if DB missing, else load
             if not db_path.exists():
@@ -135,9 +135,9 @@ if __name__ == "__main__":
                 for k, v in res.items():
                     trial.set_user_attr(key=k, value=v)
 
-                return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
+                # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
                 # return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
-                # return res["valid_mae_to_target"]
+                return res["final_success_rate"]
 
             # Run optimization
             study.optimize(objective, n_trials=1)
