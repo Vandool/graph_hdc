@@ -92,7 +92,7 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
 
 
 if __name__ == "__main__":
-    dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3
+    dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3
     base_dataset = dataset.default_cfg.base_dataset
     base_objective = run_qm9_cond_gen
     for gen_model in [
@@ -108,39 +108,40 @@ if __name__ == "__main__":
         for classifier in [
             "HDC-Decoder",
         ]:
-            # Paths (per-dataset DB + CSV)
-            here = pathlib.Path(__file__).parent
-            # study_base = here.parent.name
-            study_name = f"{gen_model}_{classifier}_{dataset.default_cfg.name}"
-            db_path = here / f"{gen_model}_{classifier}_{dataset.default_cfg.name}.db"
-            csv = here / f"trials_{gen_model}_{classifier}_{dataset.default_cfg.name}.csv"
+            for tgt_multiplier in [0, 1, -1, 2, -2]:
+                # Paths (per-dataset DB + CSV)
+                here = pathlib.Path(__file__).parent
+                # study_base = here.parent.name
+                study_name = f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}}"
+                db_path = here / f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}.db"
+                csv = here / f"trials_{gen_model}_{classifier}_{dataset.default_cfg.name}-_tgtmp{tgt_multiplier}.csv"
 
-            # Rebuild if DB missing, else load
-            if not db_path.exists():
-                study = rebuild_study_from_csv(study_name=study_name, dataset=base_dataset, csv=csv, db_path=db_path)
-                if study is None:
+                # Rebuild if DB missing, else load
+                if not db_path.exists():
+                    study = rebuild_study_from_csv(study_name=study_name, dataset=base_dataset, csv=csv, db_path=db_path)
+                    if study is None:
+                        study = load_study(study_name=study_name, sqlite_path=str(db_path))
+                else:
                     study = load_study(study_name=study_name, sqlite_path=str(db_path))
-            else:
-                study = load_study(study_name=study_name, sqlite_path=str(db_path))
 
-            os.environ["GEN_MODEL"] = gen_model
-            os.environ["CLASSIFIER"] = classifier
+                os.environ["GEN_MODEL"] = gen_model
+                os.environ["CLASSIFIER"] = classifier
 
-            # Choose an objective provided by your code
+                # Choose an objective provided by your code
 
-            # Wrapper to set exp_dir_name once params are known
-            def objective(trial: optuna.Trial) -> float:
-                res = base_objective(trial, dataset)
-                # After suggestions happened, params are available:
-                for k, v in res.items():
-                    trial.set_user_attr(key=k, value=v)
+                # Wrapper to set exp_dir_name once params are known
+                def objective(trial: optuna.Trial) -> float:
+                    res = base_objective(trial, dataset, tgt_multiplier)
+                    # After suggestions happened, params are available:
+                    for k, v in res.items():
+                        trial.set_user_attr(key=k, value=v)
 
-                # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
-                # return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
-                return res["final_success_rate"]
+                    # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
+                    # return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
+                    return res["final_success_rate"]
 
-            # Run optimization
-            study.optimize(objective, n_trials=50)
+                # Run optimization
+                study.optimize(objective, n_trials=50)
 
-            # Export canonical CSV (with exp_dir_name)
-            export_trials(study_name=study_name, db_path=db_path, dataset=base_dataset, csv=csv)
+                # Export canonical CSV (with exp_dir_name)
+                export_trials(study_name=study_name, db_path=db_path, dataset=base_dataset, csv=csv)

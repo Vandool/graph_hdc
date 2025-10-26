@@ -181,7 +181,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     base_dataset = cfg.get("base_dataset", "zinc")
     n_samples = cfg.get("n_samples", 100)
     latent_dim = gen_model.flat_dim
-    target = logp_stats[base_dataset]["mean"] - logp_stats[base_dataset]["std"]
+    target = cfg.get("target")
     lambda_hi = cfg.get("lambda_hi", 1e-2)
     lambda_lo = cfg.get("lambda_lo", 1e-4)
     steps = cfg.get("steps", 300)
@@ -297,7 +297,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     return results
 
 
-def run_qm9_cond_gen(trial: optuna.Trial, dataset: SupportedDataset):
+def run_qm9_cond_gen(trial: optuna.Trial, dataset: SupportedDataset, tgt_multiplier: int):
     cfg = {
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
         "steps": trial.suggest_int("steps", 50, 1500),
@@ -317,6 +317,7 @@ def run_qm9_cond_gen(trial: optuna.Trial, dataset: SupportedDataset):
     cfg["scheduler"] = scheduler
     cfg["lambda_lo"] = lambda_lo
     cfg["lambda_hi"] = lambda_hi
+    cfg["target"] = logp_stats["qm9"]["mean"] + tgt_multiplier * logp_stats["qm9"]["std"]
     pprint(cfg)
 
     return eval_cond_gen(cfg=cfg)
