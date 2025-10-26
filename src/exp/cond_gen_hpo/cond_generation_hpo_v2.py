@@ -103,7 +103,7 @@ def make_lambda_two_phase(
     return sched
 
 
-def make_lambda_constant(*, _, lam_lo, lam_hi):
+def make_lambda_constant(*, steps, lam_lo, lam_hi):
     assert lam_lo == lam_hi
 
     def sched(_: int) -> float:
