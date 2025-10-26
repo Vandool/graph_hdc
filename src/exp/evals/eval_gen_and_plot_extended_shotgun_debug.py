@@ -21,9 +21,9 @@ from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
-from src.generation.generation import HDCGenerator, HDCZ3Generator
+from src.generation.generation import HDCGenerator
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, find_files, pick_device
+from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_BEST_MODEL_PATH, find_files, pick_device
 from src.utils.visualisations import plot_logp_kde
 
 # --- scientific paper style ---
@@ -102,7 +102,7 @@ def eval_generation(
 
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
-        / "generation_and_plots_new_termination_criterion_correction_2_z3"
+        / "generation_and_plots_best_models"
         / f"{base_dataset}_{gen_mod_hint}_hdc-decoder_{n_samples}-samples{out_suffix}"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -265,15 +265,12 @@ if __name__ == "__main__":
         SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3,
         SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3,
     ]
-    for p in find_files(start_dir=GLOBAL_MODEL_PATH / "0_real_nvp_v2", prefixes=("epoch",), desired_ending=".ckpt"):
+    for p in find_files(
+        start_dir=GLOBAL_BEST_MODEL_PATH / "0_real_nvp_v2", prefixes=("epoch",), desired_ending=".ckpt"
+    ):
         name = p.parent.parent.name
         if (ds_config := next((d for d in datasests if d.default_cfg.name in name), None)) is None:
             print(f"[SKIPPED] {p}")
-            continue
-        if name in [
-            "qm9_nvp_QM9SmilesHRR1600F64G1G3_f16_lr0.000525421_wd0.0005_bs256_an_hdc-decoder_1000-samples_safe_to_delete_after_inspection",
-            "qm9_nvp_QM9SmilesHRR1600F64G1G3_f7_lr9.4456e-5_wd0.0003_bs448_an_hdc-decoder_1000-samples_safe_to_delete_after_inspection"
-        ]:
             continue
         try:
             eval_generation(
@@ -282,7 +279,6 @@ if __name__ == "__main__":
                 gen_mod_hint=name,
                 draw=False,
                 plot=True,
-                out_suffix="_safe_to_delete_after_inspection",
             )
         except Exception as e:
             print(f"[ERROR] {p}: {e}")

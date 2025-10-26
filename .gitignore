@@ -11,6 +11,7 @@ datasests/
 _datasets/
 _models/
 _artefacts/
+_best/
 
 # VS Code
 .idea/

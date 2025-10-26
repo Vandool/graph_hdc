@@ -363,7 +363,7 @@ class HyperNet(AbstractGraphEncoder):
         self.edges_codebook = None
         self.edges_indexer = None
         self._max_step_delta: float | None = None
-        self._directed_decoded_edge_limit: int = 50  # Default for zin
+        self._directed_decoded_edge_limit: int = 50  # Default for zinc
 
     def to(self, device):
         # normalize + store; also move nn.Module state if any
@@ -1534,7 +1534,8 @@ class HyperNet(AbstractGraphEncoder):
             decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term.clone())
             edge_count = len(decoded_edges) // 2  # bidirectional edges
             node_counter = get_node_counter_corrective(decoded_edges)
-            decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
+            if not target_reached(decoded_edges):
+                decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
         if node_counter.total() > 20:
             print(f"Skipping graph with {node_counter.total()} nodes")
@@ -1777,6 +1778,7 @@ def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
         node_counter[k] = v // (k[1] + 1)
 
     return node_counter
+
 
 def get_node_counter_corrective(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     # Only using the edges and the degree of the nodes we can count the number of nodes

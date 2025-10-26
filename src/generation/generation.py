@@ -23,7 +23,7 @@ from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import FlowConfig, RealNVPV2Lightning
 from src.utils import registery
 from src.utils.registery import get_model_type
-from src.utils.utils import GLOBAL_MODEL_PATH, DataTransformer, find_files
+from src.utils.utils import GLOBAL_BEST_MODEL_PATH, GLOBAL_MODEL_PATH, DataTransformer, find_files
 
 ## For unpickling
 sys.modules["__main__"].FlowConfig = FlowConfig
@@ -31,7 +31,8 @@ sys.modules["__main__"].FlowConfig = FlowConfig
 
 def get_model_path(hint: str) -> Path | None:
     for p in find_files(
-        start_dir=GLOBAL_MODEL_PATH,
+        # start_dir=GLOBAL_MODEL_PATH,
+        start_dir=GLOBAL_BEST_MODEL_PATH,
         prefixes=("epoch",),
         desired_ending=".ckpt",
     ):
