@@ -20,11 +20,9 @@ from src.encoding.configs_and_constants import (
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import HDCGenerator
 from src.generation.logp_regressor import LogPRegressor
-from src.utils import registery
 from src.utils.chem import draw_mol
 from src.utils.utils import (
     GLOBAL_ARTEFACTS_PATH,
-    GLOBAL_BEST_MODEL_PATH,
     GLOBAL_MODEL_PATH,
     DataTransformer,
     find_files,
@@ -60,19 +58,6 @@ logp_stats = {
     },
     "zinc": {"max": 8, "mean": 2.457799800788871, "median": 2.60617995262146, "min": -6, "std": 1.4334213538628746},
 }
-
-
-def get_model_type(path: Path | str) -> registery.ModelType:
-    res: registery.ModelType = "MLP"
-    if "bah" in str(path):
-        res = "BAH"
-    elif "gin-c" in str(path):
-        res = "GIN-C"
-    elif "gin-f" in str(path):
-        res = "GIN-F"
-    elif "nvp" in str(path):
-        res = "NVP"
-    return res
 
 
 def make_lambda_cosine_decay(*, steps: int, lam_hi: float = 1e-2, lam_lo: float = 1e-4):
@@ -135,18 +120,6 @@ schedulers: dict[str, Callable] = {
 }
 
 
-def get_gen_model(hint: str) -> Path | None:
-    gen_paths = find_files(
-        start_dir=GLOBAL_BEST_MODEL_PATH / "0_real_nvp_v2",
-        prefixes=("epoch",),
-        desired_ending=".ckpt",
-    )
-    for p in gen_paths:
-        if hint in str(p):
-            return p
-    return None
-
-
 def get_lpr(hint: str) -> Path | None:
     paths = find_files(
         start_dir=GLOBAL_MODEL_PATH / "lpr",
@@ -170,16 +143,24 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     assert gen_model_hint is not None
     assert os.getenv("CLASSIFIER") is not None
     print(f"Using device: {device}")
-
-    gen_ckpt_path = get_gen_model(hint=gen_model_hint)
-    print(f"Generator Checkpoint: {gen_ckpt_path}")
-    ## Retrieve the model
-    model_type_gen = get_model_type(gen_ckpt_path)
-    gen_model = registery.retrieve_model(model_type_gen).load_from_checkpoint(
-        gen_ckpt_path, map_location=device, strict=True
-    )
-
     dataset: SupportedDataset = cfg.get("dataset")
+    decoder_settings = {
+        "initial_limit": 2048,
+        "limit": 1024,
+        "beam_size": 768,
+        "pruning_method": "cos_sim",
+        "use_size_aware_pruning": True,
+        "use_one_initial_population": True,
+    }
+    generator = HDCGenerator(
+        gen_model_hint=gen_model_hint,
+        ds_config=dataset.default_cfg,
+        decoder_settings=decoder_settings,
+        device=device,
+        dtype=DTYPE,
+    )
+    gen_model = generator.gen_model
+
     lpr_path = get_lpr(hint=LPR_HINT.get(dataset))
     print(f"LPR Checkpoint: {lpr_path}")
     logp_regressor = LogPRegressor.load_from_checkpoint(lpr_path, map_location=device, strict=True)
@@ -251,22 +232,6 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     e, g = gen_model.split(torch.stack(hits))
     e = e.as_subclass(HRRTensor)
     g = g.as_subclass(HRRTensor)
-    decoder_settings = {
-        "initial_limit": 2048,
-        "limit": 1024,
-        "beam_size": 768,
-        "pruning_method": "cos_sim",
-        "use_size_aware_pruning": True,
-        "use_one_initial_population": True,
-    }
-
-    generator = HDCGenerator(
-        gen_model_hint=gen_model_hint,
-        ds_config=dataset.default_cfg,
-        decoder_settings=decoder_settings,
-        device=device,
-        dtype=DTYPE,
-    )
 
     decoded = generator.decode(node_terms=None, edge_terms=e, graph_terms=g)
     nx_graphs = decoded["graphs"]
@@ -283,7 +248,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     success_rate_round_2 = hits_round_2.float().sum().item()
 
     results = {
-        "gen_model": str(gen_ckpt_path.parent.parent.stem),
+        "gen_model": str(gen_model_hint),
         "logp_regressor": str(lpr_path.parent.parent.stem),
         "n_samples": n_samples,
         "gen_time_per_sample": t_gen / n_samples,
@@ -326,10 +291,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
             if valid:
                 logp = rdkit_logp(mol)
                 if abs(logp - target) > epsilon:
-                    out = (
-                        base_dir
-                        / f"{gen_ckpt_path.parent.parent.stem}__{os.getenv('CLASSIFIER')}__sim{sim:.3f}__logp{logp:.3f}{i}.png"
-                    )
+                    out = base_dir / f"{gen_model_hint}__{os.getenv('CLASSIFIER')}__sim{sim:.3f}__logp{logp:.3f}{i}.png"
                     draw_mol(mol=mol, save_path=out, fmt="png")
 
     return results
