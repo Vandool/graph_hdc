@@ -39,7 +39,7 @@ ROOT = ROOT.absolute()
 
 GLOBAL_DATASET_PATH = Path(os.getenv("GLOBAL_DATASETS", ROOT / "_datasets"))
 GLOBAL_MODEL_PATH = Path(os.getenv("GLOBAL_MODELS", ROOT / "_models"))
-GLOBAL_BEST_MODEL_PATH = Path(os.getenv("GLOBAL_MODELS", ROOT / "_best"))
+GLOBAL_BEST_MODEL_PATH = Path(os.getenv("GLOBAL_BEST_MODELS", ROOT / "_best"))
 GLOBAL_ARTEFACTS_PATH = Path(os.getenv("GLOBAL_MODELS", ROOT / "_artefacts"))
 GLOBAL_DATA_PATH = Path(os.getenv("GLOBAL_DATA", ROOT / ""))
 
