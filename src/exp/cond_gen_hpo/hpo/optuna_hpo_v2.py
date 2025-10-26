@@ -140,7 +140,7 @@ if __name__ == "__main__":
                 return res["final_success_rate"]
 
             # Run optimization
-            study.optimize(objective, n_trials=1)
+            study.optimize(objective, n_trials=50)
 
             # Export canonical CSV (with exp_dir_name)
             export_trials(study_name=study_name, db_path=db_path, dataset=base_dataset, csv=csv)
