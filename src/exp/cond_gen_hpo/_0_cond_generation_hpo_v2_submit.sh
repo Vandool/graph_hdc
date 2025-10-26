@@ -21,7 +21,6 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
-DATASET="${DATASET:-qm9}"
 N_TRIALS="${N_TRIALS:-50}"
 IS_DEV="${IS_DEV:-False}"
 
@@ -36,16 +35,13 @@ SCRIPT_NAME="${SCRIPT_NAME:-optuna_hpo_v2.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
-EXP_NAME="Cond. Gen HPO ${DATASET}"
+EXP_NAME="Cond. Gen HPO"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
 # -----------------------------
 PY_ARGS=(
   "$SCRIPT"
-  --dataset "$DATASET"
-#  --gen_model "$GEN_MODEL"
-#  --classifier "$CLASSIFIER"
   --n_trials "$N_TRIALS"
 )
 
@@ -59,7 +55,7 @@ case "$CLUSTER" in
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'debug|12:00:00|16G'
+    TUPLES=$'debug|12:00:00|30G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"
