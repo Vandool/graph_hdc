@@ -241,7 +241,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     # Second filter nx -> hdc -> log -> is in eps?
     batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in nx_graphs])
     hypernet = generator.hypernet
-    res = hypernet.forward(batch)
+    res = hypernet.forward(batch, normalize=dataset.default_cfg.normalize)
     hdc_round_2 = torch.cat((res["edge_terms"], res["graph_embedding"]), dim=1)
     y_pred_round_2 = logp_regressor.gen_forward(hdc_round_2)
     hits_round_2 = (y_pred_round_2 - target).abs() <= epsilon
@@ -252,7 +252,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
         "logp_regressor": str(lpr_path.parent.parent.stem),
         "n_samples": n_samples,
         "gen_time_per_sample": t_gen / n_samples,
-        "target": logp_stats[base_dataset]["mean"] + logp_stats[base_dataset]["std"],
+        "target": target,
         "min_gda_loss": min_loss,
         "lambda_scheduler": cfg.get("scheduler"),
         "lambda_hi": lambda_hi,

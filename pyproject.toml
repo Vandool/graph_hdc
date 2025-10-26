@@ -52,6 +52,7 @@ botorch            = "*"
 gpytorch           = "*"
 setuptools         = ">=80"
 altair-all         = "*"
+polars             = "*"
 
 
 [tool.pixi.pypi-dependencies]
