@@ -302,7 +302,7 @@ def run_qm9_cond_gen(trial: optuna.Trial, dataset: SupportedDataset, tgt_multipl
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
         "steps": trial.suggest_int("steps", 50, 1500),
         "draw": False,
-        "n_samples": 1000,
+        "n_samples": 100,
         "base_dataset": "qm9",
         "dataset": dataset,
     }

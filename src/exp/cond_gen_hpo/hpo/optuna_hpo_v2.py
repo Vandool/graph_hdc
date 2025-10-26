@@ -91,6 +91,20 @@ def export_trials(study_name: str, db_path: pathlib.Path, dataset: str, csv: pat
     print(f"Wrote {len(tidy)} rows for dataset='{dataset}' to {csv}")
 
 
+def make_objective(dataset, base_objective, tgt_multiplier):
+    """Bind loop variables so each study keeps its own context."""
+
+    def objective(trial: optuna.Trial):
+        res = base_objective(trial, dataset, tgt_multiplier)
+        # store all returned metrics/config in user attrs for later analysis
+        for k, v in res.items():
+            trial.set_user_attr(key=k, value=v)
+        # objective value (adjust if you prefer a different metric)
+        return res["final_success_rate"] * res["valid_success_at_eps_pct"]
+
+    return objective
+
+
 if __name__ == "__main__":
     dataset = SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3
     base_dataset = dataset.default_cfg.base_dataset
@@ -112,13 +126,15 @@ if __name__ == "__main__":
                 # Paths (per-dataset DB + CSV)
                 here = pathlib.Path(__file__).parent
                 # study_base = here.parent.name
-                study_name = f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}}"
+                study_name = f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}"
                 db_path = here / f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}.db"
                 csv = here / f"trials_{gen_model}_{classifier}_{dataset.default_cfg.name}-_tgtmp{tgt_multiplier}.csv"
 
                 # Rebuild if DB missing, else load
                 if not db_path.exists():
-                    study = rebuild_study_from_csv(study_name=study_name, dataset=base_dataset, csv=csv, db_path=db_path)
+                    study = rebuild_study_from_csv(
+                        study_name=study_name, dataset=base_dataset, csv=csv, db_path=db_path
+                    )
                     if study is None:
                         study = load_study(study_name=study_name, sqlite_path=str(db_path))
                 else:
@@ -129,16 +145,11 @@ if __name__ == "__main__":
 
                 # Choose an objective provided by your code
 
-                # Wrapper to set exp_dir_name once params are known
-                def objective(trial: optuna.Trial) -> float:
-                    res = base_objective(trial, dataset, tgt_multiplier)
-                    # After suggestions happened, params are available:
-                    for k, v in res.items():
-                        trial.set_user_attr(key=k, value=v)
-
-                    # return res["eval_success@eps"] * res["eval_validity"] * res["eval_uniqueness_overall"]
-                    # return res["valid_success_at_eps_pct"] * res["total_validity_pct"]
-                    return res["final_success_rate"]
+                objective = make_objective(
+                    dataset=dataset,
+                    base_objective=base_objective,
+                    tgt_multiplier=tgt_multiplier,
+                )
 
                 # Run optimization
                 study.optimize(objective, n_trials=50)
