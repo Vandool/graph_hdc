@@ -16,7 +16,7 @@ SPACE = {
     "lambda_hi": optuna.distributions.FloatDistribution(5e-3, 5e-2, log=True),
     "lambda_cons": optuna.distributions.FloatDistribution(1e-5, 5e-2, log=True),
 }
-DIRECTION = "minimize"
+DIRECTION = "maximize"
 
 
 def load_study(study_name: str, sqlite_path: str) -> optuna.Study:
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     for gen_model in [
         "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_s42_lr0.000167245_wd3e-6_bs128",
         "R1_nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
-        "R1_nvp_QM9SmilesHRR1600F64G1NG3_f4_lr0.000862736_wd0.0001_bs192_an",
+        "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_lr0.000167241_wd3e-6_bs128_smf6.5_smi2.2_smw16_an",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
