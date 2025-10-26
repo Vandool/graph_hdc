@@ -914,7 +914,7 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = FlowConfig()
     for k, v in cfg.items():
         setattr(flow_cfg, k, v)
-    flow_cfg.dataset = SupportedDataset.ZINC_SMILES_HRR_5120_F64_G1G3 #TODO
+    flow_cfg.dataset = dataset
     flow_cfg.hv_dim = dataset.default_cfg.hv_dim
     flow_cfg.hv_count = dataset.default_cfg.hv_count
     flow_cfg.vsa = dataset.default_cfg.vsa
