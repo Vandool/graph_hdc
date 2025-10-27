@@ -106,32 +106,32 @@ def make_objective(dataset, base_objective, tgt_multiplier):
 
 
 if __name__ == "__main__":
-    for dataset in [
-        SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3,
-        SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3
-    ]:
+    for dataset in [SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3, SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3]:
         base_dataset = dataset.default_cfg.base_dataset
         base_objective = run_qm9_cond_gen
         for gen_model in [
-            "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_s42_lr0.000167245_wd3e-6_bs128",
-            "R1_nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
-            "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_lr0.000167241_wd3e-6_bs128_smf6.5_smi2.2_smw16_an",
-            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
-            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
-            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
+            # "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_s42_lr0.000167245_wd3e-6_bs128",
+            # "R1_nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
+            # "R1_nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_lr0.000167241_wd3e-6_bs128_smf6.5_smi2.2_smw16_an",
+            # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
+            # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
+            # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
+            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an"
         ]:
             if dataset.default_cfg.name not in gen_model:
                 continue
             for classifier in [
                 "HDC-Decoder",
             ]:
-                for tgt_multiplier in [3, -3]:
+                for tgt_multiplier in [0, 1, -1]:
                     # Paths (per-dataset DB + CSV)
                     here = pathlib.Path(__file__).parent
                     # study_base = here.parent.name
                     study_name = f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}"
                     db_path = here / f"{gen_model}_{classifier}_{dataset.default_cfg.name}_tgtmp{tgt_multiplier}.db"
-                    csv = here / f"trials_{gen_model}_{classifier}_{dataset.default_cfg.name}-_tgtmp{tgt_multiplier}.csv"
+                    csv = (
+                        here / f"trials_{gen_model}_{classifier}_{dataset.default_cfg.name}-_tgtmp{tgt_multiplier}.csv"
+                    )
 
                     # Rebuild if DB missing, else load
                     if not db_path.exists():

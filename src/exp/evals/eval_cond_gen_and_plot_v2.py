@@ -274,14 +274,16 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
         sims=sims,
     )
     results.update({f"eval_{k}": v for k, v in evals.items()})
+    results.update({"hpo_metric": cfg.get("the_metric")})
     pprint(results)
 
     mols, valid_flags, sims = EVALUATOR.get_mols_and_valid_flags()
 
+    dt = "f32" if torch.float32 == DTYPE else "f64"
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
         / "cond_generation_v2"
-        / f"{base_dataset}_{os.getenv('GEN_MODEL')}_{os.getenv('CLASSIFIER')}_m{cfg.get('the_metric')}_{n_samples}-samples"
+        / f"{base_dataset}_{os.getenv('GEN_MODEL')}_{os.getenv('CLASSIFIER', 'HDC_Decoder')}_{dt}_{n_samples}-samples"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -373,26 +375,28 @@ if __name__ == "__main__":
         "use_size_aware_pruning": True,
         "use_one_initial_population": True,
     }
-    for target_multiplier in [0, 1, -1, 2, -2, 3, -3]:
+    for target_multiplier in [0, 1, -1]:
         target = logp_stats[base_dataset]["mean"] + target_multiplier * logp_stats[base_dataset]["std"]
         best = hpo_metrics.filter(abs(pl.col("meta_target") - target) < 0.1)
         if best.is_empty():
             print(f"No metrics found for target: {target}")
             continue
-        best = best.sort("the_metric", descending=True).limit(n=1)
+        best = best.sort("value", descending=True).limit(n=1)
         cfg = {
             "lr": best["lr"][0],
             "steps": int(best["steps"][0]),
             "scheduler": best["scheduler"][0],
             "lambda_lo": best["lambda_lo"][0],
             "lambda_hi": best["lambda_hi"][0],
-            "the_metric": best["the_metric"][0],
+            "the_metric": best["value"][0],
             "base_dataset": base_dataset,
+            "dataset": dataset,
             "n_samples": args.n_samples,
             "target": target,
             "epsilon": 0.33 * logp_stats[base_dataset]["std"],
             "draw": False,
             "plot": True,
         }
+        pprint(cfg)
         os.environ["GEN_MODEL"] = best["gen_model"][0]
         res = eval_cond_gen(cfg=cfg, decoder_settings=decoder_settings)

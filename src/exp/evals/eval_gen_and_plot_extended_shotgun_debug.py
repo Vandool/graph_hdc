@@ -49,10 +49,12 @@ torch.set_num_interop_threads(max(1, min(2, num)))  # coordination threads
 os.environ.setdefault("OMP_NUM_THREADS", str(num))
 os.environ.setdefault("MKL_NUM_THREADS", str(num))
 
+DTYPE = torch.float64
+torch.set_default_dtype(DTYPE)
+
 seed = 42
 seed_everything(seed)
 device = pick_device()
-# device = torch.device("cpu")
 EVALUATOR = None
 
 
@@ -61,7 +63,7 @@ def eval_generation(
 ) -> dict[str, Any]:
     global EVALUATOR  # noqa: PLW0603
     base_dataset = ds.default_cfg.base_dataset
-    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
+    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device, dtype=DTYPE)
     # generator = HDCZ3Generator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
 
     generator.decoder_settings = {
@@ -100,10 +102,11 @@ def eval_generation(
 
     mols, valid_flags, sims = EVALUATOR.get_mols_and_valid_flags()
 
+    dt = "f32" if torch.float32 == DTYPE else "f64"
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
         / "generation_and_plots_best_models"
-        / f"{base_dataset}_{gen_mod_hint}_hdc-decoder_{n_samples}-samples{out_suffix}"
+        / f"{base_dataset}_{gen_mod_hint}_hdc-decoder_{n_samples}-{dt}-samples{out_suffix}"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -138,8 +141,9 @@ def eval_generation(
         ds = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
         ds_num_nodes, ds_num_edges, ds_logp, ds_qed, ds_sa = [], [], [], [], []
         for d in ds:
-            ds_num_nodes.append(int(Chem.MolFromSmiles(d.smiles).GetNumAtoms()))
-            ds_num_edges.append(int(Chem.MolFromSmiles(d.smiles).GetNumBonds()))
+            m = Chem.MolFromSmiles(d.smiles)
+            ds_num_nodes.append(int(m.GetNumAtoms()))
+            ds_num_edges.append(int(m.GetNumBonds()))
             ds_logp.append(float(d.logp.detach().cpu().reshape(-1)[0]))
             ds_qed.append(float(d.qed.detach().cpu().reshape(-1)[0]))
             ds_sa.append(float(d.sa_score.detach().cpu().reshape(-1)[0]))
@@ -261,14 +265,16 @@ if __name__ == "__main__":
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
     datasests = [
-        SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3,
+        # SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3,
         SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3,
-        SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3,
+        # SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3,
     ]
     for p in find_files(
         start_dir=GLOBAL_BEST_MODEL_PATH / "0_real_nvp_v2", prefixes=("epoch",), desired_ending=".ckpt"
     ):
         name = p.parent.parent.name
+        # if name not in "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an":
+        #     continue
         if (ds_config := next((d for d in datasests if d.default_cfg.name in name), None)) is None:
             print(f"[SKIPPED] {p}")
             continue
@@ -279,6 +285,7 @@ if __name__ == "__main__":
                 gen_mod_hint=name,
                 draw=False,
                 plot=True,
+                out_suffix="_ceil",
             )
         except Exception as e:
             print(f"[ERROR] {p}: {e}")

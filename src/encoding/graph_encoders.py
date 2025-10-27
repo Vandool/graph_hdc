@@ -1789,7 +1789,9 @@ def get_node_counter_corrective(edges: list[tuple[tuple, tuple]]) -> Counter[tup
     node_counter = Counter()
     for k, v in node_degree_counter.items():
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-        node_counter[k] = math.ceil(v / (k[1] + 1))
+        node_counter[k] = math.ceil(v / (k[1] + 1)) # Performs best
+        # node_counter[k] = round(v / (k[1] + 1))
+        # node_counter[k] = max(1, round(v / (k[1] + 1)))
 
     return node_counter
 
