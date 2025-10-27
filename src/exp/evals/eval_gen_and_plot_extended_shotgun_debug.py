@@ -15,7 +15,6 @@ from rdkit.Chem import QED
 from scipy.stats import gaussian_kde
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.sa_score import calculate_sa_score
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import (
     SupportedDataset,
@@ -139,24 +138,24 @@ def eval_generation(
     if plot:
         # --- dataset side ---
         ds = QM9Smiles(split="train") if base_dataset == "qm9" else ZincSmiles(split="train")
-        ds_num_nodes, ds_num_edges, ds_logp, ds_qed, ds_sa = [], [], [], [], []
+        ds_num_nodes, ds_num_edges, ds_logp, ds_qed = [], [], [], []
         for d in ds:
             m = Chem.MolFromSmiles(d.smiles)
             ds_num_nodes.append(int(m.GetNumAtoms()))
             ds_num_edges.append(int(m.GetNumBonds()))
             ds_logp.append(float(d.logp.detach().cpu().reshape(-1)[0]))
             ds_qed.append(float(d.qed.detach().cpu().reshape(-1)[0]))
-            ds_sa.append(float(d.sa_score.detach().cpu().reshape(-1)[0]))
+            # ds_sa.append(float(d.sa_score.detach().cpu().reshape(-1)[0]))
 
         # --- generated side (valid molecules only) ---
-        gen_num_nodes, gen_num_edges, gen_logp, gen_qed, gen_sa = [], [], [], [], []
+        gen_num_nodes, gen_num_edges, gen_logp, gen_qed = [], [], [], []
         for mol, valid in zip(mols, valid_flags, strict=False):
             if valid:
                 gen_num_nodes.append(int(mol.GetNumAtoms()))
                 gen_num_edges.append(int(mol.GetNumBonds()))
                 gen_logp.append(float(rdkit_logp(mol)))
                 gen_qed.append(float(QED.qed(mol)))
-                gen_sa.append(float(calculate_sa_score(mol)))
+                # gen_sa.append(float(calculate_sa_score(mol)))
 
         def kde_overlay(a, b, xlabel, title, path):
             a, b = np.array(a), np.array(b)
@@ -190,7 +189,7 @@ def eval_generation(
         step_overlay(ds_num_edges, gen_num_edges, "Num. edges", "Edge count", base_dir / "matplotlib_edges.pdf")
         kde_overlay(ds_logp, gen_logp, "logP", "logP distribution", base_dir / "matplotlib_logp.pdf")
         kde_overlay(ds_qed, gen_qed, "QED", "QED distribution", base_dir / "matplotlib_qed.pdf")
-        kde_overlay(ds_sa, gen_sa, "SA score", "SA distribution", base_dir / "matplotlib_sa.pdf")
+        # kde_overlay(ds_sa, gen_sa, "SA score", "SA distribution", base_dir / "matplotlib_sa.pdf")
 
         sns.set_theme(style="whitegrid", context="talk")  # good defaults
 
@@ -225,7 +224,7 @@ def eval_generation(
         sns_step_overlay(ds_num_edges, gen_num_edges, "Num. edges", "Edge count", base_dir / "seaborn_edges.pdf")
         sns_kde_overlay(ds_logp, gen_logp, "logP", "logP distribution", base_dir / "seaborn_logp.pdf")
         sns_kde_overlay(ds_qed, gen_qed, "QED", "QED distribution", base_dir / "seaborn_qed.pdf")
-        sns_kde_overlay(ds_sa, gen_sa, "SA score", "SA distribution", base_dir / "seaborn_sa.pdf")
+        # sns_kde_overlay(ds_sa, gen_sa, "SA score", "SA distribution", base_dir / "seaborn_sa.pdf")
 
         # Sims distribution
         sims_valid = [float(s) for s, v in zip(sims, valid_flags, strict=False) if v]
@@ -259,7 +258,7 @@ def eval_generation(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Generate samples from a trained model with plots.")
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=2000)
     args = p.parse_args()
     n_samples = args.n_samples
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -275,6 +274,15 @@ if __name__ == "__main__":
         name = p.parent.parent.name
         # if name not in "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an":
         #     continue
+
+        if name not in [
+            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
+            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an",
+            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
+            # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
+        ]:
+            continue
+
         if (ds_config := next((d for d in datasests if d.default_cfg.name in name), None)) is None:
             print(f"[SKIPPED] {p}")
             continue
