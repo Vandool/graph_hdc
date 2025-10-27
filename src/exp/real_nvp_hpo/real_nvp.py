@@ -48,6 +48,7 @@ def log(msg: str) -> None:
 
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def setup_exp(dir_name: str | None = None) -> dict:
@@ -312,6 +313,27 @@ def pick_precision() -> int | str:
     if torch.cuda.is_available():
         return "16-mixed"  # widest fallback
     return 32
+
+
+def configure_tf32(precision):
+    """Enable TF32 only when using bf16-mixed or 32-bit precision on Ampere+ GPUs."""
+    if not torch.cuda.is_available():
+        return
+
+    name = torch.cuda.get_device_name(0)
+    if "A100" in name or "H100" in name or "RTX 30" in name or "RTX 40" in name:
+        if precision in ("bf16-mixed", 32, "32"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print(f"[TF32] Enabled for {precision} on {name}")
+        else:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            print(f"[TF32] Disabled for {precision}")
+    else:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        print(f"[TF32] Not supported on {name}")
 
 
 class TimeLoggingCallback(Callback):
@@ -755,6 +777,10 @@ def run_experiment(cfg: FlowConfig):
     # ----- W&B -----
     loggers = [csv_logger]
 
+    precision = pick_precision()
+    log(f"Using precision {precision!s}")
+    configure_tf32(precision)
+
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
@@ -766,7 +792,7 @@ def run_experiment(cfg: FlowConfig):
         log_every_n_steps=500 if not local_dev else 1,
         enable_progress_bar=True,
         deterministic=False,
-        precision=pick_precision(),
+        precision=precision,
         num_sanity_val_steps=0,
     )
 

@@ -92,10 +92,11 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
 
                     t0 = time.perf_counter()
                     try:
-                        candidates, final_flags = hypernet.decode_graph_z3(
+                        res = hypernet.decode_graph_z3(
                             edge_term=edge_terms[0],
                             decoder_settings=decoder_setting,
                         )
+                        candidates, final_flags = res.nx_graphs, res.final_flags
                     except Exception as e:
                         hits.append(False)
                         finals.append(False)

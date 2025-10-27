@@ -18,11 +18,13 @@ Accuracy: 0.994
 Average sim:  0.9998896030902724
 Average final:  0.998
 """
+
+
 @pytest.mark.parametrize("ds_config", [QM9_SMILES_HRR_1600_CONFIG_F64])
 def test_hypernet_hdc_decoder(ds_config):
     # device = pick_device()
     device = torch.device("cpu")
-    hypernet = load_or_create_hypernet(GLOBAL_MODEL_PATH, cfg=ds_config, use_edge_codebook=False).to(device).eval()
+    hypernet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
 
     n_samples = 1000
     dataset = (
@@ -42,9 +44,8 @@ def test_hypernet_hdc_decoder(ds_config):
         graph_terms = forward["graph_embedding"]
         # node_counter = DataTransformer.get_node_counter_from_batch(0, data)
         counters = hypernet.decode_order_zero_counter(node_terms)
-        candidates, final_flags = hypernet.decode_graph(
-            node_counter=counters[0], edge_term=edge_terms[0], graph_term=graph_terms[0]
-        )
+        res = hypernet.decode_graph(node_counter=counters[0], edge_term=edge_terms[0], graph_term=graph_terms[0])
+        candidates, final_flags, target_reached = res.nx_graphs, res.final_flags, res.target_reached
 
         # candidates, final_flags = new_decoder(
         #     nodes_multiset=node_counter, edge_terms=edge_terms, graph_terms=graph_terms, encoder=hypernet

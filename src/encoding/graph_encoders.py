@@ -1,6 +1,7 @@
 import itertools
 import math
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -57,6 +58,13 @@ from src.utils.visualisations import draw_nx_with_atom_colorings
 # === HYPERDIMENSIONAL MESSAGE PASSING NETWORKS ===
 
 EncoderMap = dict[Features, tuple[AbstractFeatureEncoder, IndexRange]]
+
+
+@dataclass
+class DecodingResult:
+    nx_graphs: list[nx.Graph]
+    final_flags: list[bool]
+    target_reached: bool
 
 
 class AbstractGraphEncoder(pl.LightningModule):
@@ -362,6 +370,7 @@ class HyperNet(AbstractGraphEncoder):
         # Contains hypervectors that represents an edge including the nodes and edge features
         self.edges_codebook = None
         self.edges_indexer = None
+        self.normalize: bool = False
         self._max_step_delta: float | None = None
         self._directed_decoded_edge_limit: int = 50  # Default for zinc
 
@@ -378,9 +387,9 @@ class HyperNet(AbstractGraphEncoder):
         if self.nodes_codebook is not None:
             self.nodes_codebook = self.nodes_codebook.to(device=self.device, dtype=self.dtype)
         if getattr(self, "edge_feature_codebook", None) is not None:
-            self.edge_feature_codebook = self.edge_feature_codebook.device = self.device, dtype = self.dtype
+            self.edge_feature_codebook = self.edge_feature_codebook.to(device=self.device, dtype=self.dtype)
         if self.use_edge_codebook and self.edges_codebook is not None:
-            self.edges_codebook = self.edges_codebook.device = self.device, dtype = self.dtype
+            self.edges_codebook = self.edges_codebook.to(device=self.device, dtype=self.dtype)
 
         # move encoder codebooks & record their device
         for enc_map in (self.node_encoder_map, self.edge_encoder_map, self.graph_encoder_map):
@@ -571,7 +580,7 @@ class HyperNet(AbstractGraphEncoder):
             if layer_index == 1:
                 mp2_terms = hr.clone()
 
-            if normalize:
+            if normalize or self.normalize:
                 # compute L2 norm along the last dimension (out‐of‐place)
                 hr_norm = hr.norm(dim=-1, keepdim=True)  # [node_dim, 1]
 
@@ -585,7 +594,6 @@ class HyperNet(AbstractGraphEncoder):
         node_hv_stack = node_hv_stack.transpose(0, 1)
         node_hv = torchhd.multibundle(node_hv_stack)  # This is bundle - [N, P, D] -> [N, D]
         readout = scatter_hd(src=node_hv, index=data.batch, op="bundle")
-        # TODO: Research to see how often the hv should be normalised? should the final embedding be normalised?
         # We should not normalise the embedding, otherwise all the information regarding the frequency of the encoded
         # properties will be lost
         embedding = readout
@@ -1087,7 +1095,7 @@ class HyperNet(AbstractGraphEncoder):
         if self.is_not_initialized(self.edges_codebook):
             self.edges_codebook = cartesian_bind_tensor(
                 [self.nodes_codebook, self.nodes_codebook, self.edge_feature_codebook]
-            )
+            ).to(device=self.device, dtype=self.dtype)
 
         # -- saving and loading
         # methods that handle the storage of the HyperNet instance to and from a file.
@@ -1525,7 +1533,7 @@ class HyperNet(AbstractGraphEncoder):
         edge_term: torch.Tensor,
         graph_term: torch.Tensor,
         decoder_settings: dict | None = None,
-    ):
+    ) -> DecodingResult:
         if decoder_settings is None:
             decoder_settings = {}
 
@@ -1540,10 +1548,12 @@ class HyperNet(AbstractGraphEncoder):
             if not target_reached(decoded_edges):
                 decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
-        if node_counter.total() > 16:
+        if node_counter.total() > 18:
             print(f"Skipping graph with {node_counter.total()} nodes")
             # TODO: Correct this for ZINC
-            return [nx.Graph()], [False]
+            return DecodingResult(
+                nx_graphs=[nx.Graph()], final_flags=[False], target_reached=target_reached(decoded_edges)
+            )
 
         node_count = node_counter.total()
         ## We have the multiset of nodes and the multiset of edges
@@ -1683,7 +1693,9 @@ class HyperNet(AbstractGraphEncoder):
             if not children:
                 graphs, edges_left = zip(*population, strict=True)
                 are_final = [len(i) == 0 for i in edges_left]
-                return graphs, are_final
+                return DecodingResult(
+                    nx_graphs=graphs, final_flags=are_final, target_reached=target_reached(decoded_edges)
+                )
 
             if len(children) > initial_limit:
                 initial_limit = decoder_settings.get("limit", initial_limit)
@@ -1725,7 +1737,7 @@ class HyperNet(AbstractGraphEncoder):
 
         graphs, edges_left = zip(*population, strict=True)
         are_final = [len(i) == 0 for i in edges_left]
-        return graphs, are_final
+        return DecodingResult(nx_graphs=graphs, final_flags=are_final, target_reached=target_reached(decoded_edges))
 
     def decode_graph_z3(
         self,
@@ -1759,10 +1771,14 @@ class HyperNet(AbstractGraphEncoder):
             print(f"[ERROR] While decoding graph: {err}")
             return [nx.Graph()], [False]
 
-        return [
-            DataTransformer.z3_res_to_nx(ordered_nodes=c["ordered_nodes"], edge_indexes=c["associated_edge_idxs"])
-            for c in candidates
-        ], [True] * len(candidates)  # z3 results are all final
+        return DecodingResult(
+            nx_graphs=[
+                DataTransformer.z3_res_to_nx(ordered_nodes=c["ordered_nodes"], edge_indexes=c["associated_edge_idxs"])
+                for c in candidates
+            ],
+            final_flags=[True] * len(candidates),  # z3 only produces final graphs
+            target_reached=True,
+        )
 
     def use_edge_features(self) -> bool:
         return len(self.edge_encoder_map) > 0
@@ -1789,7 +1805,7 @@ def get_node_counter_corrective(edges: list[tuple[tuple, tuple]]) -> Counter[tup
     node_counter = Counter()
     for k, v in node_degree_counter.items():
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-        node_counter[k] = math.ceil(v / (k[1] + 1)) # Performs best
+        node_counter[k] = math.ceil(v / (k[1] + 1))  # Performs best
         # node_counter[k] = round(v / (k[1] + 1))
         # node_counter[k] = max(1, round(v / (k[1] + 1)))
 

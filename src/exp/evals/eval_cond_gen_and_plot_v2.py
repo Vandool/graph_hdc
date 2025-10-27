@@ -241,6 +241,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
     nx_graphs = decoded["graphs"]
     final_flags = decoded["final_flags"]
     sims = decoded["similarities"]
+    tgt_reached = decoded["intermediate_target_reached"]
 
     # Second filter nx -> hdc -> log -> is in eps?
     batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in nx_graphs])
@@ -255,6 +256,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
         "gen_model": str(gen_model_hint),
         "logp_regressor": str(lpr_path.parent.parent.stem),
         "n_samples": n_samples,
+        "intermediate_target_reached": sum(tgt_reached) / len(tgt_reached),
         "t_decode_per_sample": t_decode / len(hits),
         "target": target,
         "lambda_scheduler": cfg.get("scheduler"),

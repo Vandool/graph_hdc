@@ -48,7 +48,7 @@ torch.set_num_interop_threads(max(1, min(2, num)))  # coordination threads
 os.environ.setdefault("OMP_NUM_THREADS", str(num))
 os.environ.setdefault("MKL_NUM_THREADS", str(num))
 
-DTYPE = torch.float64
+DTYPE = torch.float32
 torch.set_default_dtype(DTYPE)
 
 seed = 42
@@ -68,10 +68,10 @@ def eval_generation(
     generator.decoder_settings = {
         "initial_limit": 2048,
         "limit": 1024,
-        "beam_size": 768,
+        "beam_size": 1024,
         "pruning_method": "cos_sim",
         "use_size_aware_pruning": True,
-        "use_one_initial_population": True,
+        "use_one_initial_population": False,
         "use_g3_instead_of_h3": True,
     }
     # generator.decoder_settings = {
@@ -85,11 +85,13 @@ def eval_generation(
     nx_graphs = samples["graphs"]
     final_flags = samples["final_flags"]
     sims = samples["similarities"]
+    tgt_reached = samples["intermediate_target_reached"]
 
     results = {
         "gen_model": gen_mod_hint,
         "n_samples": n_samples,
         "t_gen_per_sample": t_gen / n_samples,
+        "intermediate_target_reached": sum(tgt_reached) / len(tgt_reached),
     }
 
     if EVALUATOR is None:
@@ -258,7 +260,7 @@ def eval_generation(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Generate samples from a trained model with plots.")
-    p.add_argument("--n_samples", type=int, default=2000)
+    p.add_argument("--n_samples", type=int, default=100)
     args = p.parse_args()
     n_samples = args.n_samples
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -277,8 +279,8 @@ if __name__ == "__main__":
 
         if name not in [
             "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
-            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an",
-            "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
+            # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an",
+            # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
             # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
         ]:
             continue

@@ -17,7 +17,7 @@ from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import DSHDCConfig
 from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
-from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
+from src.encoding.graph_encoders import DecodingResult, HyperNet, load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import FlowConfig, RealNVPV2Lightning
@@ -82,6 +82,7 @@ class AbstractGenerator(abc.ABC):
         ds = QM9Smiles(split="train") if self.base_dataset == "qm9" else ZincSmiles(split="train")
         nodes_set = set(map(tuple, ds.x.long().tolist()))
         self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
+        self.hypernet.normalize = self.ds_config.normalize
 
     def get_raw_samples(self, n_samples: int = 16) -> dict:
         return self.gen_model.sample_split(n_samples)
@@ -90,13 +91,13 @@ class AbstractGenerator(abc.ABC):
         samples = self.get_raw_samples(n_samples)
         nt = samples.get("node_terms")
         if nt is not None:
-            nt = nt.to(torch.float64).as_subclass(self.vsa.tensor_class)
+            nt = nt.as_subclass(self.vsa.tensor_class)
         et = samples.get("edge_terms")
         if et is not None:
-            et = et.to(torch.float64).as_subclass(self.vsa.tensor_class)
+            et = et.as_subclass(self.vsa.tensor_class)
         gt = samples.get("graph_terms")
         if gt is not None:
-            gt = gt.to(torch.float64).as_subclass(self.vsa.tensor_class)
+            gt = gt.as_subclass(self.vsa.tensor_class)
         return self.decode(node_terms=nt, edge_terms=et, graph_terms=gt)
 
     def decode(
@@ -115,6 +116,7 @@ class AbstractGenerator(abc.ABC):
         best_graphs: list[Graph] = []
         are_final_flags: list[bool] = []
         all_similarities: list[list[float]] = []
+        intermediate_target_reached: list[bool] = []
 
         for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
             full_ctr = None
@@ -127,18 +129,21 @@ class AbstractGenerator(abc.ABC):
                     best_graphs.append(nx.Graph())
                     are_final_flags.append(False)
                     all_similarities.append([0])
+                    intermediate_target_reached.append(False)
                     continue
 
-            candidates, final_flags = self._decode_single_graph(
+            res = self._decode_single_graph(
                 node_counter=full_ctr,
                 edge_term=edge_terms[i],
                 graph_term=graph_terms[i],
             )
+            candidates, final_flags, target_reached = res.nx_graphs, res.final_flags, res.target_reached
 
             if len(candidates) == 1 and candidates[0].number_of_nodes() == 0:
                 best_graphs.append(candidates[0])
                 are_final_flags.append(final_flags[0])
                 all_similarities.append([0])
+                intermediate_target_reached.append(target_reached)
                 continue
 
             assert all(c.number_of_nodes() > 0 for c in candidates)
@@ -151,6 +156,7 @@ class AbstractGenerator(abc.ABC):
                 best_graphs.append(nx.Graph())
                 all_similarities.append([0])
                 are_final_flags.append(False)
+                intermediate_target_reached.append(target_reached)
                 continue
 
             sampled_g_term = graph_terms[i].to(g_terms.device, g_terms.dtype)  # [D]
@@ -160,11 +166,13 @@ class AbstractGenerator(abc.ABC):
             best_idx = sims.index(max(sims))
             best_graphs.append(candidates[best_idx])
             are_final_flags.append(final_flags[best_idx])
+            intermediate_target_reached.append(target_reached)
 
         return {
             "graphs": best_graphs,
             "final_flags": are_final_flags,
             "similarities": all_similarities,
+            "intermediate_target_reached": intermediate_target_reached,
         }
 
     @abc.abstractmethod
@@ -173,7 +181,7 @@ class AbstractGenerator(abc.ABC):
         node_counter: Counter[tuple[int, ...]],
         edge_term: torch.Tensor,
         graph_term: torch.Tensor,
-    ) -> tuple[list[nx.Graph], list[bool]]: ...
+    ) -> DecodingResult: ...
 
 
 @attr.define(slots=True, kw_only=True)
@@ -183,7 +191,7 @@ class HDCGenerator(AbstractGenerator):
         edge_term: torch.Tensor,
         graph_term: torch.Tensor,
         node_counter: Counter[tuple[int, ...]] | None = None,
-    ) -> tuple[list[nx.Graph], list[bool]]:
+    ) -> DecodingResult:
         # TODO: Here we expand the 2D type
         return self.hypernet.decode_graph(
             node_counter=node_counter,
@@ -200,7 +208,7 @@ class HDCZ3Generator(AbstractGenerator):
         edge_term: torch.Tensor,
         graph_term: torch.Tensor,
         node_counter: Counter[tuple[int, ...]] | None = None,
-    ) -> tuple[list[nx.Graph], list[bool]]:
+    ) -> DecodingResult:
         # TODO: Here we expand the 2D type
         return self.hypernet.decode_graph_z3(
             node_counter=node_counter,
