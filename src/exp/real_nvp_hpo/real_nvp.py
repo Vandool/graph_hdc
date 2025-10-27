@@ -34,7 +34,8 @@ from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 LOCAL_DEV = "LOCAL_HDC_miss"
 PROJECT_NAME = "real_nvp_v2"
-DTYPE = torch.float64
+DTYPE = torch.float32
+torch.set_default_dtype(DTYPE)
 
 
 # ---------------------------------------------------------------------
@@ -141,7 +142,7 @@ def fit_featurewise_standardization(
         Device to perform accumulation on.
     """
     cnt = 0
-    accum_dtype = torch.float64
+    accum_dtype = DTYPE
     sum_vec = torch.zeros(hv_count * hv_dim, dtype=accum_dtype, device=device)
     sumsq_vec = torch.zeros(hv_count * hv_dim, dtype=accum_dtype, device=device)
 
@@ -655,22 +656,34 @@ def run_experiment(cfg: FlowConfig):
     log(
         f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
+    # Ensure dtype compatibility
+    train_dataset.data.edge_terms = train_dataset.data.edge_terms.to(DTYPE)
+    train_dataset.data.graph_terms = train_dataset.data.graph_terms.to(DTYPE)
+    validation_dataset.data.edge_terms = validation_dataset.data.edge_terms.to(DTYPE)
+    validation_dataset.data.graph_terms = validation_dataset.data.graph_terms.to(DTYPE)
 
     log("Loading/creating hypernet …")
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device, dtype=DTYPE).eval()
     log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
     hypernet.depth = ds_cfg.hypernet_depth
     log("Hypernet ready.")
+    rtol, atol = (1e-4, 1e-6) if torch.float32 == DTYPE else (1e-5, 1e-8)
     assert torch.allclose(
         hypernet.forward(Batch.from_data_list([train_dataset[42]]))["edge_terms"],
-        train_dataset[42].edge_terms.to(device),
+        train_dataset[42].edge_terms.to(device=device),
+        rtol=rtol,
+        atol=atol,
     ), "edge terms are not equal"
     assert torch.allclose(
-        hypernet.forward(Batch.from_data_list([train_dataset[0]]))["edge_terms"], train_dataset[0].edge_terms.to(device)
+        hypernet.forward(Batch.from_data_list([train_dataset[0]]))["edge_terms"],
+        train_dataset[0].edge_terms.to(device=device),
+        rtol=rtol,
+        atol=atol,
     ), "edge terms are not equal"
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert hypernet.nodes_codebook.dtype == torch.float64
+    assert hypernet.nodes_codebook.dtype == DTYPE
+    assert hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook.dtype == DTYPE
     log("Hypernet ready.")
 
     # pick worker counts per GPU; tune for your cluster
@@ -794,7 +807,7 @@ def run_experiment(cfg: FlowConfig):
     log(f"Loading best checkpoint: {best_path}")
     best_model = retrieve_model("NVP").load_from_checkpoint(best_path)
     best_model.to(device).eval()
-    best_model.to(dtype=torch.float64)
+    best_model.to(dtype=DTYPE)
 
     # ---- per-sample NLL (really the KL objective) on validation ----
     val_stats = _eval_flow_metrics(best_model, validation_dataloader, device, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim)
@@ -933,7 +946,7 @@ def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
 
 def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
-    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 400, 1600, step=400)
+    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 1600, 1600, step=400)
     flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 16)
     flow_cfg.smax_initial = 2.2
     flow_cfg.smax_final = 6.5

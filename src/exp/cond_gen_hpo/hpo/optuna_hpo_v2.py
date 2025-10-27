@@ -155,7 +155,7 @@ if __name__ == "__main__":
                     )
 
                     # Run optimization
-                    study.optimize(objective, n_trials=50)
+                    study.optimize(objective, n_trials=25)
 
                     # Export canonical CSV (with exp_dir_name)
                     export_trials(study_name=study_name, db_path=db_path, dataset=base_dataset, csv=csv)

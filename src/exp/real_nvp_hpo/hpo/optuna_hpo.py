@@ -14,7 +14,7 @@ SPACE = {
     "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
     "weight_decay": optuna.distributions.CategoricalDistribution([0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
     "num_flows": optuna.distributions.IntDistribution(4, 16),
-    "num_hidden_channels": optuna.distributions.IntDistribution(256, 2048, step=64),
+    "num_hidden_channels": optuna.distributions.IntDistribution(400, 1600, step=400),
 }
 DIRECTION = "minimize"
 
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_5120_F64_G1G3.value,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_trials", type=int, default=1)
