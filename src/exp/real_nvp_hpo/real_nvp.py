@@ -24,7 +24,7 @@ from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
 from src.datasets.utils import get_split
-from src.encoding.configs_and_constants import Features, SupportedDataset, ZINC_SMILES_HRR_5120_G1G4_CONFIG
+from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
@@ -33,8 +33,8 @@ from src.utils.registery import resolve_model, retrieve_model
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
 LOCAL_DEV = "LOCAL_HDC_miss"
-
 PROJECT_NAME = "real_nvp_v2"
+DTYPE = torch.float64
 
 
 # ---------------------------------------------------------------------
@@ -656,9 +656,8 @@ def run_experiment(cfg: FlowConfig):
         f"Pairs loaded for {cfg.dataset.default_cfg.base_dataset}. train_pairs_full_size={len(train_dataset)} valid_pairs_full_size={len(validation_dataset)}"
     )
 
-
     log("Loading/creating hypernet …")
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
+    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device, dtype=DTYPE).eval()
     log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
     hypernet.depth = ds_cfg.hypernet_depth
     log("Hypernet ready.")
@@ -673,8 +672,6 @@ def run_experiment(cfg: FlowConfig):
     assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
     assert hypernet.nodes_codebook.dtype == torch.float64
     log("Hypernet ready.")
-
-
 
     # pick worker counts per GPU; tune for your cluster
     num_workers = 16 if torch.cuda.is_available() else 0

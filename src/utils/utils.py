@@ -1660,5 +1660,34 @@ def show_confusion_matrix(ys: list[bool], ps: list[bool]) -> None:
     plt.show()
 
 
+def weighted_sample(values, target, k=100, method=Literal["gaussian", "inverse"], sigma=None, replace=False, rng=None):
+    x = np.asarray(values, dtype=float)
+    n = x.size
+    m = min(k, n)
+    d = np.abs(x - float(target))
+
+    if method == "gaussian":
+        if sigma is None:
+            mad = np.median(np.abs(x - np.median(x)))
+            sigma = 1.4826 * mad if mad > 0 else (np.std(x) or 1.0)
+            sigma *= 0.5
+        w = np.exp(-(d**2) / (2.0 * sigma**2))
+    elif method == "inverse":
+        eps = 1e-9
+        w = 1.0 / (d + eps)
+    else:
+        raise ValueError("method must be 'gaussian' or 'inverse'")
+
+    s = w.sum()
+    if not np.isfinite(s) or s <= 0:
+        w = np.ones_like(w)
+        s = w.sum()
+    p = w / s
+
+    rng = np.random.default_rng(rng)
+    idx = rng.choice(n, size=m, replace=replace, p=p)
+    return x[idx], idx, p
+
+
 if __name__ == "__main__":
     print(ROOT)

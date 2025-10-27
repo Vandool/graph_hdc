@@ -23,7 +23,15 @@ from src.generation.evaluator import GenerationEvaluator, rdkit_logp
 from src.generation.generation import HDCGenerator
 from src.generation.logp_regressor import LogPRegressor
 from src.utils.chem import draw_mol
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, GLOBAL_MODEL_PATH, ROOT, DataTransformer, find_files, pick_device
+from src.utils.utils import (
+    GLOBAL_ARTEFACTS_PATH,
+    GLOBAL_MODEL_PATH,
+    ROOT,
+    DataTransformer,
+    find_files,
+    pick_device,
+    weighted_sample,
+)
 from src.utils.visualisations import plot_logp_kde
 
 # keep it modest to avoid oversubscription; tune if needed
@@ -325,6 +333,39 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
             description=f"Classifier ({os.getenv('CLASSIFIER')}",
         )
 
+        # Weighted samples
+        samples_ = n_samples // 10
+        gaussian_samples, _, _ = weighted_sample(
+            values=logp_gen_list, target=target, k=samples_, method="gaussian", replace=False
+        )
+        plot_logp_kde(
+            dataset=base_dataset,
+            lp=lp,
+            lg=gaussian_samples,
+            evals_total=evals_total,
+            evals_valid=evals_valid,
+            epsilon=epsilon,
+            target=target,
+            out=(base_dir / f"logp_overlay_{target:.3f}_gaussian_k{samples_}.png"),
+            description=f"Classifier ({os.getenv('CLASSIFIER')}",
+        )
+
+        # Inverse samples
+        inverse_distance_samples, _, _ = weighted_sample(
+            values=logp_gen_list, target=target, k=samples_, method="inverse", replace=False
+        )
+        plot_logp_kde(
+            dataset=base_dataset,
+            lp=lp,
+            lg=inverse_distance_samples,
+            evals_total=evals_total,
+            evals_valid=evals_valid,
+            epsilon=epsilon,
+            target=target,
+            out=(base_dir / f"logp_overlay_{target:.3f}_invers_k{samples_}.png"),
+            description=f"Classifier ({os.getenv('CLASSIFIER')}",
+        )
+
     return results
 
 
@@ -349,7 +390,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_samples", type=int, default=1000)
