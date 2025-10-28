@@ -915,7 +915,10 @@ class HyperNet(AbstractGraphEncoder):
         return results
 
     def decode_order_one(
-        self, edge_term: torch.Tensor, node_counter: Counter[tuple[int, ...]]
+        self,
+        edge_term: torch.Tensor,
+        node_counter: Counter[tuple[int, ...]],
+        debug: bool = False,
     ) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
         """
         Returns information about the kind and number of edges (order one information) that were contained in the
@@ -960,10 +963,14 @@ class HyperNet(AbstractGraphEncoder):
         # Vectorized bind operation
         edges_hdc = hd_a.bind(hd_b)
 
+        norms = []
+        similarities = []
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         for i in range(edge_count // 2):
+            norms.append(edge_term.norm().item())
             sims = torchhd.cos(edge_term, edges_hdc)
             idx_max = torch.argmax(sims).item()
+            similarities.append(sims[idx_max].item())
             a_found, b_found = all_edges[idx_max]
             if not a_found or not b_found:
                 break
@@ -975,6 +982,8 @@ class HyperNet(AbstractGraphEncoder):
             decoded_edges.append((a_found, b_found))
             decoded_edges.append((b_found, a_found))
 
+        if debug:
+            return decoded_edges, norms, similarities
         return decoded_edges
 
     def decode_order_one_no_node_terms(
@@ -1810,6 +1819,12 @@ def get_node_counter_corrective(edges: list[tuple[tuple, tuple]]) -> Counter[tup
         # node_counter[k] = max(1, round(v / (k[1] + 1)))
 
     return node_counter
+
+
+def get_node_counter_fp(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
+    # Only using the edges and the degree of the nodes we can count the number of nodes
+    node_degree_counter = Counter(u for u, _ in edges)
+    return Counter({k: v / (k[1] + 1) for k, v in node_degree_counter.items()})
 
 
 def target_reached(edges: list) -> bool:

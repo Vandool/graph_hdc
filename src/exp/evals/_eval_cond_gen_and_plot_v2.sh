@@ -21,13 +21,9 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
 NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
-# Options:
-# QM9_SMILES_HRR_1600_F64_G1G3
-# QM9_SMILES_HRR_1600_F64_G1NG3
-# ZINC_SMILES_HRR_6144_F64_G1G3
-DATASET="${DATASET:-QM9_SMILES_HRR_1600_F64_G1NG3}"
-N_TRIALS="${N_TRIALS:-1}"
-IS_DEV="${IS_DEV:-False}"
+DATASET="${DATASET:-qm9}"
+N_SAMPLES="${N_SAMPLES:-1000}"
+
 
 MODULE_LOAD_DEFAULT=''
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
@@ -35,20 +31,20 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 
 # Paths
 PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
-EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/real_nvp_hpo/hpo}"
-SCRIPT_NAME="${SCRIPT_NAME:-optuna_hpo.py}"
+EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/evals}"
+SCRIPT_NAME="${SCRIPT_NAME:-eval_cond_gen_and_plot_v2.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
-EXP_NAME="REAL NVP HPO ${DATASET}"
+EXP_NAME="Cond Gen and Plot ${DATASET}"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
 # -----------------------------
 PY_ARGS=(
   "$SCRIPT"
-  --dataset "$DATASET"
-  --n_trials "$N_TRIALS"
+#  --dataset "$DATASET"
+  --n_samples "$N_SAMPLES"
 )
 
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
@@ -61,25 +57,25 @@ case "$CLUSTER" in
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'debug|10:00:00|30G'
+    TUPLES=$'debug|02:00:00|8G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'gpu_h100|72:00:00|64G\ngpu_a100_il|72:00:00|64G\ngpu_h100_il|72:00:00|64G'
+    TUPLES=$'gpu_h100|12:00:00|64G\ngpu_a100_il|12:00:00|64G\ngpu_h100_il|12:00:00|64G'
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'accelerated|48:00:00|64G\naccelerated-h100|48:00:00|64G'
+    TUPLES=$'accelerated|12:00:00|64G\naccelerated-h100|12:00:00|64G'
     ;;
   haic|*)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'normal|72:00:00|196G'
+    TUPLES=$'normal|12:00:00|64G'
     ;;
 esac
 
@@ -118,7 +114,6 @@ $MODULE_LOAD
 echo 'Node:' \$(hostname)
 echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
-export CLUSTER=${CLUSTER}
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1

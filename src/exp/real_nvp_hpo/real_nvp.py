@@ -50,6 +50,12 @@ def log(msg: str) -> None:
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+if os.getenv("CLUSTER") == "local":
+    torch.backends.fp32_precision = "ieee"
+    torch.backends.cuda.matmul.fp32_precision = "ieee"
+    torch.backends.cudnn.fp32_precision = "ieee"
+    torch.backends.cudnn.conv.fp32_precision = "ieee"
+
 
 def setup_exp(dir_name: str | None = None) -> dict:
     script_path = Path(__file__).resolve()
@@ -709,7 +715,7 @@ def run_experiment(cfg: FlowConfig):
     log("Hypernet ready.")
 
     # pick worker counts per GPU; tune for your cluster
-    num_workers = 16 if torch.cuda.is_available() else 0
+    num_workers = 16 if os.getenv("CLUSTER") != "local" else 4
     if local_dev:
         train_dataset = train_dataset[: cfg.batch_size]
         validation_dataset = validation_dataset[: cfg.batch_size]
@@ -723,7 +729,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 8,
+        prefetch_factor=None if local_dev else 4,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -733,7 +739,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        prefetch_factor=None if local_dev else 8,
+        prefetch_factor=None if local_dev else 2,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 

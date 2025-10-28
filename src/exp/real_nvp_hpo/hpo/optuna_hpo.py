@@ -121,20 +121,20 @@ if __name__ == "__main__":
     else:
         study = load_study(study_name=study_name, sqlite_path=str(db_path))
 
-    # Choose an objective provided by your code
-    base_objective = run_qm9_trial if ds.default_cfg.base_dataset == "qm9" else run_zinc_trial
-
-    # Wrapper to set exp_dir_name once params are known
-    def objective(trial: optuna.Trial) -> float:
-        val = base_objective(trial, dataset=ds)
-        # After suggestions happened, params are available:
-        cfg = dict(trial.params)
-        exp_dir = make_run_folder_name(cfg, prefix=f"nvp_{ds.default_cfg.name}")
-        trial.set_user_attr("exp_dir_name", exp_dir)
-        return val
-
-    # Run optimization
-    study.optimize(objective, n_trials=args.n_trials)
+    # # Choose an objective provided by your code
+    # base_objective = run_qm9_trial if ds.default_cfg.base_dataset == "qm9" else run_zinc_trial
+    #
+    # # Wrapper to set exp_dir_name once params are known
+    # def objective(trial: optuna.Trial) -> float:
+    #     val = base_objective(trial, dataset=ds)
+    #     # After suggestions happened, params are available:
+    #     cfg = dict(trial.params)
+    #     exp_dir = make_run_folder_name(cfg, prefix=f"nvp_{ds.default_cfg.name}")
+    #     trial.set_user_attr("exp_dir_name", exp_dir)
+    #     return val
+    #
+    # # Run optimization
+    # study.optimize(objective, n_trials=args.n_trials)
 
     # Export canonical CSV (with exp_dir_name)
     export_trials(study_name=study_name, db_path=db_path, dataset=args.dataset, csv=csv)

@@ -144,7 +144,7 @@ LPR_HINT = {
 }
 
 
-def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa: PLR0915
+def eval_cond_gen(cfg: dict, decoder_settings: dict, out_suffix: str = "") -> dict[str, Any]:  # noqa: PLR0915
     global EVALUATOR  # noqa: PLW0603
     global HDC_Y_REUSE
     gen_model_hint = os.getenv("GEN_MODEL")
@@ -292,8 +292,8 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
     dt = "f32" if torch.float32 == DTYPE else "f64"
     base_dir = (
         GLOBAL_ARTEFACTS_PATH
-        / "cond_generation_v2"
-        / f"{base_dataset}_{os.getenv('GEN_MODEL')}_{os.getenv('CLASSIFIER', 'HDC_Decoder')}_{dt}_{n_samples}-samples"
+        / "cond_generation_v3"
+        / f"{base_dataset}_{os.getenv('GEN_MODEL')}_{os.getenv('CLASSIFIER', 'HDC_Decoder')}_{dt}_{n_samples}-samples{out_suffix}"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -349,7 +349,7 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
             epsilon=epsilon,
             target=target,
             out=(base_dir / f"logp_overlay_{target:.3f}_gaussian_k{samples_}.png"),
-            description=f"Classifier ({os.getenv('CLASSIFIER')}",
+            description=f"{sum(abs(target - v) <= epsilon for v in gaussian_samples) / len(gaussian_samples):.2f}%",
         )
 
         # Inverse samples
@@ -364,8 +364,8 @@ def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa:
             evals_valid=evals_valid,
             epsilon=epsilon,
             target=target,
-            out=(base_dir / f"logp_overlay_{target:.3f}_invers_k{samples_}.png"),
-            description=f"Classifier ({os.getenv('CLASSIFIER')}",
+            out=(base_dir / f"logp_overlay_{target:.3f}_inverse_k{samples_}.png"),
+            description=f"{sum(abs(target - v) <= epsilon for v in inverse_distance_samples) / len(inverse_distance_samples):.2f}%",
         )
 
     return results
@@ -418,13 +418,22 @@ if __name__ == "__main__":
         "use_size_aware_pruning": True,
         "use_one_initial_population": True,
     }
-    for target_multiplier in [0, 1, -1]:
-        target = logp_stats[base_dataset]["mean"] + target_multiplier * logp_stats[base_dataset]["std"]
+    previous = None
+    std = logp_stats[base_dataset]["std"]
+    mean = logp_stats[base_dataset]["mean"]
+    for target_multiplier in [1, -1, 2, -2, 3, -3]:
+        target = mean + target_multiplier * std
         best = hpo_metrics.filter(abs(pl.col("meta_target") - target) < 0.1)
+
         if best.is_empty():
-            print(f"No metrics found for target: {target}")
-            continue
-        best = best.sort("value", descending=True).limit(n=1)
+            print(f"[WARNING] No metrics found for target {target:.3f}, reusing previous config")
+            if previous is None:
+                continue
+            best = previous
+        else:
+            best = best.sort("value", descending=True).limit(1)
+            previous = best
+
         cfg = {
             "lr": best["lr"][0],
             "steps": int(best["steps"][0]),
@@ -436,10 +445,13 @@ if __name__ == "__main__":
             "dataset": dataset,
             "n_samples": args.n_samples,
             "target": target,
-            "epsilon": 0.33 * logp_stats[base_dataset]["std"],
+            "epsilon": 0.33 * std,
             "draw": False,
             "plot": True,
         }
+
         pprint(cfg)
-        os.environ["GEN_MODEL"] = best["gen_model"][0]
+        gen_hint = best["gen_model"][0]
+        print(f"Gen model hint: {gen_hint}")
+        os.environ["GEN_MODEL"] = gen_hint
         res = eval_cond_gen(cfg=cfg, decoder_settings=decoder_settings)

@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+from collections import Counter
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -11,6 +12,7 @@ from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
+from src.encoding.graph_encoders import get_node_counter_corrective, get_node_counter_fp, target_reached
 from src.generation.generation import HDCGenerator
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, pick_device
 
@@ -42,13 +44,15 @@ seed_everything(seed)
 device = pick_device()
 EVALUATOR = None
 
+DTYPE = torch.float32
+
 
 def eval_generation(
     ds: SupportedDataset, n_samples: int, gen_mod_hint: str, *, draw: bool, plot: bool, out_suffix: str = ""
 ) -> dict[str, Any]:
     global EVALUATOR
     base_dataset = ds.default_cfg.base_dataset
-    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device)
+    generator = HDCGenerator(gen_model_hint=gen_mod_hint, ds_config=ds.default_cfg, device=device, dtype=DTYPE)
     # generator = HDCZ3Generator(gen_model_hint=gen_mod_hint, ds_config=QM9_SMILES_HRR_1600_CONFIG_F64, device=device)
 
     samples = generator.get_raw_samples(n_samples=n_samples)
@@ -59,7 +63,7 @@ def eval_generation(
     random_edge_terms = (
         training_edge_terms.index_select(random_samples_idxs)
         .edge_terms.view(n_samples, ds.default_cfg.hv_dim)
-        .to(device)
+        .to(device=device, dtype=DTYPE)
     )
 
     hypernet = generator.hypernet
@@ -68,26 +72,50 @@ def eval_generation(
     norms_edge_terms_sampled = []  # list of norms
     norms_progress_data = []  # list of list of norms
     norms_progress_sampled = []  # list of list of norms
+    norms_progress_corrected_1 = []  # list of list of norms
     sims_progress_data = []
     sims_progress_samples = []
+    sims_progress_corrected_1 = []
+    number_of_not_complete_nodes = []
+    number_of_not_complete_nodes_after_bad_correction = []
     for i in range(n_samples):
         # Data
-        norms_edge_terms_data.append(sampled_edge_terms[i].norm().item())
-        decoded_edges, norms_, sims = hypernet.decode_order_one_no_node_terms(
-            sampled_edge_terms[i].clone().to(torch.float64), debug=True
+        norms_edge_terms_data.append(random_edge_terms[i].norm().item())
+        decoded_edges_d, norms_, sims = hypernet.decode_order_one_no_node_terms(
+            random_edge_terms[i].clone(), debug=True
         )
         norms_progress_data.append(norms_)
         sims_progress_data.append(sims)
+        node_counter_d = get_node_counter_corrective(decoded_edges_d)
+        node_counter_d_ft = get_node_counter_fp(decoded_edges_d)
 
         # Sampled
-        norms_edge_terms_sampled.append(random_edge_terms[i].norm().item())
-        decoded_edges, norms_, sims = hypernet.decode_order_one_no_node_terms(
-            random_edge_terms[i].clone().to(torch.float64), debug=True
+        norms_edge_terms_sampled.append(sampled_edge_terms[i].norm().item())
+        decoded_edges_s, norms_, sims = hypernet.decode_order_one_no_node_terms(
+            sampled_edge_terms[i].clone(), debug=True
         )
         norms_progress_sampled.append(norms_)
         sims_progress_samples.append(sims)
 
-    base_dir = GLOBAL_ARTEFACTS_PATH / "decoding_debugging_plots_2"
+        # Correction
+        node_counter_s = get_node_counter_corrective(decoded_edges_s)
+        node_counter_s_fp = get_node_counter_fp(decoded_edges_s)
+        not_complete_node = sum([(v - float(int(v)) != 0.0) for v in node_counter_s_fp.values()])
+        number_of_not_complete_nodes.append(not_complete_node)
+        if not target_reached(decoded_edges_s):
+            decoded_edges_c, norms_, sims = hypernet.decode_order_one(
+                edge_term=random_edge_terms[i].clone(), node_counter=node_counter_s, debug=True
+            )
+            norms_progress_corrected_1.append(norms_)
+            sims_progress_corrected_1.append(sims)
+            node_counter_c = get_node_counter_corrective(decoded_edges_c)
+            node_counter_c_fp = get_node_counter_fp(decoded_edges_c)
+            not_complete_node_c = sum([(v - float(int(v)) != 0.0) for v in node_counter_c_fp.values()])
+            number_of_not_complete_nodes_after_bad_correction.append(not_complete_node_c)
+            # print(node_counter_s_fp - node_counter_c_fp)
+            # print(node_counter_c_fp - node_counter_s_fp)
+
+    base_dir = GLOBAL_ARTEFACTS_PATH / "decoding_debugging_plots_3"
     base_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- plotting ----
@@ -125,9 +153,37 @@ def eval_generation(
 
     _plot_progress(norms_progress_data, "Decode progress (data)", "decode_progress_data")
     _plot_progress(norms_progress_sampled, "Decode progress (random train)", "decode_progress_random")
+    _plot_progress(
+        norms_progress_corrected_1, "Decode progress (random train - correction)", "decode_progress_random_correction"
+    )
     _plot_progress(sims_progress_data, "Cos Sim Progress (data)", "sims_progress_random")
     _plot_progress(sims_progress_samples, "Cos Sim Progress (random train)", "sims_progress_random")
-    # ---- /plotting ----
+    _plot_progress(
+        sims_progress_samples, "Cos Sim Progress (random train - corrected)", "sims_progress_random_corrected"
+    )
+
+    def _plot_integer_distribution(values: list[int], title: str, fname: str):
+        counts = Counter(values)
+        xs = sorted(counts.keys())
+        ys = [counts[x] for x in xs]
+
+        fig, ax = plt.subplots()
+        ax.bar(xs, ys, width=0.8, align="center", edgecolor="black", alpha=0.8)
+        ax.set_xlabel("Number of incomplete nodes")
+        ax.set_ylabel("Frequency")
+        ax.set_title(title)
+        _savefig(fig, base_dir / f"{fname}{out_suffix}.png")
+
+    _plot_integer_distribution(
+        number_of_not_complete_nodes,
+        f"Distribution of incomplete nodes before correction (#samples: {len(number_of_not_complete_nodes)})",
+        "to_be_corrected_before",
+    )
+    _plot_integer_distribution(
+        number_of_not_complete_nodes_after_bad_correction,
+        f"Distribution of incomplete nodes after correction (#samples: {len(number_of_not_complete_nodes_after_bad_correction)})",
+        "to_be_corrected_after",
+    )
 
 
 if __name__ == "__main__":
@@ -138,33 +194,11 @@ if __name__ == "__main__":
         default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
-    p.add_argument("--n_samples", type=int, default=100)
+    p.add_argument("--n_samples", type=int, default=1000)
     args = p.parse_args()
     models = {
         "qm9": {
-            "gen_models": [
-                "nvp_QM9SmilesHRR1600F64G1G3_f4_lr0.000862736_wd0.0001_bs192_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f4_lr8.69904e-5_wd0_bs288_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f7_lr9.4456e-5_wd0.0003_bs448_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f8_lr0.00057532_wd0.0003_bs32_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f8_lr6.69953e-5_wd0.0001_bs160_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f9_lr0.000179976_wd0.0003_bs288_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f14_lr0.000112721_wd0.0005_bs224_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f14_lr0.000132447_wd3e-6_bs160_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f15_hid800_s42_lr0.000160949_wd3e-6_bs224_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f15_lr0.000160949_wd3e-6_bs224_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f15_lr6.29685e-5_wd3e-6_bs128_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f16_hid400_s42_lr0.000154612_wd3e-6_bs32_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f16_hid800_s42_lr0.000430683_wd3e-6_bs512_conNone_datSupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3_epo700_expNone_hv_2_hv_1600_is_0_res0_smf4_smi1_smw10_use1_vsaVSAModel.HRR_an",
-                "nvp_QM9SmilesHRR1600F64G1G3_f16_lr0.000525421_wd0.0005_bs256_an",
-                ##
-                "nvp_QM9SmilesHRR1600F64G1NG3_f4_lr0.000862736_wd0.0001_bs192_an",
-                "nvp_QM9SmilesHRR1600F64G1NG3_f4_lr8.69904e-5_wd0_bs288_an",
-                "nvp_QM9SmilesHRR1600F64G1NG3_f7_lr9.4456e-5_wd0.0003_bs448_an",
-                "nvp_QM9SmilesHRR1600F64G1NG3_f8_lr6.69953e-5_wd0.0001_bs160_an",
-                "nvp_QM9SmilesHRR1600F64G1NG3_f14_lr0.000112721_wd0.0005_bs224_an",
-                "nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
-            ],
+            "gen_models": ["R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an"],
         },
     }
     n_samples = args.n_samples
