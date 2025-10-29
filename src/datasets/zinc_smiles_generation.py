@@ -28,7 +28,7 @@ from pathlib import Path
 import torch
 from rdkit import Chem
 from rdkit.Chem import QED, Crippen
-from rdkit.Contrib.SA_Score import sascorer
+# from rdkit.Contrib.SA_Score import sascorer
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
@@ -117,7 +117,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         eval_smiles=eval_smiles,
         logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
         qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
-        sa_score=torch.tensor([float(sascorer.calculateScore(mol))], dtype=torch.float32),
+        # sa_score=torch.tensor([float(sascorer.calculateScore(mol))], dtype=torch.float32),
     )
 
 
@@ -262,4 +262,4 @@ if __name__ == "__main__":
     train_ds = ZincSmiles(split="train")
     valid_ds = ZincSmiles(split="valid")
     test_ds = ZincSmiles(split="test")
-    simple_ds = ZincSmiles(split="simple")
+    # simple_ds = ZincSmiles(split="simple")
