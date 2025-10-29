@@ -551,7 +551,7 @@ class DataTransformer:
             raise ValueError("data.edge_index is None.")
 
         x = data.x
-        if x.dim() != 2 or x.size(1) != 4:
+        if x.dim() != 2 or x.size(1) not in [4, 5]:
             raise ValueError(f"Expected data.x shape [N,4], got {tuple(x.size())}.")
 
         # Ensure integer features
@@ -1034,9 +1034,9 @@ class DataTransformer:
         if atom_symbols is None:
             atom_symbols = PRESETS["zinc"] if dataset is None else PRESETS[str(dataset)]
 
-        def _as_tuple(feat_obj) -> tuple[int, int, int, int]:
+        def _as_tuple(feat_obj) -> tuple[int, int, int, int, bool | None]:
             t = feat_obj.to_tuple() if hasattr(feat_obj, "to_tuple") else tuple(int(x) for x in feat_obj)
-            if len(t) != 4:
+            if len(t) not in [4, 5]:
                 msg = f"feat must be a 4-tuple (atom_type_idx, degree_idx, charge_idx, total_hs); got {t}"
                 raise ValueError(msg)
             return t
@@ -1050,7 +1050,7 @@ class DataTransformer:
 
         max_type_idx = len(atom_symbols) - 1
         for n in G.nodes:
-            at_idx, deg_idx, ch_idx, hs_total = _as_tuple(G.nodes[n]["feat"])
+            at_idx, deg_idx, ch_idx, hs_total, _ = _as_tuple(G.nodes[n]["feat"])
             if not (0 <= at_idx <= max_type_idx):
                 msg = f"atom_type_idx out of range on node {n}: {at_idx} (max {max_type_idx})"
                 raise ValueError(msg)

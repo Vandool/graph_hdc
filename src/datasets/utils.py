@@ -245,10 +245,8 @@ class Compose:
 def get_split(
     split: Literal["train", "valid", "test", "simple"], ds_config: DSHDCConfig, use_no_suffix: bool = False
 ) -> InMemoryDataset:
-    enc_suffix = ""
+    enc_suffix = ds_config.name if not use_no_suffix else ""
     if ds_config.base_dataset == "qm9":
-        if not use_no_suffix:
-            enc_suffix = ds_config.name if ds_config is not None else ""
         ds = QM9Smiles(split=split, enc_suffix=enc_suffix)
 
         # --- Filter known disconnected molecules ---
@@ -269,8 +267,7 @@ def get_split(
             )
 
         return ds
-
-    return ZincSmiles(split=split, enc_suffix=ds_config.name)
+    return ZincSmiles(split=split, enc_suffix=enc_suffix)
 
 
 qm9_train_dc_list = [

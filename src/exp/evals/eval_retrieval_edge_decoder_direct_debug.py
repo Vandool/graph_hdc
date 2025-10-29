@@ -5,6 +5,7 @@ from pprint import pprint
 
 import numpy as np
 import pandas as pd
+import torch
 from matplotlib import pyplot as plt
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
@@ -22,38 +23,50 @@ PLOT = False
 
 HV_DIMS = {
     "qm9": [
-        # 1024, 1280, 1536,
+        128,
+        256,
+        512,
+        1024,
+        1280,
+        1536,
         1600,
-        # 1792,
     ],
     "zinc": [
-        # 5120, 5632,
-        6144,
-        # 7168, 7744, 8192
+        128,
+        256,
+        512,
+        1024,
+        1280,
+        1536,
+        1600,
+        2048,
     ],
 }
 
-DECODER_SETTINGS = {
-    "qm9": [{"max_solutions": 1000}],
-    "zinc": [
-        {"max_solutions": 1000},
-    ],
-}
+
+DTYPE = torch.float32
+torch.set_default_dtype(DTYPE)
 
 
 def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
-    ds_config = ds.default_cfg
-    base_dataset = ds_config.base_dataset
-    for hv_dim in HV_DIMS[base_dataset]:
-        for decoder_setting in DECODER_SETTINGS[base_dataset]:
+    for ds in [
+        # SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3,
+        SupportedDataset.ZINC_SMILES_HRR_5120_F64_G1G3,
+    ]:
+        ds_config = ds.default_cfg
+        base_dataset = ds_config.base_dataset
+        for hv_dim in HV_DIMS[base_dataset]:
             device = pick_device()
             print(f"Running on {device}")
             ds_config.hv_dim = hv_dim
             ds_config.device = device
-            hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
-            hypernet.decoding_limit = ds
+            ds_config.name = f"DELETE_{ds_config.name}_HRR{hv_dim}_"
+            hypernet: HyperNet = (
+                load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device=device, dtype=DTYPE).eval()
+            )
+            hypernet.decoding_limit_for = base_dataset
 
-            dataset = get_split(split="train", ds_config=ds.default_cfg)
+            dataset = get_split(split="train", ds_config=ds.default_cfg, use_no_suffix=True)
 
             nodes_set = set(map(tuple, dataset.x.long().tolist()))
             hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
@@ -78,7 +91,7 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 real_edge_counter = Counter(edge_tuples)
 
                 # Decoded
-                edge_terms = data.edge_terms.to(device)
+                edge_terms = hypernet.forward(data)["edge_terms"][0]
                 decoded_edges = hypernet.decode_order_one_no_node_terms(edge_terms.clone())
                 decoded_edge_counter = Counter(decoded_edges)
 
@@ -98,17 +111,17 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                     "device": str(device),
                     "time_per_sample": ts.mean(),
                     "accuracy": sum(hits) / len(hits),
-                    "decoder_settings": decoder_setting,
+                    "dtype": "float32" if torch.float32 == DTYPE else "float64",
                 }
             )
             pprint(results[-1])
 
             # --- save metrics to disk ---
-            asset_dir = GLOBAL_ARTEFACTS_PATH / "retrieval"
+            asset_dir = GLOBAL_ARTEFACTS_PATH / "edge_retrieval"
             asset_dir.mkdir(parents=True, exist_ok=True)
 
-            parquet_path = asset_dir / "edge_decoder_direct.parquet"
-            csv_path = asset_dir / "edge_decoder_direct.csv"
+            parquet_path = asset_dir / "edge_retrieval.parquet"
+            csv_path = asset_dir / "edge_retrieval.csv"
 
             metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 
@@ -125,10 +138,10 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3.value,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=200)
     args = p.parse_args()
     ds = SupportedDataset(args.dataset)
 

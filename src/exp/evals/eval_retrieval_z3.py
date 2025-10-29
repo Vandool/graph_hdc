@@ -63,7 +63,7 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 ds_config.device = device
                 hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
                 hypernet.depth = d
-                hypernet.decoding_limit = ds
+                hypernet.decoding_limit_for = ds
 
                 dataset = get_split(split="train", ds_config=ds.default_cfg, use_no_suffix=True)
 

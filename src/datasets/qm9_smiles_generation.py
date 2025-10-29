@@ -37,11 +37,11 @@ from pathlib import Path
 import torch
 from rdkit import Chem
 from rdkit.Chem import QED, Crippen
+from rdkit.Contrib.SA_Score import sascorer
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
-from src.datasets.sa_score import calculate_sa_score
 from src.encoding.graph_encoders import HyperNet
 from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
@@ -132,7 +132,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         eval_smiles=eval_smiles,
         logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
         qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
-        sa_score=torch.tensor([float(calculate_sa_score(mol))], dtype=torch.float32),
+        sa_score=torch.tensor([float(sascorer.calculateScore(mol))], dtype=torch.float32),
     )
 
 

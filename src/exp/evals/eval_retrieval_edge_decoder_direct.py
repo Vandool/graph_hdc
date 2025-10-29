@@ -5,6 +5,7 @@ from pprint import pprint
 
 import numpy as np
 import pandas as pd
+import torch
 from matplotlib import pyplot as plt
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
@@ -22,7 +23,9 @@ PLOT = False
 
 HV_DIMS = {
     "qm9": [
-        1024, 1280, 1536,
+        # 1024,
+        # 1280,
+        # 1536,
         1600,
         1792,
     ],
@@ -39,6 +42,8 @@ DECODER_SETTINGS = {
         {"max_solutions": 1000},
     ],
 }
+DTYPE = torch.float64
+torch.set_default_dtype(DTYPE)
 
 
 def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
@@ -50,8 +55,10 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
             print(f"Running on {device}")
             ds_config.hv_dim = hv_dim
             ds_config.device = device
-            hypernet: HyperNet = load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device).eval()
-            hypernet.decoding_limit = ds
+            hypernet: HyperNet = (
+                load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device, dtype=DTYPE).eval()
+            )
+            hypernet.decoding_limit_for = ds
 
             dataset = get_split(split="train", ds_config=ds.default_cfg, use_no_suffix=True)
 
@@ -64,7 +71,8 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
             hits = []
             ts = []
             results = []
-            for data in tqdm(dataloader):
+            pbar = tqdm(dataloader)
+            for data in pbar:
                 if PLOT:
                     nx_g = DataTransformer.pyg_to_nx(data)
                     draw_nx_with_atom_colorings(
@@ -83,10 +91,9 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 decoded_edge_counter = Counter(decoded_edges)
 
                 is_hit = decoded_edge_counter == real_edge_counter
-                if not is_hit:
-                    deguggin_edges = hypernet.decode_order_one_no_node_terms(edge_terms[0].clone())
-                    print(len(deguggin_edges))
                 hits.append(is_hit)
+                curr_acc = sum(hits) / len(hits) if hits else 0
+                pbar.set_postfix(curr_acc=f"{curr_acc:.4f}")
 
             ts = np.array(ts)
             results.append(
@@ -125,7 +132,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3.value,
+        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_samples", type=int, default=1000)

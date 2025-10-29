@@ -28,11 +28,11 @@ from pathlib import Path
 import torch
 from rdkit import Chem
 from rdkit.Chem import QED, Crippen
+from rdkit.Contrib.SA_Score import sascorer
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
-from src.datasets.sa_score import calculate_sa_score
 from src.encoding.graph_encoders import HyperNet
 from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
@@ -92,6 +92,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
             float(max(0, atom.GetDegree() - 1)),  # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
             float(atom.GetFormalCharge() if atom.GetFormalCharge() >= 0 else 2),  # [0, 1, -1] -> [0, 1, 2]
             float(atom.GetTotalNumHs()),
+            float(atom.IsInRing())
         ]
         for atom in mol.GetAtoms()
     ]
@@ -116,7 +117,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         eval_smiles=eval_smiles,
         logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
         qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
-        sa_score=torch.tensor([float(calculate_sa_score(mol))], dtype=torch.float32),
+        sa_score=torch.tensor([float(sascorer.calculateScore(mol))], dtype=torch.float32),
     )
 
 
@@ -189,7 +190,6 @@ class ZincSmiles(InMemoryDataset):
     # ---------- create `processed/…` -------------------------------------------
     def process(self):
         data_list: list[Data] = []
-        qeds: list[float] = []
 
         src = Path(self.raw_paths[0])
         total = _count_smiles_lines(src)

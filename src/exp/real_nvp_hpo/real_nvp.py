@@ -715,7 +715,7 @@ def run_experiment(cfg: FlowConfig):
     log("Hypernet ready.")
 
     # pick worker counts per GPU; tune for your cluster
-    num_workers = 16 if os.getenv("CLUSTER") != "local" else 4
+    num_workers = 16 if os.getenv("CLUSTER") != "local" else 8
     if local_dev:
         train_dataset = train_dataset[: cfg.batch_size]
         validation_dataset = validation_dataset[: cfg.batch_size]
@@ -729,7 +729,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 4,
+        prefetch_factor=None if local_dev else 6,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -978,7 +978,7 @@ def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
 
 def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
-    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 1600, 1600, step=400)
+    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 800, 1200, step=400)
     flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 16)
     flow_cfg.smax_initial = 2.2
     flow_cfg.smax_final = 6.5

@@ -267,6 +267,31 @@ ZINC_SMILES_HRR_5120_G1G4_CONFIG: DSHDCConfig = deepcopy(ZINC_SMILES_HRR_6144_G1
 ZINC_SMILES_HRR_5120_G1G4_CONFIG.name = "ZincSmilesHRR5120F64G1G4"
 ZINC_SMILES_HRR_5120_G1G4_CONFIG.hv_dim = 5120
 
+ZINC_SMILES_HRR_2048_F64_5G1NG4_CONFIG: DSHDCConfig = DSHDCConfig(
+    seed=42,
+    name="ZincSmilesHRR2048F645G1NG4",
+    base_dataset="zinc",
+    vsa=VSAModel.HRR,
+    hv_dim=2048,
+    device=pick_device_str(),
+    node_feature_configs=OrderedDict(
+        [
+            (
+                Features.ATOM_TYPE,
+                FeatureConfig(
+                    count=math.prod([9, 6, 3, 4, 2]),
+                    encoder_cls=CombinatoricIntegerEncoder,
+                    index_range=IndexRange((0, 5)),
+                    bins=[9, 6, 3, 4, 2],
+                ),
+            ),
+        ]
+    ),
+    normalize=True,
+    hypernet_depth=4,
+    dtype="float64",
+)
+
 QM9_SMILES_CONFIG = DSHDCConfig(
     seed=42,
     name="QM9Smiles",
@@ -323,6 +348,7 @@ class SupportedDataset(enum.Enum):
     ZINC_NODE_DEGREE_COMB = ("ZINC_ND_COMB", ZINC_ND_COMB_CONFIG)
     ZINC_NODE_DEGREE_COMB_NHA = ("ZINC_ND_COMB_NHA", ZINC_ND_COMB_CONFIG_NHA)
     ZINC_SMILES = ("ZINC_SMILES", ZINC_SMILES_CONFIG)
+    ZINC_SMILES_HRR_2048_F64_5G1NG4 = ("ZINC_SMILES_HRR_2048_F64_5G1NG4", ZINC_SMILES_HRR_2048_F64_5G1NG4_CONFIG)
     ZINC_SMILES_HRR_7744 = ("ZINC_SMILES_HRR_7744", ZINC_SMILES_HRR_7744_CONFIG)
     ZINC_SMILES_HRR_7744_F64 = ("ZINC_SMILES_HRR_7744_F64", ZINC_SMILES_HRR_7744_CONFIG_F64)
     ZINC_SMILES_HRR_5120_F64_G1G3 = ("ZINC_SMILES_HRR_5120_F64_G1G3", ZINC_SMILES_HRR_5120_G1G4_CONFIG)

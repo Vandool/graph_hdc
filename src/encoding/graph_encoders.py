@@ -294,7 +294,7 @@ class HyperNet(AbstractGraphEncoder):
         self.hv_dim = config.hv_dim
 
         # Relate to decoding limits to prevent endless loops
-        self._directed_decoded_edge_limit: int = 50  # Default for zinc
+        self._directed_decoded_edge_limit: int = 66  # Default for zinc
         self._max_step_delta: float | None = None  # will be set after first run
 
         self._cfg_device = torch.device(getattr(config, "device", "cpu"))
@@ -348,16 +348,16 @@ class HyperNet(AbstractGraphEncoder):
         self._init_lazy_fields()
 
     @property
-    def decoding_limit(self) -> int:
+    def decoding_limit_for(self) -> int:
         return self._directed_decoded_edge_limit
 
-    @decoding_limit.setter
-    def decoding_limit(self, base_dataset: str) -> None:
+    @decoding_limit_for.setter
+    def decoding_limit_for(self, base_dataset: str) -> None:
         if base_dataset == "qm9":
             self._directed_decoded_edge_limit = 50
         elif base_dataset == "zinc":
             # already the default
-            self._directed_decoded_edge_limit = 150
+            self._directed_decoded_edge_limit = 122  # max 88 in train
 
     def _init_lazy_fields(self) -> None:
         """Create attributes that __init__ normally sets but load() may bypass."""
@@ -1012,7 +1012,7 @@ class HyperNet(AbstractGraphEncoder):
 
             self._max_step_delta = min_norm
 
-        eps = self._max_step_delta * 0.7  # small relative tolerance
+        eps = self._max_step_delta * 0.01  # small relative tolerance
 
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         # while not target_reached(decoded_edges):
@@ -1027,7 +1027,7 @@ class HyperNet(AbstractGraphEncoder):
             # something, so we keep going.
             # edge_term.norm().item() > eps
             # this will almost certainly cause an invalid setup, should be caught by the caller
-            len(decoded_edges) <= self.decoding_limit
+            len(decoded_edges) <= self.decoding_limit_for
         ):
             curr_norm = edge_term.norm().item()
             norms.append(curr_norm)
@@ -1853,7 +1853,7 @@ def load_or_create_hypernet(
             print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet.load(path=path)
         encoder.depth = cfg.hypernet_depth
-        encoder.decoding_limit = cfg
+        encoder.decoding_limit_for = cfg
     else:
         if do_print:
             print("Creating new HyperNet instance.")
