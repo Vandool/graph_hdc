@@ -45,7 +45,11 @@ def feature_label_text(
     :returns: Readable label string.
     """
     f = G.nodes[n]["feat"]
-    at_idx, deg_idx, ch_idx, hs = f.to_tuple() if hasattr(f, "to_tuple") else f
+    tup = f.to_tuple()
+    if len(tup) == 4:
+        at_idx, deg_idx, ch_idx, hs = tup
+    if len(tup) == 5:
+        at_idx, deg_idx, ch_idx, hs, _ = tup
     atom = atom_symbols[at_idx] if 0 <= at_idx < len(atom_symbols) else f"X{at_idx}"
     deg_star = getattr(f, "target_degree", None) or (deg_idx + 1)
     charge = FORMAL_CHARGE_IDX_TO_VAL.get(ch_idx, ch_idx)
