@@ -142,7 +142,6 @@ class RealNVPV2Lightning(AbstractNFModel):
         self.log_sigma.copy_(torch.log(torch.clamp(sigma, min=eps)))
 
     def _pretransform(self, x):
-        x = x.to(self.mu.dtype)
         """z = (x - mu) / sigma ; returns (z, +sum(log sigma)) for log-det correction."""
         z = (x - self.mu) * torch.exp(-self.log_sigma)
         # log|det ∂z/∂x| = -sum(log_sigma); NLL must ADD +sum(log_sigma)
@@ -189,7 +188,12 @@ class RealNVPV2Lightning(AbstractNFModel):
         return nll
 
     def configure_optimizers(self):
-        opt = torch.optim.AdamW(self.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
+        opt = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.cfg.lr,
+            weight_decay=self.cfg.weight_decay,
+            foreach=True,  # Faster multi-tensor operations (PyTorch 2.0+)
+        )
         # 5% warmup then cosine
         steps_per_epoch = max(
             1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1, self.trainer.max_epochs)
@@ -227,16 +231,17 @@ class RealNVPV2Lightning(AbstractNFModel):
     def _flat_from_batch(self, batch) -> torch.Tensor:
         D = self.D
         B = batch.num_graphs
-        n, e, g = batch.node_terms, batch.edge_terms, batch.graph_terms
-        if n.dim() == 1:
-            n = n.view(B, D)
-        if e.dim() == 1:
-            e = e.view(B, D)
-        if g.dim() == 1:
-            g = g.view(B, D)
+        e, g = batch.edge_terms, batch.graph_terms
+        # if e.dim() == 1:
+        e = e.view(B, D)
+        # if g.dim() == 1:
+        g = g.view(B, D)
 
-        if self.hv_count == 3:
-            return torch.cat([n, e, g], dim=-1)
+        # if self.hv_count == 3:
+        #     n = batch.node_terms
+        #     if n.dim() == 1:
+        #         n = n.view(B, D)
+        #     return torch.cat([n, e, g], dim=-1)
         return torch.cat([e, g], dim=-1)
 
     def training_step(self, batch, batch_idx):
