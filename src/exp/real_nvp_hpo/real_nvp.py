@@ -121,7 +121,7 @@ def setup_exp(dir_name: str | None = None) -> dict:
 class FlowConfig:
     exp_dir_name: str | None = None
     seed: int = 42
-    epochs: int = 1
+    epochs: int = 800
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 0.0
@@ -803,7 +803,7 @@ def run_experiment(cfg: FlowConfig):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=15,
+        patience=10,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         verbose=True,
