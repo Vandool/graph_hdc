@@ -1854,12 +1854,14 @@ def load_or_create_hypernet(
         encoder = HyperNet.load(path=path)
         encoder.depth = cfg.hypernet_depth
         encoder.decoding_limit_for = cfg
+        encoder.normalize = cfg.normalize
     else:
         if do_print:
             print("Creating new HyperNet instance.")
         encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
         encoder.populate_codebooks()
         encoder.save_to_path(path)
+        encoder.normalize = cfg.normalize
         if do_print:
             print(f"Saved new HyperNet to {path}")
     return encoder

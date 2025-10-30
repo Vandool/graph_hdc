@@ -28,7 +28,7 @@ from pathlib import Path
 import torch
 from rdkit import Chem
 from rdkit.Chem import QED, Crippen
-# from rdkit.Contrib.SA_Score import sascorer
+from rdkit.Contrib.SA_Score import sascorer
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
@@ -75,6 +75,14 @@ ZINC_SMILE_ATOM_TO_IDX: dict[str, int] = {
 ZINC_SMILE_IDX_TO_ATOM: dict[int, str] = {v: k for k, v in ZINC_SMILE_ATOM_TO_IDX.items()}
 
 
+def largest_ring_size(mol: Chem.Mol) -> int:
+    ring_info = mol.GetRingInfo()
+    atom_rings = ring_info.AtomRings()
+    if not atom_rings:
+        return 0
+    return max(len(r) for r in atom_rings)
+
+
 def mol_to_data(mol: Chem.Mol) -> Data:
     """
     Atom types size: 9
@@ -92,7 +100,7 @@ def mol_to_data(mol: Chem.Mol) -> Data:
             float(max(0, atom.GetDegree() - 1)),  # [1, 2, 3, 4, 5] -> [0, 1, 2, 3, 4]
             float(atom.GetFormalCharge() if atom.GetFormalCharge() >= 0 else 2),  # [0, 1, -1] -> [0, 1, 2]
             float(atom.GetTotalNumHs()),
-            float(atom.IsInRing())
+            float(atom.IsInRing()),
         ]
         for atom in mol.GetAtoms()
     ]
@@ -109,15 +117,21 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         ),
         dataset="zinc",
     )
+    max_ring_size = largest_ring_size(mol)
+    sa_score = sascorer.calculateScore(mol)
+    logp = Crippen.MolLogP(mol)
+    penalized_logp = float(logp) - float(sa_score) - max(max_ring_size - 6, 0)
 
     return Data(
         x=torch.tensor(x, dtype=torch.float32),
         edge_index=torch.tensor([src, dst], dtype=torch.long),
         smiles=Chem.MolToSmiles(mol, canonical=True),
         eval_smiles=eval_smiles,
-        logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
+        logp=torch.tensor([float(logp)], dtype=torch.float32),
         qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
-        # sa_score=torch.tensor([float(sascorer.calculateScore(mol))], dtype=torch.float32),
+        sa_score=torch.tensor([float(sa_score)], dtype=torch.float32),
+        max_ring_size=torch.tensor([float(max_ring_size)], dtype=torch.float32),
+        pen_logp=torch.tensor([penalized_logp], dtype=torch.float32),
     )
 
 

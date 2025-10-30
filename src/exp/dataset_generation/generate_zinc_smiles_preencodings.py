@@ -6,7 +6,8 @@ from pytorch_lightning import seed_everything
 
 from src.datasets.zinc_smiles_generation import ZincSmiles, precompute_encodings
 from src.encoding.configs_and_constants import (
-    ZINC_SMILES_HRR_6144_G1G4_CONFIG,
+    ZINC_SMILES_HRR_1024_F64_5G1NG4_CONFIG,
+    ZINC_SMILES_HRR_2048_F64_5G1NG4_CONFIG,
     DSHDCConfig,
 )
 from src.encoding.graph_encoders import load_or_create_hypernet
@@ -41,7 +42,7 @@ def generate(cfg: DSHDCConfig):
         out_path: Path = precompute_encodings(
             base_ds=ds,
             hypernet=hypernet,
-            batch_size=32,
+            batch_size=512,
             device=device,
             normalize=cfg.normalize,
             out_suffix=cfg.name,
@@ -50,4 +51,5 @@ def generate(cfg: DSHDCConfig):
 
 
 if __name__ == "__main__":
-    generate(ZINC_SMILES_HRR_6144_G1G4_CONFIG)
+    generate(ZINC_SMILES_HRR_1024_F64_5G1NG4_CONFIG)
+    generate(ZINC_SMILES_HRR_2048_F64_5G1NG4_CONFIG)

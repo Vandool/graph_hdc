@@ -105,8 +105,8 @@ class FlowConfig:
     batch_size: int = 64
     lr: float = 1e-4
     weight_decay: float = 0.0
-    is_dev: bool = os.getenv("IS_DEV", "0") == "1"
-
+    # is_dev: bool = os.getenv("IS_DEV", "0") == "1"
+    is_dev = False
     # HDC / encoder
     hv_count: int = 3
     hv_dim: int = 40 * 40  # 1600
@@ -649,6 +649,7 @@ def _finite_clean(x: np.ndarray, *, max_abs: float | None = None) -> np.ndarray:
 
 def run_experiment(cfg: FlowConfig):
     local_dev = cfg.is_dev
+    local_dev = False
     pprint(cfg)
     # ----- setup dirs -----
     log("Parsing args done. Starting run_experiment …")
@@ -944,6 +945,15 @@ def run_experiment(cfg: FlowConfig):
     return min_val_loss
 
 
+def get_hidden_channel_dist(dataset: SupportedDataset):
+    low, high, step = 400, 1600, 400
+    if dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
+        low, high, step = 512, 1024, 256
+    if dataset == SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4:
+        low, high, step = 1024, 2048, 512
+    return low, high, step
+
+
 def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
     cfg = {
         "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
@@ -965,8 +975,9 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset):
 
 def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset):
     flow_cfg = get_cfg(trial, dataset=dataset)
-    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", 512, 2048, step=512)
-    flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 12)
+    low, high, step = get_hidden_channel_dist(dataset)
+    flow_cfg.num_hidden_channels = trial.suggest_int("num_hidden_channels", low, high, step=step)
+    flow_cfg.num_flows = trial.suggest_int("num_flows", 4, 16)
     flow_cfg.smax_initial = 2.5
     flow_cfg.smax_final = 7
     flow_cfg.smax_warmup_epochs = 17
