@@ -135,9 +135,6 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 decoded_edge_counter = Counter(decoded_edges)
 
                 # Graph Decoding
-                solution_graph = compute_solution_graph_from_example(
-                    ordered_nodes=node_tuples, associated_edge_idxs=data.edge_index.t().int().cpu().tolist()
-                )
                 matching_components, id_to_type = compute_sampling_structure(node_tuples, edge_tuples)
                 t_d = time.perf_counter()
                 budegt = 1 if ds.default_cfg.base_dataset == "qm9" else 10
@@ -388,16 +385,14 @@ def compute_sampling_structure(nodes_multiset, edges_multiset):
     id_to_type = {}
 
     for node_vec in nodes_multiset:
-        node_type = tuple(node_vec)
-        matching_components.setdefault(node_type, {"nodes": [], "edges": []})
+        matching_components.setdefault(node_vec, {"nodes": [], "edges": []})
 
     for i, node_vec in enumerate(nodes_multiset):
-        node_type = tuple(node_vec)
         node_degree = node_vec[1] + 1  # modified
-        id_to_type[f"n{i}"] = node_type
+        id_to_type[f"n{i}"] = node_vec
 
         for _ in range(node_degree):
-            matching_components.setdefault(node_type, {"nodes": []})["nodes"].append(f"n{i}")
+            matching_components.setdefault(node_vec, {"nodes": []})["nodes"].append(f"n{i}")
 
     for k, edge_vec in enumerate(deduplicated_edges):
         edge_beginning = tuple(edge_vec[0])
