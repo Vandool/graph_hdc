@@ -3,7 +3,7 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import networkx as nx
 import numpy as np
@@ -1808,16 +1808,20 @@ def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     return node_counter
 
 
-def get_node_counter_corrective(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
+def get_node_counter_corrective(
+    edges: list[tuple[tuple, tuple]], method: Literal["ceil", "round", "max_round"] = "ceil"
+) -> Counter[tuple]:
     # Only using the edges and the degree of the nodes we can count the number of nodes
     node_degree_counter = Counter(u for u, _ in edges)
     node_counter = Counter()
     for k, v in node_degree_counter.items():
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-        node_counter[k] = math.ceil(v / (k[1] + 1))  # Performs best
-        # node_counter[k] = round(v / (k[1] + 1))
-        # node_counter[k] = max(1, round(v / (k[1] + 1)))
-
+        if method == "ceil":
+            node_counter[k] = math.ceil(v / (k[1] + 1))  # Performs best
+        if method == "round":
+            node_counter[k] = round(v / (k[1] + 1))
+        if method == "max_round":
+            node_counter[k] = max(1, round(v / (k[1] + 1)))
     return node_counter
 
 

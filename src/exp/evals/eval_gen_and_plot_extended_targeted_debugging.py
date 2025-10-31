@@ -1,10 +1,7 @@
 import argparse
-import itertools
-import math
 import os
 import random
 from collections import Counter
-from copy import deepcopy
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -117,6 +114,8 @@ def eval_generation(
 
             # if failed perform a corrective decoding and repeat corrections
             if len(corrected_edge_sets) == 0:
+                # for method in ["ceil", "round", "max_round"]:
+                node_counter_s = get_node_counter_corrective(decoded_edges_s, method=method)
                 decoded_edges_c, norms_, sims = hypernet.decode_order_one(
                     edge_term=random_edge_terms[i].clone(), node_counter=node_counter_s, debug=True
                 )

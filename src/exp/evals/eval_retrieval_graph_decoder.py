@@ -23,7 +23,11 @@ from src.encoding.configs_and_constants import (
     IndexRange,
     SupportedDataset,
 )
-from src.encoding.decoder import new_decoder  # noqa: F401  # noqa: F401
+from src.encoding.decoder import (
+    compute_sampling_structure,
+    new_decoder,  # noqa: F401
+    try_find_isomorphic_graph,
+)
 from src.encoding.feature_encoders import CombinatoricIntegerEncoder
 from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
@@ -44,11 +48,11 @@ HV_DIMS = {
     "zinc": [
         # 128,
         # 256,
-        512,
-        1024,
-        1280,
-        1536,
-        1600,
+        # 512,
+        # 1024,
+        # 1280,
+        # 1536,
+        # 1600,
         2048,
     ],
 }
@@ -149,7 +153,7 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                         matching_components=matching_components, id_to_type=id_to_type, max_samples=1024
                     )
                     # custom nx -> data
-                    pyg_graphs = [nx_to_pyg_jp(g, id_to_type) for g in decoded_graphs]
+                    pyg_graphs = [DataTransformer.nx_to_pyg_with_type_attr(g) for g in decoded_graphs]
                     batch = Batch.from_data_list(pyg_graphs)
                     g_hdc = hypernet.forward(batch)["graph_embedding"]
 
@@ -208,201 +212,6 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
             # write back out
             metrics_df.to_parquet(parquet_path, index=False)
             metrics_df.to_csv(csv_path, index=False)
-
-
-def nx_to_pyg_jp(G: nx.Graph, id_to_type) -> Data:
-    """
-    Convert an undirected NetworkX graph with ``feat`` attributes to a
-    :class:`torch_geometric.data.Data`.
-
-    Node features are stacked as a dense matrix ``x`` of dtype ``long`` with
-    columns ``[atom_type, degree_idx, formal_charge_idx, explicit_hs]``.
-
-    Undirected edges are converted to a directed ``edge_index`` with both
-    directions.
-
-    :param G: NetworkX graph where each node has a ``feat: Feat`` attribute.
-    :returns: PyG ``Data`` object with fields ``x`` and ``edge_index``.
-    :raises RuntimeError: If PyTorch/PyG are not available.
-    """
-    if torch is None or Data is None:
-        raise RuntimeError("torch / torch_geometric are required for nx_to_pyg")
-
-    # Node ordering: use sorted ids for determinism
-    nodes = sorted(G.nodes)
-    idx_of: dict[int, int] = {n: i for i, n in enumerate(nodes)}
-
-    # Features
-    feats: list[list[int]] = [list(G.nodes[n]["type"]) for n in nodes]
-    x = torch.tensor(feats, dtype=torch.long)
-
-    # Edges: add both directions
-    src, dst = [], []
-    for u, v in G.edges():
-        iu, iv = idx_of[u], idx_of[v]
-        src.extend([iu, iv])
-        dst.extend([iv, iu])
-    edge_index = torch.tensor([src, dst], dtype=torch.long) if src else torch.empty((2, 0), dtype=torch.long)
-
-    return Data(x=x, edge_index=edge_index)
-
-
-def compute_solution_graph_from_example(ordered_nodes, associated_edge_idxs):
-    """
-    Computes the labeled expected solution graph from the input json
-    """
-
-    G = nx.Graph()
-    for i, node_vec in enumerate(ordered_nodes):
-        node_id = f"n{i}"
-        G.add_node(node_id, type=tuple(node_vec))
-    for a, b in associated_edge_idxs:
-        node_id_1 = f"n{a}"
-        node_id_2 = f"n{b}"
-        G.add_edge(node_id_1, node_id_2)
-
-    return G
-
-
-def draw_random_matching(sampling_structure):
-    """
-    Enumerating all matchings is not efficient, as multiple matchings map to the same (isomorphic) candidate graph.
-    Instead, we can draw random matchings from the matching components.
-    In each component, we randomly permute the edges and assign them to the nodes.
-    We can construct a candidate graph from the resulting matching.
-    """
-    matching = []
-
-    for component in sampling_structure.values():
-        nodes = component["nodes"]
-        edges = component["edges"]
-        permuted_edges = edges[:]
-        random.shuffle(permuted_edges)
-        for node, edge in zip(nodes, permuted_edges, strict=False):
-            matching.append((edge, node))
-
-    return sorted(matching)
-
-
-def compute_graph_from_matching(matching, id_to_type):
-    G = nx.Graph()
-
-    # matching is sorted list of (edge_id, node_id) pairs
-    # two consecutive entries always have the same edge
-
-    for i in range(0, len(matching), 2):
-        edge_id_1, node_id_1 = matching[i]
-        edge_id_2, node_id_2 = matching[i + 1]
-
-        G.add_edge(node_id_1, node_id_2)
-        G.nodes[node_id_1]["type"] = id_to_type[node_id_1]
-        G.nodes[node_id_2]["type"] = id_to_type[node_id_2]
-
-    return G
-
-
-def draw_random_graph_from_sampling_structure(matching_components, id_to_type):
-    """
-    This is the main function of this file.
-
-    It allows to draw a random molecule (graph) by drawing a random matching and then constructs the corresponding graph.
-    Graphs are probably drawn biased.
-    """
-    random_matching = draw_random_matching(matching_components)
-    G = compute_graph_from_matching(random_matching, id_to_type)
-    return G
-
-
-def graph_is_valid(G):
-    """
-    We dont't care about molecules that are disconnected or have selfloops.
-    This functions discards those graphs.
-    """
-    return nx.is_connected(G) and nx.number_of_selfloops(G) == 0
-
-
-def try_find_isomorphic_graph(matching_components, id_to_type, max_samples=200000, report_interval=1000):
-    """
-    Tries to find a graph isomorphic to solution_graph by drawing random matchings.
-    """
-    count = 0
-
-    graphs = []
-    while True:
-        G = draw_random_graph_from_sampling_structure(matching_components, id_to_type)
-
-        if not graph_is_valid(G):
-            continue
-        graphs.append(G)
-        #
-        # if are_isomorphic(solution_graph, G):
-        #     return G
-
-        count += 1
-        if count % report_interval == 0:
-            print(f"Tried {count} random matchings...")
-        if count >= max_samples:
-            print(f"Reached {max_samples} attempts without finding isomorphism. Giving up.", flush=True)
-            return graphs
-
-
-def deduplicate_edges(edges_multiset):
-    """
-    Helper function to remove bidirectional edges.
-    If, we have edge (a,b) and (b,a), only keep one of them.
-    Result will still be a multiset
-    """
-    temp = []
-    for edge_vec in edges_multiset:
-        if edge_vec[0] > edge_vec[1]:
-            temp.append((edge_vec[1], edge_vec[0]))
-        else:
-            temp.append((edge_vec[0], edge_vec[1]))
-    temp.sort()
-    # remove every second entry
-    deduplicated = []
-    for i in range(len(temp)):
-        if i % 2 == 0:
-            deduplicated.append(temp[i])
-    return deduplicated
-
-
-def compute_sampling_structure(nodes_multiset, edges_multiset):
-    """
-    Constructs a datastructure where we can efficiently sample random matchings from.
-
-    It is essentialy a bipartite graph with a very simple structure (multiple K_nn) so we can represent it like this:
-    - Each K_nn represents a node type (like a c atom).
-    - Each K_nn has a node and a edge part.
-    - We identify each nodes/edge with a unique label and also store the mapping to the type information
-    """
-    nodes_multiset = sorted(nodes_multiset)
-    edges_multiset = sorted(edges_multiset)
-
-    deduplicated_edges = deduplicate_edges(edges_multiset)
-
-    matching_components = {}
-    id_to_type = {}
-
-    for node_vec in nodes_multiset:
-        matching_components.setdefault(node_vec, {"nodes": [], "edges": []})
-
-    for i, node_vec in enumerate(nodes_multiset):
-        node_degree = node_vec[1] + 1  # modified
-        id_to_type[f"n{i}"] = node_vec
-
-        for _ in range(node_degree):
-            matching_components.setdefault(node_vec, {"nodes": []})["nodes"].append(f"n{i}")
-
-    for k, edge_vec in enumerate(deduplicated_edges):
-        edge_beginning = tuple(edge_vec[0])
-        edge_ending = tuple(edge_vec[1])
-        id_to_type[f"e{k}"] = (edge_beginning, edge_ending)
-
-        matching_components.setdefault(edge_beginning, {"edges": []})["edges"].append(f"e{k}")
-        matching_components.setdefault(edge_ending, {"edges": []})["edges"].append(f"e{k}")
-
-    return matching_components, id_to_type
 
 
 if __name__ == "__main__":

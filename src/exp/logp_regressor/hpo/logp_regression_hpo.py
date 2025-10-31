@@ -125,7 +125,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_6144_F64_G1G3.value,
+        default=SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_trials", type=int, default=1)
@@ -151,18 +151,18 @@ if __name__ == "__main__":
     else:
         study = load_study(study_name=study_name, sqlite_path=str(db_path))
 
-    # Wrapper to set exp_dir_name once params are known
-    def objective(trial: optuna.Trial) -> float:
-        val, best_epoch = run_trial(trial, dataset=ds)
-        # After suggestions happened, params are available:
-        cfg = dict(trial.params)
-        exp_dir = make_run_folder_name(cfg, prefix=f"lpr_{ds.default_cfg.name}")
-        trial.set_user_attr("exp_dir_name", exp_dir)
-        trial.set_user_attr("best_epoch", best_epoch)
-        return val
-
-    # Run optimization
-    study.optimize(objective, n_trials=args.n_trials)
+    # # Wrapper to set exp_dir_name once params are known
+    # def objective(trial: optuna.Trial) -> float:
+    #     val, best_epoch = run_trial(trial, dataset=ds)
+    #     # After suggestions happened, params are available:
+    #     cfg = dict(trial.params)
+    #     exp_dir = make_run_folder_name(cfg, prefix=f"lpr_{ds.default_cfg.name}")
+    #     trial.set_user_attr("exp_dir_name", exp_dir)
+    #     trial.set_user_attr("best_epoch", best_epoch)
+    #     return val
+    #
+    # # Run optimization
+    # study.optimize(objective, n_trials=args.n_trials)
 
     # Export canonical CSV (with exp_dir_name)
     export_trials(study_name=study_name, db_path=db_path, dataset=args.dataset, csv=csv, space=space)

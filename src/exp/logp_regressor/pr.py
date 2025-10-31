@@ -62,6 +62,7 @@ Expected Speedup: 2-4x faster training on A100/H100 GPUs
 import contextlib
 import datetime
 import enum
+import gc
 import json
 import os
 import random
@@ -216,6 +217,20 @@ class TimeLoggingCallback(Callback):
         trainer.logger.log_metrics({"elapsed_time_sec": elapsed}, step=trainer.current_epoch)
 
 
+class MemoryCleanupCallback(Callback):
+    """Force garbage collection and CUDA cache clearing after each epoch to prevent memory leaks."""
+
+    def on_train_epoch_end(self, trainer, pl_module):  # noqa: ARG002
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def on_validation_epoch_end(self, trainer, pl_module):  # noqa: ARG002
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 class LossCurveCallback(pl.Callback):
     def __init__(self, artefacts_dir: Path, make_grid: bool = True):
         super().__init__()
@@ -279,6 +294,11 @@ class LossCurveCallback(pl.Callback):
             plt.close(fig)
             print("[LossCurveCallback] saved curves_grid.png")
 
+        # Clean up memory
+        plt.close("all")
+        del df, train, val
+        gc.collect()
+
 
 def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     local_dev = cfg.is_dev
@@ -323,8 +343,8 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     validation_dataset = get_split(split="valid", ds_config=ds_cfg)
     log(f"Loaded {ds_cfg.base_dataset}. train={len(train_dataset)} valid={len(validation_dataset)}")
 
-    # Optimize worker counts
-    num_workers = 16 if torch.cuda.is_available() else 0
+    # Optimize worker counts (reduced from 16 to 8 for memory efficiency)
+    num_workers = 8 if torch.cuda.is_available() else 0
     if local_dev:
         train_dataset = train_dataset[: cfg.batch_size]
         validation_dataset = validation_dataset[: cfg.batch_size]
@@ -336,9 +356,9 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
         shuffle=True,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=bool(num_workers > 0),
+        persistent_workers=False,  # Disabled to prevent memory accumulation
         drop_last=True,
-        prefetch_factor=None if local_dev else 8,  # Optimized for throughput
+        prefetch_factor=None if local_dev else 8,  # Reduced from 8 to 2 for memory efficiency
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -346,9 +366,9 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
         shuffle=False,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=bool(num_workers > 0),
+        persistent_workers=False,  # Disabled to prevent memory accumulation
         drop_last=False,
-        prefetch_factor=None if local_dev else 4,  # Optimized for throughput
+        prefetch_factor=None if local_dev else 4,  # Reduced from 4 to 2 for memory efficiency
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -381,6 +401,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     time_logger = TimeLoggingCallback()
+    memory_cleanup = MemoryCleanupCallback()
 
     early_stopping = EarlyStopping(
         monitor="val_loss",
@@ -407,7 +428,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping, loss_curve_cb],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, memory_cleanup, early_stopping, loss_curve_cb],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
@@ -424,6 +445,11 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     resume_path: Path | None = str(cfg.continue_from) if cfg.continue_from else None
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader, ckpt_path=resume_path)
 
+    # Clean up memory after training
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Save metrics
     metrics_path_csv = Path(csv_logger.log_dir) / "metrics.csv"
     metrics_path_parquet = evals_dir / "metrics.parquet"
@@ -435,6 +461,8 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
             best_epoch = int(df.loc[df["val_loss"].idxmin(), "epoch"])
             min_val_loss = df["val_loss"].min() if "val_loss" in df else float("nan")
         df.to_parquet(metrics_path_parquet, index=False)
+        del df  # Clean up DataFrame
+        gc.collect()
 
     best_path = checkpoint_callback.best_model_path
     print(f"Best model path: {best_path}")

@@ -167,7 +167,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--property",
         type=str,
-        default="qed",
+        default="logp",
         choices=["logp", "sa_score", "qed", "max_ring_size"],
         help="Target molecular property to regress",
     )
