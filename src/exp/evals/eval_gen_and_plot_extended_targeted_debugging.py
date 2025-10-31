@@ -1,7 +1,10 @@
 import argparse
+import itertools
+import math
 import os
 import random
 from collections import Counter
+from copy import deepcopy
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -12,6 +15,7 @@ from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
+from src.encoding.corrections import correct
 from src.encoding.graph_encoders import get_node_counter_corrective, get_node_counter_fp, target_reached
 from src.generation.generation import HDCGenerator
 from src.utils.utils import GLOBAL_ARTEFACTS_PATH, pick_device
@@ -78,6 +82,10 @@ def eval_generation(
     sims_progress_corrected_1 = []
     number_of_not_complete_nodes = []
     number_of_not_complete_nodes_after_bad_correction = []
+    number_of_not_complete_nodes_after_better_correction = []
+    complete_count = 0
+    after_correction_complete_count = 0
+    decoded_sets_counter = Counter()
     for i in range(n_samples):
         # Data
         norms_edge_terms_data.append(random_edge_terms[i].norm().item())
@@ -102,18 +110,42 @@ def eval_generation(
         node_counter_s_fp = get_node_counter_fp(decoded_edges_s)
         not_complete_node = sum([(v - float(int(v)) != 0.0) for v in node_counter_s_fp.values()])
         number_of_not_complete_nodes.append(not_complete_node)
+        corrected_edge_sets = []
         if not target_reached(decoded_edges_s):
-            decoded_edges_c, norms_, sims = hypernet.decode_order_one(
-                edge_term=random_edge_terms[i].clone(), node_counter=node_counter_s, debug=True
-            )
-            norms_progress_corrected_1.append(norms_)
-            sims_progress_corrected_1.append(sims)
-            node_counter_c = get_node_counter_corrective(decoded_edges_c)
-            node_counter_c_fp = get_node_counter_fp(decoded_edges_c)
-            not_complete_node_c = sum([(v - float(int(v)) != 0.0) for v in node_counter_c_fp.values()])
-            number_of_not_complete_nodes_after_bad_correction.append(not_complete_node_c)
-            # print(node_counter_s_fp - node_counter_c_fp)
-            # print(node_counter_c_fp - node_counter_s_fp)
+            # First try to add/remove from the initial decoding
+            corrected_edge_sets = correct(node_counter_s_fp, decoded_edges_s)
+
+            # if failed perform a corrective decoding and repeat corrections
+            if len(corrected_edge_sets) == 0:
+                decoded_edges_c, norms_, sims = hypernet.decode_order_one(
+                    edge_term=random_edge_terms[i].clone(), node_counter=node_counter_s, debug=True
+                )
+                norms_progress_corrected_1.append(norms_)
+                sims_progress_corrected_1.append(sims)
+                node_counter_c = get_node_counter_corrective(decoded_edges_c)
+                node_counter_c_fp = get_node_counter_fp(decoded_edges_c)
+                not_complete_node_c = sum([(v - float(int(v)) != 0.0) for v in node_counter_c_fp.values()])
+                number_of_not_complete_nodes_after_bad_correction.append(not_complete_node_c)
+                if target_reached(decoded_edges_c):
+                    corrected_edge_sets = [decoded_edges_c]
+                    complete_count += 1
+                else:
+                    corrected_edge_sets = correct(node_counter_c_fp, decoded_edges_c)
+            after_correction_complete_count += 1 if len(corrected_edge_sets) > 0 else 0
+        else:
+            corrected_edge_sets = [decoded_edges_s]
+            complete_count += 1
+            after_correction_complete_count += 1
+
+        if len(corrected_edge_sets) == 0:
+            correct(node_counter_c_fp, decoded_edges_c)
+            print("DEBUG")
+
+        decoded_sets_counter[len(corrected_edge_sets)] += 1
+
+    print(
+        f"Complete: {(complete_count / n_samples):.2f}, after correction: {(after_correction_complete_count / n_samples):.2f}"
+    )
 
     base_dir = GLOBAL_ARTEFACTS_PATH / "decoding_debugging_plots_3"
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +215,14 @@ def eval_generation(
         number_of_not_complete_nodes_after_bad_correction,
         f"Distribution of incomplete nodes after correction (#samples: {len(number_of_not_complete_nodes_after_bad_correction)})",
         "to_be_corrected_after",
+    )
+
+    # Convert Counter to list for plotting (keys represent number of valid decoded sets)
+    decoded_sets_list = [k for k, v in decoded_sets_counter.items() for _ in range(v)]
+    _plot_integer_distribution(
+        decoded_sets_list,
+        f"Distribution of valid decoded edge set variants (#samples: {n_samples})",
+        "decoded_sets_variants",
     )
 
 

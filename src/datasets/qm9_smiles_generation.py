@@ -80,6 +80,14 @@ QM9_SMILE_ATOM_TO_IDX: dict[str, int] = {
 QM9_SMILE_IDX_TO_ATOM: dict[int, str] = {v: k for k, v in QM9_SMILE_ATOM_TO_IDX.items()}
 
 
+def largest_ring_size(mol: Chem.Mol) -> int:
+    ring_info = mol.GetRingInfo()
+    atom_rings = ring_info.AtomRings()
+    if not atom_rings:
+        return 0
+    return max(len(r) for r in atom_rings)
+
+
 def mol_to_data(mol: Chem.Mol) -> Data:
     """
     Encode an RDKit Mol into a PyG `Data` with features aligned to ZincSmiles.
@@ -124,15 +132,21 @@ def mol_to_data(mol: Chem.Mol) -> Data:
         ),
         dataset="qm9",
     )
+    max_ring_size = largest_ring_size(mol)
+    sa_score = sascorer.calculateScore(mol)
+    logp = Crippen.MolLogP(mol)
+    penalized_logp = float(logp) - float(sa_score) - max(max_ring_size - 6, 0)
 
     return Data(
         x=torch.tensor(x, dtype=torch.float32),
         edge_index=torch.tensor([src, dst], dtype=torch.long),
         smiles=Chem.MolToSmiles(mol, canonical=True),
         eval_smiles=eval_smiles,
-        logp=torch.tensor([float(Crippen.MolLogP(mol))], dtype=torch.float32),
+        logp=torch.tensor([float(logp)], dtype=torch.float32),
         qed=torch.tensor([float(QED.qed(mol))], dtype=torch.float32),
-        sa_score=torch.tensor([float(sascorer.calculateScore(mol))], dtype=torch.float32),
+        sa_score=torch.tensor([float(sa_score)], dtype=torch.float32),
+        max_ring_size=torch.tensor([float(max_ring_size)], dtype=torch.float32),
+        pen_logp=torch.tensor([penalized_logp], dtype=torch.float32),
     )
 
 
@@ -260,7 +274,7 @@ def precompute_encodings(
 
         graph_terms = out["graph_embedding"].detach().cpu()
         edge_terms = out["edge_terms"].detach().cpu()
-        node_terms = out["node_terms"].detach().cpu()
+        # node_terms = out["node_terms"].detach().cpu()
 
         per_graph = batch.to_data_list()
         assert len(per_graph) == graph_terms.size(0)
@@ -268,7 +282,7 @@ def precompute_encodings(
             d = d.clone()
             d.graph_terms = graph_terms[i]  # [Dg]
             d.edge_terms = edge_terms[i]  # [Dg]
-            d.node_terms = node_terms[i]  # [Dn]
+            # d.node_terms = node_terms[i]  # [Dn]
             aug.append(d)
 
     data, slices = InMemoryDataset.collate(aug)
@@ -278,7 +292,123 @@ def precompute_encodings(
     return out_path
 
 
+def copy_graph_edge_terms_from_backup(
+    source_root: str | Path = GLOBAL_DATASET_PATH / "QM9Smiles_bk4",
+    target_root: str | Path = GLOBAL_DATASET_PATH / "QM9Smiles",
+    suffix: str = "QM9SmilesHRR1600F64G1NG3",
+) -> None:
+    """
+    Copy graph_terms and edge_terms from backup dataset files to current dataset files.
+
+    This function reads the precomputed graph_terms and edge_terms from files in
+    QM9Smiles_bk4/processed/ and either updates existing files in QM9Smiles/processed/
+    or creates new files with the added terms.
+
+    If target file doesn't exist, it will load the base dataset (data_{split}.pt)
+    and add the graph_terms and edge_terms to create the new file.
+
+    Parameters
+    ----------
+    source_root:
+        Root directory containing the source files (default: QM9Smiles_bk4)
+    target_root:
+        Root directory where files will be updated/created (default: QM9Smiles)
+    suffix:
+        Suffix of the processed files (default: QM9SmilesHRR1600F64G1NG3)
+
+    Example
+    -------
+    >>> copy_graph_edge_terms_from_backup()  # Uses defaults
+    >>> # Or specify custom paths:
+    >>> copy_graph_edge_terms_from_backup(
+    ...     source_root="/path/to/backup", target_root="/path/to/target", suffix="QM9SmilesHRR1600F64G1NG3"
+    ... )
+    """
+    from pathlib import Path
+
+    source_root = Path(source_root)
+    target_root = Path(target_root)
+
+    source_dir = source_root / "processed"
+    target_dir = target_root / "processed"
+
+    if not source_dir.exists():
+        raise FileNotFoundError(f"Source directory not found: {source_dir}")
+
+    # Create target directory if it doesn't exist
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    splits = ["train", "valid", "test"]
+
+    for split in splits:
+        source_file = source_dir / f"data_{split}_{suffix}.pt"
+        target_file = target_dir / f"data_{split}_{suffix}.pt"
+        base_file = target_dir / f"data_{split}.pt"  # Fallback to base dataset
+
+        print(f"\n{'=' * 80}")
+        print(f"Processing split: {split}")
+        print(f"Source: {source_file}")
+        print(f"Target: {target_file}")
+
+        if not source_file.exists():
+            print(f"⚠️  Source file not found, skipping: {source_file}")
+            continue
+
+        # Load source data (weights_only=False for backward compatibility)
+        print("Loading source data...")
+        with open(source_file, "rb") as f:
+            source_data, source_slices = torch.load(f, map_location="cpu", weights_only=False)
+
+        # Verify source has required terms
+        if not hasattr(source_data, "graph_terms"):
+            print("⚠️  Source data missing 'graph_terms', skipping")
+            continue
+        if not hasattr(source_data, "edge_terms"):
+            print("⚠️  Source data missing 'edge_terms', skipping")
+            continue
+
+        # Load target data (or base dataset if target doesn't exist)
+        if target_file.exists():
+            print("Loading existing target data...")
+            with open(target_file, "rb") as f:
+                target_data, target_slices = torch.load(f, map_location="cpu", weights_only=False)
+        elif base_file.exists():
+            print(f"Target file not found. Loading base dataset from: {base_file}")
+            with open(base_file, "rb") as f:
+                target_data, target_slices = torch.load(f, map_location="cpu", weights_only=False)
+            print("Creating new target file with added graph_terms and edge_terms")
+        else:
+            print("⚠️  Neither target file nor base file found:")
+            print(f"    - {target_file}")
+            print(f"    - {base_file}")
+            print(f"  Skipping split: {split}")
+            continue
+
+        # Copy graph_terms and edge_terms
+        print("Copying graph_terms and edge_terms...")
+        target_data.graph_terms = source_data.graph_terms.clone()
+        target_data.edge_terms = source_data.edge_terms.clone()
+
+        # Copy slices if they exist
+        if "graph_terms" in source_slices:
+            target_slices["graph_terms"] = source_slices["graph_terms"].clone()
+        if "edge_terms" in source_slices:
+            target_slices["edge_terms"] = source_slices["edge_terms"].clone()
+
+        # Save updated target data
+        print(f"Saving target file: {target_file}")
+        torch.save((target_data, target_slices), target_file)
+
+        print(f"✓ Successfully copied graph_terms and edge_terms for {split}")
+        print(f"  graph_terms shape: {target_data.graph_terms.shape}")
+        print(f"  edge_terms shape: {target_data.edge_terms.shape}")
+
+    print(f"\n{'=' * 80}")
+    print("✓ All splits processed successfully!")
+
+
 if __name__ == "__main__":
     train_ds = QM9Smiles(split="train")
     valid_ds = QM9Smiles(split="valid")
     test_ds = QM9Smiles(split="test")
+    copy_graph_edge_terms_from_backup()
