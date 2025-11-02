@@ -1,5 +1,3 @@
-from typing import Literal
-
 import networkx as nx
 import torch
 from IPython.display import display
@@ -8,6 +6,7 @@ from rdkit.Chem import QED, SanitizeFlags
 from rdkit.Chem.Draw import rdMolDraw2D
 from torch_geometric.data import Data
 
+from src.encoding.configs_and_constants import BaseDataset
 from src.utils.utils import DataTransformer
 
 QM9_SMILE_ATOM_TO_IDX: dict[str, int] = {
@@ -16,8 +15,6 @@ QM9_SMILE_ATOM_TO_IDX: dict[str, int] = {
     "O": 2,
     "F": 3,
 }
-
-BaseDataset = Literal["zinc", "qm9"]
 
 
 def draw_mol(

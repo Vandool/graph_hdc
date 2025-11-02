@@ -737,10 +737,10 @@ def run_experiment(cfg: FlowConfig):
         rtol=rtol,
         atol=atol,
     ), "edge terms are not equal"
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
     assert hypernet.nodes_codebook.dtype == DTYPE
-    assert hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook.dtype == DTYPE
+    assert hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook.dtype == DTYPE
     log("Hypernet ready.")
 
     # pick worker counts per GPU; tune for your cluster

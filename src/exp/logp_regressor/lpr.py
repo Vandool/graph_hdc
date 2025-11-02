@@ -244,8 +244,8 @@ def run_experiment(cfg: Config, trial: optuna.Trial):
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
     log(f"Hypernet Depth set to {ds_cfg.hypernet_depth}")
     hypernet.depth = ds_cfg.hypernet_depth
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
     log("Hypernet ready.")
 
     # ----- datasets / loaders -----

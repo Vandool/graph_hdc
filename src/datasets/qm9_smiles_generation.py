@@ -94,10 +94,10 @@ def mol_to_data(mol: Chem.Mol) -> Data:
 
     Atom features (per node)
     ------------------------
-    - atom_type_idx: int in {0..4} for {H,C,N,O,F}
-    - degree_minus_1: degree-1 mapped to {0,1,2,3,4,...}
-    - formal_charge_mapped: {0,1,-1} -> {0,1,2}
-    - total_num_Hs: explicit+implicit hydrogens as integer (0..n)
+    - atom_type_idx: int in {0..3} for {C,N,O,F} (4 atom types)
+    - degree_minus_1: degree-1 mapped to {0,1,2,3,4} (5 degree values)
+    - formal_charge_mapped: {0,1,-1} -> {0,1,2} (3 formal charge values)
+    - total_num_Hs: explicit+implicit hydrogens in {0,1,2,3,4} (5 hydrogen count values)
 
     Molecule features (per graph)
     ------------------------
@@ -155,14 +155,19 @@ class QM9Smiles(InMemoryDataset):
     Minimal `InMemoryDataset` that reads ``<split>_smile.txt`` from *root/raw/*
     and caches a collated ``data_<split>.pt`` under *root/processed/*.
 
-    Atom types size: 4
-    Atom types: ['C', 'F', 'N', 'O']
-    Degrees size: 5
-    Degrees: {0, 1, 2, 3, 4}
-    Formal Charges size: 3
-    Formal Charges: {0, 1, -1}
-    Explicit Hs size: 5
-    Explicit Hs: {0, 1, 2, 3, 4}
+    Node Feature Configuration: bins=[4, 5, 3, 5]
+    - Atom types: 4 values
+      ['C', 'N', 'O', 'F']
+    - Degrees: 5 values (after degree-1 transformation)
+      {0, 1, 2, 3, 4}
+    - Formal Charges: 3 values
+      {0, 1, -1} mapped to {0, 1, 2}
+    - Total Hs: 5 values
+      {0, 1, 2, 3, 4}
+
+    Combinatorial space: 4 × 5 × 3 × 5 = 300 possible node types
+    Actual dataset: ~39 unique node types appear in QM9 dataset
+    (HyperNet limits codebook to these 39 during decoding)
 
     Parameters
     ----------

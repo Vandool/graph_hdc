@@ -86,7 +86,7 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                     node_feature_configs=OrderedDict(
                         [
                             (
-                                Features.ATOM_TYPE,
+                                Features.NODE_FEATURES,
                                 FeatureConfig(
                                     count=math.prod([9, 6, 3, 4, 2]),
                                     encoder_cls=CombinatoricIntegerEncoder,

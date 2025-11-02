@@ -160,7 +160,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4.value,
+        default=SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4.value,
         choices=[ds.value for ds in SupportedDataset],
         help="Dataset to use for training",
     )

@@ -15,10 +15,6 @@ from sklearn.metrics import (
 from torch_geometric.data import Batch
 from tqdm import tqdm
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import QM9_SMILES_HRR_1600_CONFIG_F64, ZINC_SMILES_HRR_7744_CONFIG
-from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.oracles import Oracle, SimpleVoterOracle
 from src.encoding.the_types import Feat
 from src.utils.nx_utils import (
@@ -36,7 +32,7 @@ from src.utils.nx_utils import (
     residuals,
     total_edges_count,
 )
-from src.utils.utils import DataTransformer, TupleIndexer, show_confusion_matrix
+from src.utils.utils import DataTransformer, show_confusion_matrix
 from src.utils.visualisations import draw_nx_with_atom_colorings
 
 # ============================================================================
@@ -248,7 +244,7 @@ def try_find_isomorphic_graph(
     id_to_type: dict,
     *,
     max_samples: int = 200000,
-    report_interval: int = 1000,
+    report_interval: int = 2048,
 ) -> list[nx.Graph]:
     """
     Generate valid molecular graphs by sampling random matchings.
@@ -1366,108 +1362,109 @@ def new_decoder(nodes_multiset: Counter, edge_terms, encoder, graph_terms):
     return graphs, are_final
 
 
-if __name__ == "__main__":
-    base_dataset = "zinc"
-    ds = ZincSmiles(split="train") if base_dataset == "zinc" else QM9Smiles(split="train")
-
-    data = ds[0]
-
-    nx_g = DataTransformer.pyg_to_nx(data)
-    # draw_nx_with_atom_colorings(nx_g, dataset=base_dataset)
-    # plt.show()
-    mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset=base_dataset)
-
-    print(mol.GetNumAtoms())
-    print(mol.GetNumBonds())
-    print(nx_g.number_of_nodes())
-    print(nx_g.number_of_edges())
-    print(data.x)
-    print(data.edge_index)
-
-    # device = pick_device()
-    device = torch.device("cpu")
-    node_tuples = [tuple(i) for i in data.x.tolist()]
-    edge_tuples = [tuple(e) for e in data.edge_index.t().cpu().tolist()]
-
-    ds_config = ZINC_SMILES_HRR_7744_CONFIG if base_dataset == "zinc" else QM9_SMILES_HRR_1600_CONFIG_F64
-    encoder = load_or_create_hypernet(cfg=ds_config).to(device, dtype=torch.float64)
-    encoder.nodes_codebook = encoder.nodes_codebook.to(torch.float64).as_subclass(torchhd.HRRTensor)
-    node_cb = encoder.nodes_codebook
-    node_cb = node_cb.to(torch.float64).as_subclass(torchhd.HRRTensor)
-    print(node_cb.shape)
-    node_idxer: TupleIndexer = encoder.nodes_indexer
-
-    # Manually compute the edge terms
-    edge_terms_manul = None
-    edges = []
-    for a, b in edge_tuples:
-        idx_a = node_idxer.get_idx(node_tuples[a])
-        idx_b = node_idxer.get_idx(node_tuples[b])
-        hd_a = node_cb[idx_a]
-        hd_b = node_cb[idx_b]
-
-        # bind
-        edges.append(hd_a.bind(hd_b))
-
-    t = torch.stack(edges)
-    print(t.shape)
-    edge_terms_manul = torchhd.multibundle(t)
-    print(edge_terms_manul.shape)
-
-    edget_terms_m_copy = edge_terms_manul.clone()
-    # Now just reverse to see if you get 0
-    for a, b in edge_tuples:
-        idx_a = node_idxer.get_idx(node_tuples[a])
-        idx_b = node_idxer.get_idx(node_tuples[b])
-        hd_a = node_cb[idx_a]
-        hd_b = node_cb[idx_b]
-
-        # bind
-        edget_terms_m_copy -= hd_a.bind(hd_b)
-
-    zero_hd = torch.zeros_like(edget_terms_m_copy)
-    sum_elements = edget_terms_m_copy.abs().sum().item()
-    print(sum_elements)
-    # prints 2.470420440658927e-05 <-- why not zero?
-    # with dtype float64 -> 4.542902902140598e-14 almost zero
-
-    # Compare the manually created one with the hypernet
-
-    batch = Batch.from_data_list([data])
-    forward = encoder.forward(batch)
-    edge_terms = forward["edge_terms"]
-    graph_terms = forward["graph_embedding"]
-
-    eps = 1e-9
-    ok_mask = (edge_terms - edge_terms_manul).abs() <= eps  # bool tensor
-    all_ok = ok_mask.all()  # << GOOD
-    print(all_ok.item())
-
-    draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
-    ## Now let's fucking decode the edges
-    node_counter = DataTransformer.get_node_counter_from_batch(0, batch)
-    candidates, edges_left = new_decoder(
-        nodes_multiset=node_counter,
-        edge_terms=edge_terms,
-        encoder=encoder,
-        graph_terms=graph_terms,
-    )
-    data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
-
-    batch = Batch.from_data_list(data_list)
-    enc_out = encoder.forward(batch)
-    g_terms = enc_out["graph_embedding"]  # [B, D]
-
-    q = graph_terms.to(g_terms.device, g_terms.dtype)  # [D]
-    sims_ = torchhd.cos(q, g_terms).tolist()[0]
-    print(sims_)
-    print(max(sims_))
-
-    best_idx = sims_.index(max(sims_))
-    best = candidates[best_idx]
-    print(f"Edges Left Best: {edges_left[best_idx]}")
-
-    draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
-    for i, c in enumerate(candidates):
-        best_mol, _ = DataTransformer.nx_to_mol_v2(c, dataset=base_dataset)
-        draw_mol(mol=best_mol, save_path=f"candidate-{i}-best-{best_idx}.png", fmt="png")
+#
+# if __name__ == "__main__":
+#     base_dataset = "zinc"
+#     ds = ZincSmiles(split="train") if base_dataset == "zinc" else QM9Smiles(split="train")
+#
+#     data = ds[0]
+#
+#     nx_g = DataTransformer.pyg_to_nx(data)
+#     # draw_nx_with_atom_colorings(nx_g, dataset=base_dataset)
+#     # plt.show()
+#     mol, _ = DataTransformer.nx_to_mol_v2(nx_g, dataset=base_dataset)
+#
+#     print(mol.GetNumAtoms())
+#     print(mol.GetNumBonds())
+#     print(nx_g.number_of_nodes())
+#     print(nx_g.number_of_edges())
+#     print(data.x)
+#     print(data.edge_index)
+#
+#     # device = pick_device()
+#     device = torch.device("cpu")
+#     node_tuples = [tuple(i) for i in data.x.tolist()]
+#     edge_tuples = [tuple(e) for e in data.edge_index.t().cpu().tolist()]
+#
+#     ds_config = ZINC_SMILES_HRR_7744_CONFIG if base_dataset == "zinc" else QM9_SMILES_HRR_1600_CONFIG_F64
+#     encoder = load_or_create_hypernet(cfg=ds_config).to(device, dtype=torch.float64)
+#     encoder.nodes_codebook = encoder.nodes_codebook.to(torch.float64).as_subclass(torchhd.HRRTensor)
+#     node_cb = encoder.nodes_codebook
+#     node_cb = node_cb.to(torch.float64).as_subclass(torchhd.HRRTensor)
+#     print(node_cb.shape)
+#     node_idxer: TupleIndexer = encoder.nodes_indexer
+#
+#     # Manually compute the edge terms
+#     edge_terms_manul = None
+#     edges = []
+#     for a, b in edge_tuples:
+#         idx_a = node_idxer.get_idx(node_tuples[a])
+#         idx_b = node_idxer.get_idx(node_tuples[b])
+#         hd_a = node_cb[idx_a]
+#         hd_b = node_cb[idx_b]
+#
+#         # bind
+#         edges.append(hd_a.bind(hd_b))
+#
+#     t = torch.stack(edges)
+#     print(t.shape)
+#     edge_terms_manul = torchhd.multibundle(t)
+#     print(edge_terms_manul.shape)
+#
+#     edget_terms_m_copy = edge_terms_manul.clone()
+#     # Now just reverse to see if you get 0
+#     for a, b in edge_tuples:
+#         idx_a = node_idxer.get_idx(node_tuples[a])
+#         idx_b = node_idxer.get_idx(node_tuples[b])
+#         hd_a = node_cb[idx_a]
+#         hd_b = node_cb[idx_b]
+#
+#         # bind
+#         edget_terms_m_copy -= hd_a.bind(hd_b)
+#
+#     zero_hd = torch.zeros_like(edget_terms_m_copy)
+#     sum_elements = edget_terms_m_copy.abs().sum().item()
+#     print(sum_elements)
+#     # prints 2.470420440658927e-05 <-- why not zero?
+#     # with dtype float64 -> 4.542902902140598e-14 almost zero
+#
+#     # Compare the manually created one with the hypernet
+#
+#     batch = Batch.from_data_list([data])
+#     forward = encoder.forward(batch)
+#     edge_terms = forward["edge_terms"]
+#     graph_terms = forward["graph_embedding"]
+#
+#     eps = 1e-9
+#     ok_mask = (edge_terms - edge_terms_manul).abs() <= eps  # bool tensor
+#     all_ok = ok_mask.all()  # << GOOD
+#     print(all_ok.item())
+#
+#     draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
+#     ## Now let's fucking decode the edges
+#     node_counter = DataTransformer.get_node_counter_from_batch(0, batch)
+#     candidates, edges_left = new_decoder(
+#         nodes_multiset=node_counter,
+#         edge_terms=edge_terms,
+#         encoder=encoder,
+#         graph_terms=graph_terms,
+#     )
+#     data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
+#
+#     batch = Batch.from_data_list(data_list)
+#     enc_out = encoder.forward(batch)
+#     g_terms = enc_out["graph_embedding"]  # [B, D]
+#
+#     q = graph_terms.to(g_terms.device, g_terms.dtype)  # [D]
+#     sims_ = torchhd.cos(q, g_terms).tolist()[0]
+#     print(sims_)
+#     print(max(sims_))
+#
+#     best_idx = sims_.index(max(sims_))
+#     best = candidates[best_idx]
+#     print(f"Edges Left Best: {edges_left[best_idx]}")
+#
+#     draw_mol(mol=mol, save_path="candidate-input.png", fmt="png")
+#     for i, c in enumerate(candidates):
+#         best_mol, _ = DataTransformer.nx_to_mol_v2(c, dataset=base_dataset)
+#         draw_mol(mol=best_mol, save_path=f"candidate-{i}-best-{best_idx}.png", fmt="png")

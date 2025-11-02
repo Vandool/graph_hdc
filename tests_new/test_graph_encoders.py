@@ -860,7 +860,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__thre
     ds.default_cfg.seed = 42
     ds.default_cfg.nha_bins = nha_bins
     ds.default_cfg.nha_depth = nha_depth
-    ds.default_cfg.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+    ds.default_cfg.node_feature_configs[Features.NODE_FEATURES] = FeatureConfig(
         # Added Neighbourhood awareness encodings (n distinct values)
         count=28
         * 6
@@ -1048,7 +1048,7 @@ def test_hypernet_decode_order_one_is_good_enough_counter_nha__one_hv_dict__two_
     ds.default_cfg.seed = 42
     ds.default_cfg.nha_bins = nha_bins
     ds.default_cfg.nha_depth = nha_depth
-    ds.default_cfg.node_feature_configs[Features.ATOM_TYPE] = FeatureConfig(
+    ds.default_cfg.node_feature_configs[Features.NODE_FEATURES] = FeatureConfig(
         # Added Neighbourhood awareness encodings (n distinct values)
         count=28
         * 6

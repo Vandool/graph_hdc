@@ -193,7 +193,7 @@ class HDCGenerator(AbstractGenerator):
         node_counter: Counter[tuple[int, ...]] | None = None,
     ) -> DecodingResult:
         # TODO: Here we expand the 2D type
-        return self.hypernet.decode_graph(
+        return self.hypernet.decode_graph_greedy(
             node_counter=node_counter,
             edge_term=edge_term,
             graph_term=graph_term,

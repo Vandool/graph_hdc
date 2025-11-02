@@ -1,29 +1,30 @@
+import enum
 import itertools
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Final, Literal
 
 import networkx as nx
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import torchhd
-from matplotlib import pyplot as plt
 from torch import Tensor
 from torch_geometric.data import Batch, Data, Dataset
 from torch_geometric.loader import DataLoader
-from torch_geometric.utils import scatter
 from torchhd import VSATensor
 from tqdm import tqdm
 
-from graph_hdc.utils import shallow_dict_equal
 from src.encoding.configs_and_constants import (
+    BaseDataset,
     DSHDCConfig,
     Features,
     IndexRange,
 )
+from src.encoding.corrections import correct
+from src.encoding.decoder import compute_sampling_structure, try_find_isomorphic_graph
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -53,11 +54,20 @@ from src.utils.utils import (
     flatten_counter,
     scatter_hd,
 )
-from src.utils.visualisations import draw_nx_with_atom_colorings
 
 # === HYPERDIMENSIONAL MESSAGE PASSING NETWORKS ===
 
 EncoderMap = dict[Features, tuple[AbstractFeatureEncoder, IndexRange]]
+MAX_ALLOWED_DECODING_NODES_QM9: Final[int] = 18
+MAX_ALLOWED_DECODING_NODES_ZINC: Final[int] = 60
+
+
+class CorrectionLevel(str, enum.Enum):
+    FAIL = "failed to correct"
+    ZERO = "not corrected"
+    ONE = "edge added/removed"
+    TWO = "edge added/removed then re-decoded"
+    THREE = "edge added/removed of the level two results"
 
 
 @dataclass
@@ -65,6 +75,7 @@ class DecodingResult:
     nx_graphs: list[nx.Graph]
     final_flags: list[bool]
     target_reached: bool
+    correction_level: CorrectionLevel = CorrectionLevel.ZERO
 
 
 class AbstractGraphEncoder(pl.LightningModule):
@@ -359,6 +370,14 @@ class HyperNet(AbstractGraphEncoder):
             # already the default
             self._directed_decoded_edge_limit = 122  # max 88 in train
 
+    @property
+    def base_dataset(self):
+        return self._base_dataset
+
+    @base_dataset.setter
+    def base_dataset(self, base_dataset: BaseDataset):
+        self._base_dataset = base_dataset
+
     def _init_lazy_fields(self) -> None:
         """Create attributes that __init__ normally sets but load() may bypass."""
         # Contains hypervectors that represents a Node (HV_node = bind(HV(f1), ..., HV(f2)))
@@ -373,6 +392,7 @@ class HyperNet(AbstractGraphEncoder):
         self.normalize: bool = False
         self._max_step_delta: float | None = None
         self._directed_decoded_edge_limit: int = 50  # Default for zinc
+        self._base_dataset: BaseDataset = "qm9"
 
     def to(self, device, dtype=None):
         # normalize + store; also move nn.Module state if any
@@ -515,38 +535,12 @@ class HyperNet(AbstractGraphEncoder):
         # which represent the encoded hyper-vectors for the individual nodes or for the overall graphs respectively.
         data = self.encode_properties(data)
 
-        # ~ handling continuous edge weights
-        # Optionally it is possible for the input graph structures to also define a "edge_weight" property which
-        # should be a continuous value that represents the weight of the edge. This weight will later be used
-        # to weight/gate the message passing over the corresponding edge during the message-passing steps.
-        # Specifically, the values in the "edge_weight" property should be the edge weight LOGITS, which will
-        # later be transformed into a [0, 1] range using the sigmoid function!
-
-        ## We don't have edge_weights, candidate for deletion (keep the default behaviour??)
-        # if hasattr(data, "edge_weight") and data.edge_weight is not None:
-        #     edge_weight = data.edge_weight
-        # else:
-        #     # If the given graphs do not define any edge weights we set the default values to 10 for all edges
-        #     # because sigmoid(10) ~= 1.0 which will effectively be the same as discrete edges.
-        #     # edge_weight should have the same dtype as the hypervectors
-        #     edge_weight = 100 * torch.ones(
-        #         data.edge_index.shape[1],
-        #         1,
-        #         device=self.device,
-        #         # dtype=data.node_hv.dtype
-        #     )
-
         # ~ handling edge bi-directionality
         # If the bidirectional flag is given we will duplicate each edge in the input graphs and reverse the
         # order of node indices such that each node of each edge is always considered as a source and a target
         # for the message passing operation.
-        # Similarly we also duplicate the edge weights such that the same edge weight is used for both edge
-        # "directions".
 
-        ## We don't have edge_weights
         edge_index = torch.cat([data.edge_index, data.edge_index[[1, 0]]], dim=1) if bidirectional else data.edge_index
-        # edge_weight = torch.cat([edge_weight, edge_weight], dim=0) if bidirectional else edge_weight
-
         srcs, dsts = edge_index
 
         # In this data structure we will stack all the intermediate node embeddings for the various message-passing
@@ -557,12 +551,9 @@ class HyperNet(AbstractGraphEncoder):
         node_hv_stack[0] = data.node_hv  # Level 0 HV: Nodes are binding of their features
 
         # ~ message passing
-        mp2_terms = None
         edge_terms = None
         node_terms = None
         for layer_index in range(self.depth):
-            # messages are gated with the corresponding edge weights! Pick the neighbours
-            # messages = node_hv_stack[layer_index][dsts] * sigmoid(edge_weight)
             messages = node_hv_stack[layer_index][dsts]
 
             # aggregate (bundle) neighbor messages back into each node slot
@@ -577,9 +568,6 @@ class HyperNet(AbstractGraphEncoder):
             if layer_index == 0:
                 edge_terms = hr.clone()
 
-            if layer_index == 1:
-                mp2_terms = hr.clone()
-
             if normalize or self.normalize:
                 # compute L2 norm along the last dimension (out‐of‐place)
                 hr_norm = hr.norm(dim=-1, keepdim=True)  # [node_dim, 1]
@@ -589,13 +577,11 @@ class HyperNet(AbstractGraphEncoder):
             else:
                 node_hv_stack[layer_index + 1] = hr
 
-        # We calculate the final graph-level embedding as the sum of all the node embeddings over all the various
+        # We calculate the final graph-level embedding as the sum of all the node embeddings over all the various (k-hop neighbourhood)
         # message passing depths and as the sum over all the nodes.
         node_hv_stack = node_hv_stack.transpose(0, 1)
         node_hv = torchhd.multibundle(node_hv_stack)  # This is bundle - [N, P, D] -> [N, D]
         readout = scatter_hd(src=node_hv, index=data.batch, op="bundle")
-        # We should not normalise the embedding, otherwise all the information regarding the frequency of the encoded
-        # properties will be lost
         embedding = readout
 
         if separate_levels:
@@ -603,20 +589,13 @@ class HyperNet(AbstractGraphEncoder):
             node_terms = scatter_hd(src=data.node_hv, index=data.batch, op="bundle")
 
             ## Prepare level 1 Embeddings: Only edge terms (not bounded with level 0)
-            ## Prepare Level 0 Embedding: Only node terms
             edge_terms = scatter_hd(src=edge_terms, index=data.batch, op="bundle")
-            # mp2_terms = scatter_hd(mp2_terms, index=data.batch, op="bundle")
 
         return {
             # This the main result of the forward pass which is the individual graph embedding vectors of the
             # input graphs.
             # graph_embedding: (batch_size, hv_dim)
             "graph_embedding": embedding,
-            # As additional information that might be useful we also pass the stack of the node embeddings across
-            # the various convolutional depths.
-            # node_hv_stack: (batch_size * num_nodes, num_layers + 1, hv_dim)
-            # "mp2_terms": mp2_terms,
-            # "node_hv_stack": node_hv_stack,
             "node_terms": node_terms,
             "edge_terms": edge_terms,
         }
@@ -711,7 +690,7 @@ class HyperNet(AbstractGraphEncoder):
         # tuple index of: ([0, F1-1], [0, F2-1], [0, F3-1])
         if not self.nodes_indexer:
             ## Edge case for having CombinatoricEncoder - Change impl later.
-            if isinstance(enc := self.node_encoder_map[Features.ATOM_TYPE][0], CombinatoricIntegerEncoder):
+            if isinstance(enc := self.node_encoder_map[Features.NODE_FEATURES][0], CombinatoricIntegerEncoder):
                 self.nodes_indexer = enc.indexer
             else:
                 self.nodes_indexer = TupleIndexer([e.num_categories for e, _ in self.node_encoder_map.values()])
@@ -749,170 +728,6 @@ class HyperNet(AbstractGraphEncoder):
     @staticmethod
     def is_not_initialized(tensor: torch.Tensor | None) -> bool:
         return tensor is None or tensor.numel() == 0
-
-    def decode_order_one_counter_explain_away(
-        self,
-        embedding: torch.Tensor,  # [B, D] or [D]
-        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
-        max_iters: int = 50,
-        threshold: float = 0.5,
-        *,
-        use_break: bool = True,
-    ) -> list[Counter]:
-        """
-        Peel off top edges iteratively exactly as in your script,
-        but do it for each graph in the batch.
-        """
-        self.populate_codebooks()
-
-        # 1) ensure batch dimension
-        if embedding.dim() == 1:
-            embedding = embedding.unsqueeze(0)
-        B, D = embedding.shape
-
-        # populate all codebooks/indexers
-        # self._populate_nodes_codebooks()
-        # self._populate_node_indexer()
-
-        results: list[Counter] = []
-
-        for b in range(B):
-            # — build per‐graph data structures —
-            graph_hv = embedding[b].clone()
-            # which nod‐indices are present?
-            node_idxs = self.nodes_indexer.get_idxs(unique_decode_nodes_batch[b])
-            # flatten+sort for reproducibility
-            nodes_decoded_flat = sorted(node_idxs)
-
-            # all possible directed pairs over those nodes
-            edge_to_check = list(itertools.product(nodes_decoded_flat, nodes_decoded_flat))
-
-            found = set()
-
-            iteration = 1
-            should_break = False
-            while iteration <= max_iters and edge_to_check and not should_break:
-                # 2) score every candidate
-                scores = []
-                for u, v in edge_to_check:
-                    eh = self.nodes_codebook[u].bind(self.nodes_codebook[v])
-                    s = torchhd.dot(graph_hv, eh)
-                    # if MAP, normalize
-                    if self.vsa == VSAModel.MAP:
-                        s = s / D
-                    scores.append(s.item())
-
-                # 3) stop if even the top score is <= 0
-                if max(scores) <= 0.0:
-                    break
-
-                # 4) sort descending, pick every‐other slot
-                idxs_sorted = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-
-                for idx in idxs_sorted[::2]:
-                    u, v = edge_to_check[idx]
-                    if scores[idx] > threshold:
-                        found.add((u, v))
-                        found.add((v, u))
-                        graph_hv -= self.nodes_codebook[u].bind(self.nodes_codebook[v])
-                        graph_hv -= self.nodes_codebook[v].bind(self.nodes_codebook[u])
-                        edge_to_check = [e for e in edge_to_check if e not in {(u, v), (v, u)}]
-                        if use_break:
-                            break
-                    elif scores[idx] <= 0:
-                        should_break = True
-
-                iteration += 1
-
-            results.append(Counter(found))
-
-        return results
-
-    def decode_order_one_counter_explain_away_faster(
-        self,
-        embedding: torch.Tensor,  # [B, D] or [D]
-        unique_decode_nodes_batch: list[set[tuple[int, int]]],  # length B
-        max_iters: int = 50,
-        threshold: float = 0.5,
-        *,
-        use_break: bool = False,
-    ) -> list[Counter]:
-        self.populate_nodes_codebooks()
-        self._populate_nodes_indexer()
-        self.populate_edge_feature_codebook()
-        self._populate_edge_feature_indexer()
-        self.populate_edges_codebook()
-        self._populate_edges_indexer()
-
-        # 1) ensure batch dimension
-        if embedding.dim() == 1:
-            embedding = embedding.unsqueeze(0)
-        B, D = embedding.shape
-
-        results = []
-        for b in range(B):
-            graph_hv = embedding[b].clone()
-
-            # 2) build the list of candidate edge *flat* indices once
-            node_idxs = self.nodes_indexer.get_idxs(unique_decode_nodes_batch[b])
-            assert len(node_idxs) > 0
-            pairs = list(itertools.product(node_idxs, node_idxs))
-            cand_idxs = torch.tensor(self.edges_indexer.get_idxs(pairs), dtype=torch.long)
-            assert cand_idxs.shape[0] == len(node_idxs) ** 2
-
-            found = set()
-            iteration, should_break = 1, False
-
-            while iteration <= max_iters and len(cand_idxs) > 0 and not should_break:
-                # 2) score all candidates at once
-                slice_hvs = self.edges_codebook[cand_idxs]  # [E, D]
-                sims = slice_hvs.matmul(graph_hv)  # [E]
-                if self.vsa == VSAModel.MAP:
-                    sims = sims / D
-
-                # 3) break if top ≤ 0
-                if sims.max() <= 0:
-                    break
-
-                # 4) sort descending indices
-                idxs_sorted = sims.argsort(descending=True)  # [E]
-
-                # inner loop, every‐other slot
-                to_remove = set()
-                for idx in idxs_sorted[::2].tolist():
-                    score = sims[idx].item()
-                    candidates_idx = cand_idxs[idx].item()
-                    u, v = self.edges_indexer.get_tuple(candidates_idx)
-
-                    if score > threshold:
-                        # exactly your original body:
-                        found.add((u, v))
-                        found.add((v, u))
-
-                        graph_hv = (
-                            graph_hv
-                            - self.nodes_codebook[u].bind(self.nodes_codebook[v])
-                            - self.nodes_codebook[v].bind(self.nodes_codebook[u])
-                        )
-
-                        # remove both directions
-                        to_remove.update({self.edges_indexer.get_idx((u, v)), self.edges_indexer.get_idx((v, u))})
-                        if use_break:
-                            break
-                    elif score <= 0:
-                        should_break = True
-                        break
-                    # else continue searching
-
-                # Remove the found ones
-                mask = [(i.item() not in to_remove) for i in cand_idxs]
-                cand_idxs = cand_idxs[mask]
-
-                iteration += 1
-
-            results.append(Counter(found))
-
-        return results
 
     def decode_order_one(
         self,
@@ -1299,248 +1114,11 @@ class HyperNet(AbstractGraphEncoder):
         instance.load_from_path(path=path)
         return instance
 
-    def possible_graph_from_constraints(
+    def decode_graph_greedy(
         self,
-        zero_order_constraints: list[dict],
-        first_order_constraints: list[dict],
-    ) -> tuple[dict, list]:
-        # ~ Build node information from constraints list
-        # This data structure will contain a unique integer node index as the key and the value will
-        # be the dictionary which contains the node properties that were originally decoded.
-        index_node_map: dict[int, dict] = {}
-        index: int = 0
-        for nc in zero_order_constraints:
-            num = nc["num"]
-            for _ in range(num):
-                index_node_map[index] = nc["src"]
-                index += 1
-
-        # ~ Build edge information from constraints list
-        edge_indices: set[tuple[int, int]] = set()
-        for ec in first_order_constraints:
-            src = ec["src"]
-            dst = ec["dst"]
-
-            # Now we need to find all the node indices which match the description of the edge source
-            # and destination. This is done by iterating over the index_node_map and checking if the
-            # node properties match the source and destination properties of the edge.
-            # For each matching pair, we insert an edge into the edge_indices list.
-            for i, node_i in index_node_map.items():
-                if shallow_dict_equal(node_i, src):
-                    for j, node_j in index_node_map.items():
-                        if shallow_dict_equal(node_j, dst) and i != j:
-                            hi = max(i, j)
-                            lo = min(i, j)
-                            edge_indices.add((hi, lo))
-
-        return index_node_map, list(edge_indices)
-
-    def reconstruct(
-        self,
-        graph_hv: torch.Tensor,
-        node_terms: torch.Tensor | None = None,
-        edge_terms: torch.Tensor | None = None,
-        num_iterations: int = 25,
-        learning_rate: float = 1.0,
-        batch_size: int = 10,
-        low: float = 0.0,
-        high: float = 1.0,
-        alpha: float = 1.0,
-        lambda_l1: float = 0.0,
-        *,
-        use_node_degree: bool = False,
-        is_undirected: bool = True,
-    ) -> dict:
-        """
-        Reconstructs a graph dict representation from the given graph hypervector by first decoding
-        the order constraints for nodes and edges to build an initial guess and then refining the
-        structure using gradient descent optimization.
-
-        Now, instead of optimizing a single candidate, a whole batch of candidates are optimized.
-        The edge weights are randomly initialized between low and high and, after optimization,
-        are discretized. The candidate with the best similarity to graph_hv is selected.
-        """
-        dev = graph_hv.device
-        log = False
-        # ~ Decode node constraints
-        node_terms = node_terms if node_terms is not None else graph_hv
-        ## Nodes are represented as tuple of their features
-        node_counters = self.decode_order_zero_counter(node_terms)
-
-        # ~ Decode Edge terms
-        edge_terms = edge_terms if edge_terms is not None else graph_hv
-        decode_order_one_fn = self.decode_order_one_counter_explain_away_faster
-
-        # Edges are (Node_idx_u, Node_idx_v)
-        edge_counters = decode_order_one_fn(edge_terms, node_counters)
-        if log:
-            print("node counter", node_counters)
-            print("edge counter", edge_counters)
-
-        # node_keys = list(node_counters[0]["src"].keys())
-
-        # Given the node and edge constraints, this method will assemble a first guess of the graph
-        # structure by inserting all the nodes that were defined by the node constraints and inserting
-        # all possible edges that match any of the given edge constraints.
-        # index_node_map, edge_indices = self.possible_graph_from_constraints(node_counters, edge_counters)
-
-        # node_counters counts the number of nodes per batch
-        # We have no batch of graph, the incoming data belongs to one graph
-        __x__ = self.get_data_x(node_counters[0], self.node_encoder_map).to(device=dev)
-        edge_indices = self.get_edge_index_list(edge_counter=edge_counters[0], node_counter=node_counters[0])
-
-        data = Data()
-        data.edge_index = torch.tensor(list(edge_indices), dtype=torch.long, device=dev).t()
-        data.batch = torch.tensor([0] * __x__.shape[0], dtype=torch.long, device=__x__.device)
-        # data.x = torch.zeros(__x__.shape[0], self.hv_dim)
-        data.x = __x__
-        # data = self.encode_properties(data)
-
-        # Create batch of identical templates
-        data_list = [data.clone() for _ in range(batch_size)]
-        batch = Batch.from_data_list(data_list)
-
-        # CHANGED: initialize trainable raw_weights for unique edges per candidate
-        edges_per_graph = data.edge_index.size(1)
-        if is_undirected:
-            assert edges_per_graph % 2 == 0, "Expected each undirected edge twice"
-            num_unique = edges_per_graph // 2
-            raw_weights = torch.nn.Parameter(torch.empty(batch_size * num_unique, 1, device=dev).uniform_(low, high))
-        else:
-            raw_weights = torch.nn.Parameter(
-                torch.empty(batch_size * edges_per_graph, 1, device=dev).uniform_(low, high)
-            )
-        optimizer = torch.optim.Adam([raw_weights], lr=learning_rate)
-
-        # Precompute constants
-        num_nodes = __x__.shape[0] * batch_size
-        node_keys = [x.value for x in self.node_encoder_map]
-
-        # Optimization loop over candidate batch
-        for it in range(num_iterations):
-            optimizer.zero_grad()
-            # CHANGED: expand raw_weights into full per-edge logits, tying for undirected
-            if is_undirected:
-                full_logits = raw_weights.repeat_interleave(2, dim=0)
-            else:
-                full_logits = raw_weights
-            batch.edge_weight = full_logits
-
-            result = self.forward(batch)
-            embedding = result["graph_embedding"]  # shape (candidate_batch_size, hv_dim)
-
-            # Compute mean squared error loss for each candidate (compare each to graph_hv)
-            losses = torch.square(embedding - graph_hv.expand_as(embedding)).mean(dim=1)
-            loss_embed = losses.mean()  # loss should have grad_fn, it works only when the grad_fn is not None
-
-            if use_node_degree and ("node_degree" in node_keys or "node_degrees" in node_keys):
-                _, (start, end) = self.node_encoder_map[Features.NODE_DEGREE]
-                true_degree = batch.x[:, start:end]
-
-                _edge_weight = torch.sigmoid(2 * full_logits)
-                _edges_src = scatter(
-                    torch.ones_like(_edge_weight), batch.edge_index[0], dim_size=num_nodes, reduce="sum"
-                )
-                _edges_dst = scatter(
-                    torch.ones_like(_edge_weight), batch.edge_index[1], dim_size=num_nodes, reduce="sum"
-                )
-                _num_edges = _edges_src + _edges_dst
-
-                # _edge_weight = torch.where(_edge_weight > 0.5, _edge_weight, _edge_weight * 0.001)
-                # _edge_weight = torch.where(_edge_weight > 0.2, torch.ones_like(_edge_weight), torch.zeros_like(_edge_weight))
-                scatter_src = scatter(_edge_weight, batch.edge_index[0], dim_size=num_nodes, reduce="sum")
-                scatter_dst = scatter(_edge_weight, batch.edge_index[1], dim_size=num_nodes, reduce="sum")
-                # Calculate the actual node degree by summing over the edge weights of all the in and out going edges of a node
-                pred_degree = scatter_src + scatter_dst  # shape [batch_size * num_nodes]
-                # CHANGED: add L2 degree‐matching loss
-                loss_degree = (pred_degree - true_degree.view_as(pred_degree)).pow(2).mean()  # CHANGED
-                alpha = alpha  # CHANGED: tradeoff weight
-            else:
-                loss_degree = 0.0  # CHANGED
-                alpha = 0.0  # CHANGED
-
-            # # 6) Sparsity (L1 on the raw logits)
-            sparsity = torch.abs(batch.edge_weight).sum()  # CHANGED
-            lambda_l1 = lambda_l1  # CHANGED: tradeoff for sparsity
-
-            # 7) Total loss
-            loss = loss_embed + alpha * loss_degree + lambda_l1 * sparsity  # CHANGED
-            # loss = loss_embed
-            loss.backward()
-            optimizer.step()
-
-            if log:
-                print(f"Iter {it}: loss={loss.item()}")
-
-        # After optimization, assemble final logits
-        if is_undirected:
-            final_logits = raw_weights.repeat_interleave(2, dim=0).detach()
-        else:
-            final_logits = raw_weights.detach()
-
-        # Assemble final logits
-        if is_undirected:
-            full_logits = raw_weights.repeat_interleave(2, dim=0).detach()
-        else:
-            full_logits = raw_weights.detach()
-        edges = edges_per_graph
-        final_logits = full_logits.view(batch_size, edges, 1)
-
-        # Recompute embeddings to pick best candidate
-        batch.edge_weight = final_logits.view(batch_size * edges, 1)
-        out = self.forward(batch)
-        emb = out["graph_embedding"]
-        losses = torch.square(emb - graph_hv.expand_as(emb)).mean(dim=1)
-        best_idx = int(torch.argmin(losses).item())
-
-        # Extract best logits and build final Data
-        best_logits = final_logits[best_idx]  # (edges,1)
-        # select edges above threshold
-        mask = torch.sigmoid(best_logits) > 0.0
-        kept_edges = data.edge_index[:, mask.flatten()]
-
-        # Build best Data and attach edge_weight
-        best_data = Data(x=__x__, edge_index=kept_edges)
-        best_data.edge_weight = best_logits[mask]
-
-        # Compute final degree sums for logs
-        num_nodes_final = __x__.shape[0]
-        if best_data.edge_index.numel() > 0:
-            scatter_src = scatter(
-                best_data.edge_weight, best_data.edge_index[0], dim_size=num_nodes_final, reduce="sum"
-            )
-            scatter_dst = scatter(
-                best_data.edge_weight, best_data.edge_index[1], dim_size=num_nodes_final, reduce="sum"
-            )
-            final_degrees = scatter_src + scatter_dst
-        else:
-            # No edges: degrees are zero for all nodes
-            final_degrees = torch.zeros(num_nodes_final, device=dev)
-
-        if log:
-            print(f"Final batch.edge_weight (flattened): {batch.edge_weight.flatten()}")
-            print(f"Final losses per candidate: {losses.detach().cpu().numpy()}")
-            print(f"Chosen index: {best_idx}, loss: {losses[best_idx].item():.4f}")
-            print(f"Final edge weights: {best_data.edge_weight.flatten().cpu().numpy()}")
-            print(f"Final degrees: {(scatter_src + scatter_dst).cpu().numpy()}")
-            print(f"Final edge index: {kept_edges.detach().cpu().numpy().T}")
-
-        return best_data, node_counters, edge_counters
-
-    def _print_and_plot(self, g: nx.Graph, graph_terms):
-        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g)])
-        enc_out = self.forward(batch)
-        g_terms = enc_out["graph_embedding"]
-        sims_c = torchhd.cos(graph_terms, g_terms).tolist()[0]
-        print(f"SIM: {sims_c[0]}")
-        draw_nx_with_atom_colorings(g, dataset="ZincSmiles", label=sims_c[0])
-        plt.show()
-
-    def decode_graph(
-        self,
-        node_counter: Counter,
         edge_term: torch.Tensor,
         graph_term: torch.Tensor,
+        node_counter: Counter | None = None,
         decoder_settings: dict | None = None,
     ) -> DecodingResult:
         if decoder_settings is None:
@@ -1557,11 +1135,14 @@ class HyperNet(AbstractGraphEncoder):
             if not target_reached(decoded_edges):
                 decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
-        if node_counter.total() > 18:
-            print(f"Skipping graph with {node_counter.total()} nodes")
-            # TODO: Correct this for ZINC
+        node_limit = MAX_ALLOWED_DECODING_NODES_QM9 if self.base_dataset == "qm9" else MAX_ALLOWED_DECODING_NODES_ZINC
+        if node_counter.total() > node_limit:
+            print(f"Skipping graph with {node_counter.total()} nodes for '{self.base_dataset}'")
             return DecodingResult(
-                nx_graphs=[nx.Graph()], final_flags=[False], target_reached=target_reached(decoded_edges)
+                nx_graphs=[nx.Graph()],
+                final_flags=[False],
+                target_reached=target_reached(decoded_edges),
+                correction_level=CorrectionLevel.FAIL,
             )
 
         node_count = node_counter.total()
@@ -1703,7 +1284,10 @@ class HyperNet(AbstractGraphEncoder):
                 graphs, edges_left = zip(*population, strict=True)
                 are_final = [len(i) == 0 for i in edges_left]
                 return DecodingResult(
-                    nx_graphs=graphs, final_flags=are_final, target_reached=target_reached(decoded_edges)
+                    nx_graphs=graphs,
+                    final_flags=are_final,
+                    target_reached=target_reached(decoded_edges),
+                    correction_level=CorrectionLevel.FAIL,
                 )
 
             if len(children) > initial_limit:
@@ -1746,7 +1330,304 @@ class HyperNet(AbstractGraphEncoder):
 
         graphs, edges_left = zip(*population, strict=True)
         are_final = [len(i) == 0 for i in edges_left]
-        return DecodingResult(nx_graphs=graphs, final_flags=are_final, target_reached=target_reached(decoded_edges))
+        return DecodingResult(
+            nx_graphs=graphs,
+            final_flags=are_final,
+            target_reached=target_reached(decoded_edges),
+            correction_level=CorrectionLevel.FAIL,
+        )
+
+    def ensure_vsa(self, t: torch.Tensor) -> VSATensor:
+        # ensures vsa type of the tensor is correct
+        if isinstance(t, self.vsa.tensor_class):
+            return t
+        return t.as_subclass(self.vsa.tensor_class)
+
+    def _apply_edge_corrections(
+        self,
+        edge_term: VSATensor,
+        initial_decoded_edges: list[tuple[tuple, tuple]],
+    ) -> tuple[list[list[tuple[tuple, tuple]]], CorrectionLevel]:
+        """
+        Apply progressive correction strategies to decoded edges.
+
+        When the initially decoded edges don't form a valid graph (node degrees don't match
+        edge counts), this method applies up to three correction strategies in sequence:
+
+        - Level 1: Simple add/remove corrections based on fractional node counts
+        - Level 2: Re-decode with corrected node counter (ceiling method)
+        - Level 3: Re-decode + corrections
+
+        If all corrections fail, returns the initial edges with FAIL level.
+
+        Parameters
+        ----------
+        edge_term : VSATensor
+            The edge term hypervector for re-decoding if needed.
+        initial_decoded_edges : list[tuple[tuple, tuple]]
+            The initially decoded edges that need correction.
+
+        Returns
+        -------
+        tuple[list[list[tuple[tuple, tuple]]], CorrectionLevel]
+            - List of corrected edge multisets (each multiset is a list of edges)
+            - Correction level achieved (ONE, TWO, THREE, or FAIL)
+        """
+        # Level 1: Try simple add/remove corrections
+        node_counter_fp = get_node_counter_fp(initial_decoded_edges)
+        decoded_edges = correct(node_counter_fp, initial_decoded_edges)
+
+        if decoded_edges:
+            return decoded_edges, CorrectionLevel.ONE
+
+        # Level 2: Corrective re-decoding with ceiling method
+        # The ceiling method assumes we missed some edges and tries to find more
+        node_counter_corrective = get_node_counter_corrective(initial_decoded_edges, method="ceil")
+        decoded_edges_corrective = self.decode_order_one(
+            edge_term=edge_term.clone(),
+            node_counter=node_counter_corrective
+        )
+
+        if target_reached(decoded_edges_corrective):
+            return [decoded_edges_corrective], CorrectionLevel.TWO
+
+        # Level 3: Re-decode + corrections
+        decoded_edges = correct(
+            node_counter_fp=get_node_counter_fp(decoded_edges_corrective),
+            decoded_edges_s=decoded_edges_corrective,
+        )
+
+        if decoded_edges:
+            return decoded_edges, CorrectionLevel.THREE
+
+        # All corrections failed: return initial edges with FAIL level
+        return [initial_decoded_edges], CorrectionLevel.FAIL
+
+    def _find_top_k_isomorphic_graphs(
+        self,
+        edge_multiset: list[tuple[tuple, tuple]],
+        graph_term: VSATensor,
+        iteration_budget: int,
+        max_graphs_per_iter: int,
+        top_k: int,
+        sim_eps: float,
+        use_early_stopping: bool,
+    ) -> list[tuple[nx.Graph, float]]:
+        """
+        Find top-k graph candidates through pattern matching and similarity ranking.
+
+        This method enumerates valid graph structures from the given edge multiset,
+        re-encodes each candidate to HDC, and ranks them by cosine similarity to
+        the target graph_term.
+
+        Parameters
+        ----------
+        edge_multiset : list[tuple[tuple, tuple]]
+            Valid edge multiset from which to generate graph candidates.
+        graph_term : VSATensor
+            Target graph hypervector for similarity comparison.
+        iteration_budget : int
+            Number of pattern matching iterations to perform.
+        max_graphs_per_iter : int
+            Maximum number of graph candidates to generate per iteration.
+        top_k : int
+            Number of top-scoring graphs to retain from each iteration.
+        sim_eps : float
+            Early stopping threshold: stop if similarity >= 1.0 - sim_eps.
+        use_early_stopping : bool
+            Whether to enable early stopping when near-perfect match is found.
+
+        Returns
+        -------
+        list[tuple[nx.Graph, float]]
+            List of (graph, similarity_score) tuples from all iterations.
+        """
+        top_k_graphs = []
+
+        for _ in range(iteration_budget):
+            # Compute sampling structure from edge multiset
+            node_counter = get_node_counter(edge_multiset)
+            matching_components, id_to_type = compute_sampling_structure(
+                nodes_multiset=[k for k, v in node_counter.items() for _ in range(v)],
+                edges_multiset=edge_multiset,
+            )
+
+            # Enumerate valid graph structures via isomorphism
+            decoded_graphs_iter = try_find_isomorphic_graph(
+                matching_components=matching_components,
+                id_to_type=id_to_type,
+                max_samples=max_graphs_per_iter
+            )
+
+            # Batch encode candidate graphs back to HDC
+            pyg_graphs = [DataTransformer.nx_to_pyg_with_type_attr(g) for g in decoded_graphs_iter]
+            batch = Batch.from_data_list(pyg_graphs)
+            graph_hdcs_batch = self.forward(batch)["graph_embedding"]
+
+            # Compute similarities to target graph_term
+            sims = torchhd.cos(graph_term, graph_hdcs_batch)
+
+            # Get top k from this iteration
+            top_k_sims, top_k_indices = torch.topk(sims, k=min(top_k, len(sims)))
+            top_k_sims_cpu = top_k_sims.cpu().numpy()
+
+            # Extend results with (graph, similarity) pairs
+            top_k_graphs.extend(
+                [(decoded_graphs_iter[top_k_indices[i]], sim) for i, sim in enumerate(top_k_sims_cpu)]
+            )
+
+            # Early stopping: if we found a near-perfect match, stop iterating
+            if use_early_stopping and any(abs(sim - 1.0) < sim_eps for sim in top_k_sims_cpu):
+                break
+
+        return top_k_graphs
+
+    def decode_graph(
+        self,
+        edge_term: VSATensor,
+        graph_term: VSATensor,
+        decoder_settings: dict | None = None
+    ) -> DecodingResult:
+        """
+        Decode a graph from its hyperdimensional representation (edge_term and graph_term).
+
+        This function implements a multi-phase decoding strategy:
+
+        1. **Edge Decoding**: Extract edge multiset from edge_term using cosine similarity
+           and iterative unbinding.
+
+        2. **Correction**: If the decoded edges don't form a valid graph (node degrees
+           don't match edges), apply progressive correction strategies:
+           - Level 0: No correction needed
+           - Level 1: Simple add/remove operations on initial decoding
+           - Level 2: Re-decode with corrected node counter (ceiling method)
+           - Level 3: Re-decode + corrections
+           - Fail: Fall back to greedy decoding
+
+        3. **Pattern Matching**: Enumerate valid graph structures from the corrected edge
+           multiset, encode them back to HDC, and rank by cosine similarity to graph_term.
+
+        4. **Fallback**: If all corrections fail, use the greedy beam search decoder.
+
+        Parameters
+        ----------
+        edge_term : VSATensor
+            Hypervector representing the edge structure (output from forward() at depth=1).
+        graph_term : VSATensor
+            Hypervector representing the full graph (output from forward() graph_embedding).
+        decoder_settings : dict, optional
+            Configuration parameters:
+            - iteration_budget: int (default: 1 for QM9, 10 for ZINC)
+              Number of pattern matching iterations per edge multiset.
+            - max_graphs_per_iter: int (default: 1024)
+              Maximum graph candidates to generate per iteration.
+            - top_k: int (default: 10)
+              Number of top-scoring graphs to return.
+            - sim_eps: float (default: 0.0001)
+              Early stopping threshold (if similarity >= 1.0 - sim_eps).
+            - early_stopping: bool (default: False)
+              Whether to stop when a near-perfect match is found.
+            - fallback_decoder_settings: dict, optional
+              Settings for the greedy decoder fallback.
+
+        Returns
+        -------
+        DecodingResult
+            Object containing:
+            - nx_graphs: list of NetworkX graphs (top-k candidates)
+            - final_flags: list of bools (True if successfully decoded)
+            - target_reached: bool (True if correction succeeded)
+            - correction_level: CorrectionLevel enum value
+
+        Notes
+        -----
+        The decoding process is probabilistic due to:
+        - Cosine similarity-based edge selection (greedy argmax)
+        - Stochastic graph isomorphism enumeration
+        - Multiple correction strategies
+
+        For deterministic results, set the same random seed before calling.
+
+        Examples
+        --------
+        >>> result = hypernet.decode_graph(
+        ...     edge_term=edge_terms[0],
+        ...     graph_term=graph_terms[0],
+        ...     decoder_settings={"top_k": 10, "early_stopping": True}
+        ... )
+        >>> print(result.correction_level)  # CorrectionLevel.ONE
+        >>> best_graph = result.nx_graphs[0]
+        """
+        edge_term = self.ensure_vsa(edge_term)
+        graph_term = self.ensure_vsa(graph_term)
+
+        if decoder_settings is None:
+            decoder_settings = {}
+
+        # Validate decoder_settings
+        if "top_k" in decoder_settings and decoder_settings["top_k"] < 1:
+            raise ValueError("top_k must be >= 1")
+        if "iteration_budget" in decoder_settings and decoder_settings["iteration_budget"] < 1:
+            raise ValueError("iteration_budget must be >= 1")
+        if "max_graphs_per_iter" in decoder_settings and decoder_settings["max_graphs_per_iter"] < 1:
+            raise ValueError("max_graphs_per_iter must be >= 1")
+
+        # Extract settings with defaults
+        iteration_budget: int = decoder_settings.get("iteration_budget", 1 if self.base_dataset == "qm9" else 10)
+        max_graphs_per_iter: int = decoder_settings.get("max_graphs_per_iter", 1024)
+        top_k: int = decoder_settings.get("top_k", 10)
+        sim_eps: float = decoder_settings.get("sim_eps", 0.0001)
+        use_early_stopping: bool = decoder_settings.get("early_stopping", False)
+        fallback_decoder_settings = decoder_settings.get("fallback_decoder_settings")
+
+        # Phase 1: Decode edge multiset from edge_term using greedy unbinding
+        initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
+
+        # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
+        correction_level = CorrectionLevel.ZERO
+        decoded_edges = [initial_decoded_edges]
+
+        if not target_reached(initial_decoded_edges):
+            # Edges don't form valid graph → apply progressive correction strategies
+            decoded_edges, correction_level = self._apply_edge_corrections(
+                edge_term=edge_term,
+                initial_decoded_edges=initial_decoded_edges
+            )
+
+        # Phase 3: If corrections succeeded, enumerate and rank valid graphs via pattern matching
+        if correction_level != CorrectionLevel.FAIL:
+            top_k_graphs: list[tuple[nx.Graph, float]] = []
+
+            # For each valid edge multiset, sample and rank graph candidates
+            for edge_multiset in decoded_edges:
+                graphs_from_multiset = self._find_top_k_isomorphic_graphs(
+                    edge_multiset=edge_multiset,
+                    graph_term=graph_term,
+                    iteration_budget=iteration_budget,
+                    max_graphs_per_iter=max_graphs_per_iter,
+                    top_k=top_k,
+                    sim_eps=sim_eps,
+                    use_early_stopping=use_early_stopping,
+                )
+                top_k_graphs.extend(graphs_from_multiset)
+
+            # Sort all candidates by similarity (descending) and take top k
+            top_k_graphs = sorted(top_k_graphs, key=lambda x: x[1], reverse=True)[:top_k]
+            nx_graphs, _ = zip(*top_k_graphs, strict=False)
+
+            return DecodingResult(
+                nx_graphs=nx_graphs,
+                final_flags=[True] * len(top_k_graphs),
+                target_reached=True,
+                correction_level=correction_level,
+            )
+
+        # Phase 4: Fallback to greedy decoder if all corrections failed
+        return self.decode_graph_greedy(
+            edge_term=edge_term,
+            graph_term=graph_term,
+            decoder_settings=fallback_decoder_settings
+        )
 
     def decode_graph_z3(
         self,
@@ -1799,12 +1680,10 @@ class HyperNet(AbstractGraphEncoder):
 def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     # Only using the edges and the degree of the nodes we can count the number of nodes
     node_degree_counter = Counter(u for u, _ in edges)
-    diagonals = Counter(u for u, v in edges if u == v)
     node_counter = Counter()
     for k, v in node_degree_counter.items():
         # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
         node_counter[k] = v // (k[1] + 1)
-
     return node_counter
 
 
@@ -1828,6 +1707,8 @@ def get_node_counter_corrective(
 def get_node_counter_fp(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     # Only using the edges and the degree of the nodes we can count the number of nodes
     node_degree_counter = Counter(u for u, _ in edges)
+    # having the number nodes as floating point, we can determine how many nodes are missing
+    # or how many nodes are too many with regards to the edges
     return Counter({k: v / (k[1] + 1) for k, v in node_degree_counter.items()})
 
 

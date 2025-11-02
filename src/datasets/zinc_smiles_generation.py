@@ -85,14 +85,23 @@ def largest_ring_size(mol: Chem.Mol) -> int:
 
 def mol_to_data(mol: Chem.Mol) -> Data:
     """
-    Atom types size: 9
-    Atom types: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
-    Degrees size: 5
-    Degrees: {1, 2, 3, 4, 5}
-    Formal Charges size: 3
-    Formal Charges: {0, 1, -1}
-    Explicit Hs size: 4
-    Explicit Hs: {0, 1, 2, 3}
+    Encode an RDKit Mol into a PyG `Data` with ZINC node features.
+
+    Node Feature Configuration: bins=[9, 6, 3, 4, 2]
+    - Atom types: 9 values
+      ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
+    - Degrees: 6 values (after degree-1 transformation)
+      Original degrees: {1, 2, 3, 4, 5, 6} → Transformed: {0, 1, 2, 3, 4, 5}
+    - Formal Charges: 3 values
+      {0, 1, -1} mapped to {0, 1, 2}
+    - Total Hs: 4 values
+      {0, 1, 2, 3}
+    - Is in Ring: 2 values
+      {0 (not in ring), 1 (is in ring)}
+
+    Combinatorial space: 9 × 6 × 3 × 4 × 2 = 1,296 possible node types
+    Actual dataset: ~79 unique node types appear in ZINC dataset
+    (HyperNet limits codebook to these 79 during decoding)
     """
     x = [
         [

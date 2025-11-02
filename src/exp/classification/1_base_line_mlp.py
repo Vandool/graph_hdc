@@ -700,7 +700,7 @@ def run_experiment(cfg: Config):
         node_feature_configs=OrderedDict(
             [
                 (
-                    Features.ATOM_TYPE,
+                    Features.NODE_FEATURES,
                     FeatureConfig(
                         count=math.prod(zinc_feature_bins),  # 9 * 6 * 3 * 4
                         encoder_cls=CombinatoricIntegerEncoder,

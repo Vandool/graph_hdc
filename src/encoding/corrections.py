@@ -14,7 +14,7 @@ from copy import deepcopy
 from src.encoding.graph_encoders import target_reached
 
 
-def correct(node_counter_s_fp, decoded_edges_s):
+def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tuple, tuple]]):
     """
     Attempt to correct a decoded edge set to meet target criteria.
 
@@ -23,7 +23,7 @@ def correct(node_counter_s_fp, decoded_edges_s):
 
     Parameters
     ----------
-    node_counter_s_fp : dict
+    node_counter_fp : dict
         Node counter with floating point values indicating fractional node degrees
     decoded_edges_s : list
         Initial decoded edge set that may need correction
@@ -37,7 +37,7 @@ def correct(node_counter_s_fp, decoded_edges_s):
     corrected_edge_sets = []
     missing_ctr = {}
     extra_ctr = {}
-    for k, v in node_counter_s_fp.items():
+    for k, v in node_counter_fp.items():
         if v - int(v) == 0.0:
             continue
         extra, missing = get_base_units(number=v, base_value=1 / (k[1] + 1))

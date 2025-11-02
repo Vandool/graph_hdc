@@ -5,6 +5,7 @@ import networkx as nx
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import QED, AllChem, Crippen, DataStructs
+from rdkit.Contrib.SA_Score import sascorer
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
@@ -18,6 +19,43 @@ def rdkit_logp(m: Chem.Mol) -> float:
 
 def rdkit_qed(m: Chem.Mol) -> float:
     return QED.qed(m)
+
+
+def rdkit_sa_score(m: Chem.Mol) -> float:
+    return sascorer.calculateScore(m)
+
+
+def rdkit_max_ring_size(m: Chem.Mol) -> int:
+    """Calculate maximum ring size in molecule."""
+    ring_info = m.GetRingInfo()
+    if not ring_info.NumRings():
+        return 0
+    return max(len(ring) for ring in ring_info.AtomRings())
+
+
+def calculate_internal_diversity(mols: list[Chem.Mol], radius: int = 2, nbits: int = 2048) -> float:
+    """
+    Calculate internal diversity as average pairwise Tanimoto distance.
+
+    Returns percentage (0-100).
+    """
+    if len(mols) < 2:
+        return 0.0
+
+    fps = [AllChem.GetMorganFingerprintAsBitVect(m, radius=radius, nBits=nbits) for m in mols]
+
+    similarities = []
+    for i in range(len(fps)):
+        for j in range(i + 1, len(fps)):
+            sim = DataStructs.TanimotoSimilarity(fps[i], fps[j])
+            similarities.append(sim)
+
+    if not similarities:
+        return 0.0
+
+    avg_similarity = sum(similarities) / len(similarities)
+    # Internal diversity = 1 - average similarity
+    return 100.0 * (1.0 - avg_similarity)
 
 
 class GenerationEvaluator:
@@ -84,6 +122,46 @@ class GenerationEvaluator:
         novelty = 100.0 * len(novel_set) / n_valid if n_valid else 0.0
         nuv = 100.0 * len(novel_set) / n_samples if n_samples else 0.0
 
+        # Calculate internal diversity metrics (p=1 with radius=2, p=2 with radius=3)
+        valid_mols = [m for m, v in zip(mols, valid_flags, strict=False) if v]
+        internal_div_p1 = calculate_internal_diversity(valid_mols, radius=2) if len(valid_mols) >= 2 else 0.0
+        internal_div_p2 = calculate_internal_diversity(valid_mols, radius=3) if len(valid_mols) >= 2 else 0.0
+
+        # Calculate property statistics for valid molecules
+        prop_stats = {}
+        if valid_mols:
+            try:
+                logp_vals = [rdkit_logp(m) for m in valid_mols]
+                prop_stats["logp_mean"] = float(np.mean(logp_vals))
+                prop_stats["logp_std"] = float(np.std(logp_vals))
+            except Exception:
+                prop_stats["logp_mean"] = float("nan")
+                prop_stats["logp_std"] = float("nan")
+
+            try:
+                qed_vals = [rdkit_qed(m) for m in valid_mols]
+                prop_stats["qed_mean"] = float(np.mean(qed_vals))
+                prop_stats["qed_std"] = float(np.std(qed_vals))
+            except Exception:
+                prop_stats["qed_mean"] = float("nan")
+                prop_stats["qed_std"] = float("nan")
+
+            try:
+                sa_vals = [rdkit_sa_score(m) for m in valid_mols]
+                prop_stats["sa_score_mean"] = float(np.mean(sa_vals))
+                prop_stats["sa_score_std"] = float(np.std(sa_vals))
+            except Exception:
+                prop_stats["sa_score_mean"] = float("nan")
+                prop_stats["sa_score_std"] = float("nan")
+
+            try:
+                ring_vals = [rdkit_max_ring_size(m) for m in valid_mols]
+                prop_stats["max_ring_size_mean"] = float(np.mean(ring_vals))
+                prop_stats["max_ring_size_std"] = float(np.std(ring_vals))
+            except Exception:
+                prop_stats["max_ring_size_mean"] = float("nan")
+                prop_stats["max_ring_size_std"] = float("nan")
+
         return {
             "dataset": self.base_dataset,
             "final_flags": 100.0 * sum(final_flags) / n_samples if n_samples else 0.0,
@@ -91,7 +169,10 @@ class GenerationEvaluator:
             "uniqueness": uniqueness,
             "novelty": novelty,
             "nuv": nuv,
+            "internal_diversity_p1": internal_div_p1,
+            "internal_diversity_p2": internal_div_p2,
             **sims_eval,
+            **prop_stats,
         }
 
     def evaluate_conditional(

@@ -105,7 +105,7 @@ def eval_retrieval(n_samples: int = 1, base_dataset: str = "qm9"):
                     t0 = time.perf_counter()
                     counters = hypernet.decode_order_zero_counter(node_terms)
                     try:
-                        res = hypernet.decode_graph(
+                        res = hypernet.decode_graph_greedy(
                             node_counter=counters[0],
                             edge_term=edge_terms[0],
                             graph_term=graph_terms[0],

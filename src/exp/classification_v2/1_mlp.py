@@ -949,7 +949,7 @@ def run_experiment(cfg: Config, is_dev: bool = False):
     log("Loading/creating hypernet …")
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
     log("Hypernet ready.")
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
 
     # --- resume if requested ---
     resume_ckpt = None

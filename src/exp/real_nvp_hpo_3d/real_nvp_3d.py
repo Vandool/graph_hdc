@@ -648,8 +648,8 @@ def run_experiment(cfg: FlowConfig):
     log(f"Setting hypernet depth to {ds_cfg.hypernet_depth}!")
     hypernet.depth = ds_cfg.hypernet_depth
     log("Hypernet ready.")
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
-    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.ATOM_TYPE][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
     assert hypernet.nodes_codebook.dtype == torch.float64
     log("Hypernet ready.")
 

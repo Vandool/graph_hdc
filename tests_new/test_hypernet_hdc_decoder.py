@@ -44,7 +44,7 @@ def test_hypernet_hdc_decoder(ds_config):
         graph_terms = forward["graph_embedding"]
         # node_counter = DataTransformer.get_node_counter_from_batch(0, data)
         counters = hypernet.decode_order_zero_counter(node_terms)
-        res = hypernet.decode_graph(node_counter=counters[0], edge_term=edge_terms[0], graph_term=graph_terms[0])
+        res = hypernet.decode_graph_greedy(node_counter=counters[0], edge_term=edge_terms[0], graph_term=graph_terms[0])
         candidates, final_flags, target_reached = res.nx_graphs, res.final_flags, res.target_reached
 
         # candidates, final_flags = new_decoder(

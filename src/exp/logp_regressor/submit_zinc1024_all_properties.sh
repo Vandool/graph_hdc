@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DATASET="ZINC_SMILES_HRR_1024_F64_5G1NG4"
-N_TRIALS=1
+N_TRIALS=30
 CLUSTER="${CLUSTER:-uc3}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
