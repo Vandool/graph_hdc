@@ -11,7 +11,23 @@ import random
 from collections import Counter
 from copy import deepcopy
 
-from src.encoding.graph_encoders import target_reached
+
+def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
+    # Only using the edges and the degree of the nodes we can count the number of nodes
+    node_degree_counter = Counter(u for u, _ in edges)
+    node_counter = Counter()
+    for k, v in node_degree_counter.items():
+        # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
+        node_counter[k] = v // (k[1] + 1)
+    return node_counter
+
+
+def target_reached(edges: list) -> bool:
+    if len(edges) == 0:
+        return False
+    available_edges_cnt = len(edges)  # directed
+    target_count = sum((k[1] + 1) * v for k, v in get_node_counter(edges).items())
+    return available_edges_cnt == target_count
 
 
 def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tuple, tuple]]):

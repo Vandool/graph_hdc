@@ -30,7 +30,7 @@ class FeatureConfig:
 
 
 class Features(enum.Enum):
-    NODE_FEATURES = ("atom_type", 0)
+    NODE_FEATURES = ("node_features", 0)
 
     def __new__(cls, value, idx):
         obj = object.__new__(cls)

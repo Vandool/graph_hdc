@@ -23,7 +23,7 @@ from src.encoding.configs_and_constants import (
     Features,
     IndexRange,
 )
-from src.encoding.corrections import correct
+from src.encoding.correction_utilities import correct, get_node_counter, target_reached
 from src.encoding.decoder import compute_sampling_structure, try_find_isomorphic_graph
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
@@ -995,6 +995,7 @@ class HyperNet(AbstractGraphEncoder):
             """
             if key.startswith("Features."):
                 key = key.split(".", 1)[1]
+            key = "NODE_FEATURES" if key == "ATOM_TYPE" else key
             return Features[key]
 
         def deserialize_encoder_map(
@@ -1384,8 +1385,7 @@ class HyperNet(AbstractGraphEncoder):
         # The ceiling method assumes we missed some edges and tries to find more
         node_counter_corrective = get_node_counter_corrective(initial_decoded_edges, method="ceil")
         decoded_edges_corrective = self.decode_order_one(
-            edge_term=edge_term.clone(),
-            node_counter=node_counter_corrective
+            edge_term=edge_term.clone(), node_counter=node_counter_corrective
         )
 
         if target_reached(decoded_edges_corrective):
@@ -1454,9 +1454,7 @@ class HyperNet(AbstractGraphEncoder):
 
             # Enumerate valid graph structures via isomorphism
             decoded_graphs_iter = try_find_isomorphic_graph(
-                matching_components=matching_components,
-                id_to_type=id_to_type,
-                max_samples=max_graphs_per_iter
+                matching_components=matching_components, id_to_type=id_to_type, max_samples=max_graphs_per_iter
             )
 
             # Batch encode candidate graphs back to HDC
@@ -1472,9 +1470,7 @@ class HyperNet(AbstractGraphEncoder):
             top_k_sims_cpu = top_k_sims.cpu().numpy()
 
             # Extend results with (graph, similarity) pairs
-            top_k_graphs.extend(
-                [(decoded_graphs_iter[top_k_indices[i]], sim) for i, sim in enumerate(top_k_sims_cpu)]
-            )
+            top_k_graphs.extend([(decoded_graphs_iter[top_k_indices[i]], sim) for i, sim in enumerate(top_k_sims_cpu)])
 
             # Early stopping: if we found a near-perfect match, stop iterating
             if use_early_stopping and any(abs(sim - 1.0) < sim_eps for sim in top_k_sims_cpu):
@@ -1483,10 +1479,7 @@ class HyperNet(AbstractGraphEncoder):
         return top_k_graphs
 
     def decode_graph(
-        self,
-        edge_term: VSATensor,
-        graph_term: VSATensor,
-        decoder_settings: dict | None = None
+        self, edge_term: VSATensor, graph_term: VSATensor, decoder_settings: dict | None = None
     ) -> DecodingResult:
         """
         Decode a graph from its hyperdimensional representation (edge_term and graph_term).
@@ -1553,7 +1546,7 @@ class HyperNet(AbstractGraphEncoder):
         >>> result = hypernet.decode_graph(
         ...     edge_term=edge_terms[0],
         ...     graph_term=graph_terms[0],
-        ...     decoder_settings={"top_k": 10, "early_stopping": True}
+        ...     decoder_settings={"top_k": 10, "early_stopping": True},
         ... )
         >>> print(result.correction_level)  # CorrectionLevel.ONE
         >>> best_graph = result.nx_graphs[0]
@@ -1590,8 +1583,7 @@ class HyperNet(AbstractGraphEncoder):
         if not target_reached(initial_decoded_edges):
             # Edges don't form valid graph → apply progressive correction strategies
             decoded_edges, correction_level = self._apply_edge_corrections(
-                edge_term=edge_term,
-                initial_decoded_edges=initial_decoded_edges
+                edge_term=edge_term, initial_decoded_edges=initial_decoded_edges
             )
 
         # Phase 3: If corrections succeeded, enumerate and rank valid graphs via pattern matching
@@ -1624,9 +1616,7 @@ class HyperNet(AbstractGraphEncoder):
 
         # Phase 4: Fallback to greedy decoder if all corrections failed
         return self.decode_graph_greedy(
-            edge_term=edge_term,
-            graph_term=graph_term,
-            decoder_settings=fallback_decoder_settings
+            edge_term=edge_term, graph_term=graph_term, decoder_settings=fallback_decoder_settings
         )
 
     def decode_graph_z3(
@@ -1677,16 +1667,6 @@ class HyperNet(AbstractGraphEncoder):
         return len(self.graph_encoder_map) > 0
 
 
-def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
-    # Only using the edges and the degree of the nodes we can count the number of nodes
-    node_degree_counter = Counter(u for u, _ in edges)
-    node_counter = Counter()
-    for k, v in node_degree_counter.items():
-        # By dividing the number of outgoing edges to the node degree, we can count the number of nodes
-        node_counter[k] = v // (k[1] + 1)
-    return node_counter
-
-
 def get_node_counter_corrective(
     edges: list[tuple[tuple, tuple]], method: Literal["ceil", "round", "max_round"] = "ceil"
 ) -> Counter[tuple]:
@@ -1710,14 +1690,6 @@ def get_node_counter_fp(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
     # having the number nodes as floating point, we can determine how many nodes are missing
     # or how many nodes are too many with regards to the edges
     return Counter({k: v / (k[1] + 1) for k, v in node_degree_counter.items()})
-
-
-def target_reached(edges: list) -> bool:
-    if len(edges) == 0:
-        return False
-    available_edges_cnt = len(edges)  # directed
-    target_count = sum((k[1] + 1) * v for k, v in get_node_counter(edges).items())
-    return available_edges_cnt == target_count
 
 
 def load_or_create_hypernet(
