@@ -65,6 +65,11 @@ PY_ARGS=(
   --n_samples "$N_SAMPLES"
 )
 
+# Add extra args if provided (e.g., --early_stopping)
+if [[ -n "${EXTRA_ARGS:-}" ]]; then
+  PY_ARGS+=($EXTRA_ARGS)
+fi
+
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
 
 # -----------------------------

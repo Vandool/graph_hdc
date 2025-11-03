@@ -134,6 +134,7 @@ def run_single_experiment(
     iteration_budget: int,
     n_samples: int = 1000,
     output_dir: Path | None = None,
+    early_stopping: bool = False,
 ) -> dict:
     """
     Run a single retrieval experiment.
@@ -154,6 +155,8 @@ def run_single_experiment(
         Number of samples to evaluate
     output_dir : Path, optional
         Directory to save results
+    early_stopping : bool, optional
+        Whether to enable early stopping in pattern matching (default: False)
 
     Returns
     -------
@@ -162,7 +165,7 @@ def run_single_experiment(
     """
     print(f"\n{'=' * 80}")
     print(
-        f"Running experiment: VSA={vsa_model}, dim={hv_dim}, depth={depth}, dataset={dataset_name}, iter_budget={iteration_budget}"
+        f"Running experiment: VSA={vsa_model}, dim={hv_dim}, depth={depth}, dataset={dataset_name}, iter_budget={iteration_budget}, early_stopping={early_stopping}"
     )
     print(f"{'=' * 80}\n")
 
@@ -238,7 +241,7 @@ def run_single_experiment(
         "max_graphs_per_iter": 1024,
         "top_k": 1,  # We only need the best match
         "sim_eps": 0.0001,
-        "early_stopping": False,  # No early stopping for fair comparison
+        "early_stopping": early_stopping,
     }
 
     # Phase 1: Batch Encoding
@@ -366,6 +369,7 @@ def run_single_experiment(
         "depth": depth,
         "dataset": dataset_name,
         "iteration_budget": iteration_budget,
+        "early_stopping": early_stopping,
         "n_samples": len(sample_indices),
         # Accuracies
         "edge_accuracy_mean": np.mean(edge_accuracies),
@@ -449,6 +453,11 @@ def main():
     )
     parser.add_argument("--iter_budget", type=int, default=1, help="Iteration budget for decoding (default: 1)")
     parser.add_argument("--n_samples", type=int, default=10, help="Number of samples to evaluate (default: 10)")
+    parser.add_argument(
+        "--early_stopping",
+        action="store_true",
+        help="Enable early stopping in pattern matching (default: False)",
+    )
 
     args = parser.parse_args()
 
@@ -464,6 +473,7 @@ def main():
         iteration_budget=args.iter_budget,
         n_samples=args.n_samples,
         output_dir=output_dir,
+        early_stopping=args.early_stopping,
     )
 
     # Append to summary CSV

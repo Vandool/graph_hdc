@@ -53,7 +53,7 @@ for dim in "${HV_DIMS[@]}"; do
         echo ">>> Submitting HRR ZINC - dim=$dim, depth=$depth, iter_budget=$ITER_BUDGET"
 
         # Override time for high iteration budget (6 hours)
-        TIME_LIMIT="1000:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$ITER_BUDGET"
+        TIME_LIMIT="10:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$ITER_BUDGET"
 
         TOTAL_JOBS=$((TOTAL_JOBS + 1))
         sleep 0.2

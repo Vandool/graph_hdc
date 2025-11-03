@@ -1342,7 +1342,7 @@ class HyperNet(AbstractGraphEncoder):
                 sim_order = torch.argsort(sims, descending=True)
 
                 # Select top_k graphs based on similarity
-                top_k_indices = sim_order[:min(top_k, len(graphs))].cpu().numpy()
+                top_k_indices = sim_order[: min(top_k, len(graphs))].cpu().numpy()
                 top_k_graphs = [graphs[i] for i in top_k_indices]
                 top_k_flags = [are_final[i] for i in top_k_indices]
 
@@ -1410,7 +1410,7 @@ class HyperNet(AbstractGraphEncoder):
         sim_order = torch.argsort(sims, descending=True)
 
         # Select top_k graphs based on similarity
-        top_k_indices = sim_order[:min(top_k, len(graphs))].cpu().numpy()
+        top_k_indices = sim_order[: min(top_k, len(graphs))].cpu().numpy()
         top_k_graphs = [graphs[i] for i in top_k_indices]
         top_k_flags = [are_final[i] for i in top_k_indices]
 
@@ -1526,7 +1526,7 @@ class HyperNet(AbstractGraphEncoder):
             List of (graph, similarity_score) tuples from all iterations.
         """
         top_k_graphs = []
-
+        top_k_in_eps_range_found = 0
         for _ in range(iteration_budget):
             # Compute sampling structure from edge multiset
             node_counter = get_node_counter(edge_multiset)
@@ -1555,9 +1555,16 @@ class HyperNet(AbstractGraphEncoder):
             # Extend results with (graph, similarity) pairs
             top_k_graphs.extend([(decoded_graphs_iter[top_k_indices[i]], sim) for i, sim in enumerate(top_k_sims_cpu)])
 
-            # Early stopping: if we found a near-perfect match, stop iterating
-            if use_early_stopping and any(abs(sim - 1.0) < sim_eps for sim in top_k_sims_cpu):
-                break
+            # Early stopping: if we found the perfect match, or top_k number of near-perfect matches, stop iterating
+            if use_early_stopping:
+                for sim in top_k_sims_cpu:
+                    if sim == 1.0:
+                        break
+                    if abs(sim - 1.0) <= sim_eps:
+                        top_k_in_eps_range_found += 1
+
+                if top_k_in_eps_range_found >= top_k:
+                    break
 
         return top_k_graphs
 
@@ -1706,9 +1713,7 @@ class HyperNet(AbstractGraphEncoder):
         greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
         if "top_k" not in greedy_settings:
             greedy_settings["top_k"] = top_k
-        return self.decode_graph_greedy(
-            edge_term=edge_term, graph_term=graph_term, decoder_settings=greedy_settings
-        )
+        return self.decode_graph_greedy(edge_term=edge_term, graph_term=graph_term, decoder_settings=greedy_settings)
 
     def decode_graph_z3(
         self,
