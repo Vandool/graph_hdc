@@ -371,7 +371,7 @@ def run_single_experiment(
 
         # Save summary
         filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}.json"
-        with open(output_dir / filename, "w") as f:
+        with (output_dir / filename).open(mode="w") as f:
             json.dump(results, f, indent=2)
 
         # Save detailed results
@@ -422,12 +422,10 @@ def main():
     )
     parser.add_argument("--iter_budget", type=int, default=1, help="Iteration budget for decoding (default: 1)")
     parser.add_argument("--n_samples", type=int, default=10, help="Number of samples to evaluate (default: 10)")
-    parser.add_argument("--output_dir", type=str, default="./results", help="Output directory (default: ./results)")
 
     args = parser.parse_args()
 
-    # Create output directory
-    output_dir = Path(args.output_dir)
+    output_dir = Path(__file__).parent.resolve() / "results"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Run experiment
