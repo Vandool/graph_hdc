@@ -32,6 +32,7 @@ NODES="${NODES:-1}"
 NTASKS="${NTASKS:-1}"
 
 N_SAMPLES="${N_SAMPLES:-1000}"
+TIME_LIMIT="${TIME_LIMIT:-}"  # Override time limit if set
 
 MODULE_LOAD_DEFAULT=''
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
@@ -69,30 +70,41 @@ QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
 # -----------------------------
 # Partitions + Pixi env per cluster
 # -----------------------------
+# Set defaults based on dataset if TIME_LIMIT not provided
+if [[ -z "$TIME_LIMIT" ]]; then
+    if [[ "$DATASET" == "qm9" ]]; then
+        DEFAULT_TIME="02:00:00"
+    else
+        DEFAULT_TIME="03:00:00"
+    fi
+else
+    DEFAULT_TIME="$TIME_LIMIT"
+fi
+
 case "$CLUSTER" in
   local)
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'debug|04:00:00|16G'
+    TUPLES="debug|${DEFAULT_TIME}|16G"
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'gpu_h100|02:00:00|32G'
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
+    TUPLES="gpu_h100|${DEFAULT_TIME}|32G"
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'accelerated|06:00:00|64G\naccelerated-h100|06:00:00|64G'
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
+    TUPLES=$"accelerated|${DEFAULT_TIME}|64G\naccelerated-h100|${DEFAULT_TIME}|64G"
     ;;
   haic|*)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'normal|06:00:00|64G'
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
+    TUPLES="normal|${DEFAULT_TIME}|64G"
     ;;
 esac
 

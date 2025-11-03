@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torchhd
+from sklearn.model_selection import train_test_split
 from torch.utils.data import Subset
 from torch_geometric import seed_everything
 from torch_geometric.data import Batch
@@ -104,9 +105,9 @@ def graphs_isomorphic(g1: nx.Graph, g2: nx.Graph) -> bool:
             # Manual extraction to preserve zeros (to_tuple() filters them out incorrectly)
             if feat.is_in_ring is not None:
                 # ZINC dataset (5 features)
-                return (feat.atom_type, feat.degree_idx, feat.formal_charge_idx, feat.explicit_hs, feat.is_in_ring)
+                return feat.atom_type, feat.degree_idx, feat.formal_charge_idx, feat.explicit_hs, feat.is_in_ring
             # QM9 dataset (4 features)
-            return (feat.atom_type, feat.degree_idx, feat.formal_charge_idx, feat.explicit_hs)
+            return feat.atom_type, feat.degree_idx, feat.formal_charge_idx, feat.explicit_hs
         if "type" in node_attrs:
             # Format 2: Has type tuple
             return node_attrs["type"]
@@ -169,10 +170,7 @@ def run_single_experiment(
     config = create_dynamic_config(dataset_name, vsa_model, hv_dim, depth)
 
     # Load dataset
-    if dataset_name == "qm9":
-        dataset = QM9Smiles(split="test")
-    else:  # zinc
-        dataset = ZincSmiles(split="test")
+    dataset = QM9Smiles(split="test") if dataset_name == "qm9" else ZincSmiles(split="train")
 
     # Initialize HyperNet
     hypernet = HyperNet(
@@ -187,16 +185,45 @@ def run_single_experiment(
     nodes_set = set(map(tuple, dataset.x.long().tolist()))
     hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
 
-    # Randomly sample n_samples from the dataset
+    # Stratified sampling based on molecular size (number of atoms)
     dataset_size = len(dataset)
-    if n_samples > dataset_size:
-        print(f"Warning: Requested n_samples ({n_samples}) > dataset size ({dataset_size}). Using full dataset.")
+    if n_samples >= dataset_size:
+        print(f"Warning: Requested n_samples ({n_samples}) >= dataset size ({dataset_size}). Using full dataset.")
         sample_indices = list(range(dataset_size))
     else:
-        # Random sampling without replacement
-        sample_indices = np.random.choice(dataset_size, size=n_samples, replace=False).tolist()
+        # Compute molecule sizes (number of atoms) using PyG's num_nodes property
+        print("Computing molecular sizes for stratified sampling...")
+        sizes = np.array([dataset[idx].num_nodes for idx in tqdm(range(dataset_size), desc="Analyzing dataset")])
 
-    print(f"Sampled {len(sample_indices)} molecules from {dataset_size} total")
+        # Create stratification bins based on quartiles
+        bin_labels = pd.qcut(sizes, q=4, labels=False, duplicates='drop')
+
+        # Display stratification statistics
+        unique_bins, bin_counts = np.unique(bin_labels, return_counts=True)
+        print(f"Stratification: {len(unique_bins)} bins")
+        for bin_id, count in zip(unique_bins, bin_counts):
+            bin_mask = bin_labels == bin_id
+            bin_size_range = (sizes[bin_mask].min(), sizes[bin_mask].max())
+            print(f"  Bin {bin_id}: {count} molecules, size range: {bin_size_range[0]}-{bin_size_range[1]} atoms")
+
+        # Stratified sampling using sklearn
+        all_indices = np.arange(dataset_size)
+        sample_indices, _ = train_test_split(
+            all_indices,
+            train_size=n_samples,
+            stratify=bin_labels,
+            random_state=42
+        )
+        sample_indices = sample_indices.tolist()
+
+        # Verify stratification
+        sampled_bins = bin_labels[sample_indices]
+        unique_sampled, sampled_counts = np.unique(sampled_bins, return_counts=True)
+        print(f"\nSampled {len(sample_indices)} molecules:")
+        for bin_id, count in zip(unique_sampled, sampled_counts):
+            print(f"  Bin {bin_id}: {count} molecules")
+
+    print(f"\nFinal sample: {len(sample_indices)} molecules from {dataset_size} total")
 
     # Create subset of dataset with sampled indices
     sampled_dataset = Subset(dataset, sample_indices)
@@ -414,11 +441,11 @@ def run_single_experiment(
 
 def main():
     parser = argparse.ArgumentParser(description="Run retrieval experiment")
-    parser.add_argument("--vsa", type=str, default="HRR", choices=["HRR", "MAP"], help="VSA model (default: HRR)")
+    parser.add_argument("--vsa", type=str, default="MAP", choices=["HRR", "MAP"], help="VSA model (default: HRR)")
     parser.add_argument("--hv_dim", type=int, default=1600, help="Hypervector dimension (default: 1600 for QM9)")
     parser.add_argument("--depth", type=int, default=3, help="Message passing depth (default: 3)")
     parser.add_argument(
-        "--dataset", type=str, default="zinc", choices=["qm9", "zinc"], help="Dataset name (default: qm9)"
+        "--dataset", type=str, default="qm9", choices=["qm9", "zinc"], help="Dataset name (default: qm9)"
     )
     parser.add_argument("--iter_budget", type=int, default=1, help="Iteration budget for decoding (default: 1)")
     parser.add_argument("--n_samples", type=int, default=10, help="Number of samples to evaluate (default: 10)")

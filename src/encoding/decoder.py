@@ -1,4 +1,3 @@
-import logging
 import random
 
 import networkx as nx
@@ -267,8 +266,3 @@ def try_find_isomorphic_graph(
             break
 
     return graphs
-
-
-# configure your logger once in your app:
-# logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
