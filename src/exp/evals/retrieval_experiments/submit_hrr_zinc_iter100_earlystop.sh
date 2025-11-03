@@ -37,8 +37,8 @@ echo "=========================================="
 VSA="HRR"
 DATASET="zinc"
 ITER_BUDGET=100
-HV_DIMS=(256 512 1024 1600 2048)
-DEPTHS=(2 3 4 5)
+HV_DIMS=(1024)
+DEPTHS=(4)
 
 # Counter for submitted jobs
 TOTAL_JOBS=0
@@ -53,12 +53,11 @@ for dim in "${HV_DIMS[@]}"; do
         echo ">>> Submitting HRR ZINC - dim=$dim, depth=$depth, iter_budget=$ITER_BUDGET, early_stopping=True"
 
         # Override time for high iteration budget with early stopping (4 hours - faster than no early stop)
-        TIME_LIMIT="04:00:00" \
+        TIME_LIMIT="17:00:00" \
         EXTRA_ARGS="--early_stopping" \
         bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$ITER_BUDGET"
 
         TOTAL_JOBS=$((TOTAL_JOBS + 1))
-        sleep 0.2
     done
 done
 
