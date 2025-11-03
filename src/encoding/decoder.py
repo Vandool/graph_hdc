@@ -251,8 +251,6 @@ def try_find_isomorphic_graph(
     while True:
         G = draw_random_graph_from_sampling_structure(matching_components, id_to_type)
         attempts += 1
-        if attempts > max_attempts:
-            print("stop")
         if attempts >= max_attempts and len(graphs) > 0:
             break
 
