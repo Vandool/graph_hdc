@@ -41,7 +41,6 @@ PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
 EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/evals/retrieval_experiments}"
 SCRIPT_NAME="${SCRIPT_NAME:-run_retrieval_experiment.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
-OUTPUT_DIR="${OUTPUT_DIR:-${EXPERIMENTS_PATH}/results}"
 
 echo "Script  : ${SCRIPT}"
 echo "VSA     : ${VSA}"
@@ -63,7 +62,6 @@ PY_ARGS=(
   --dataset "$DATASET"
   --iter_budget "$ITER_BUDGET"
   --n_samples "$N_SAMPLES"
-  --output_dir "$OUTPUT_DIR"
 )
 
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"

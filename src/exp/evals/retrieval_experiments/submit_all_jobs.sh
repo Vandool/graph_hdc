@@ -8,7 +8,6 @@
 #
 # Environment variables:
 #   N_SAMPLES: Number of samples per experiment (default: 1000)
-#   OUTPUT_DIR: Base output directory (default: ./results)
 #   CLUSTER: Cluster name (uc3|hk|haic|local) (default: uc3)
 #   ONLY_PARTITIONS: Comma-separated partition filter (optional)
 #   DRY_RUN: Set to 1 to see commands without submitting (default: 0)
@@ -17,7 +16,6 @@ set -euo pipefail
 
 # Configuration
 export N_SAMPLES="${N_SAMPLES:-1000}"
-export OUTPUT_DIR="${OUTPUT_DIR:-./results}"
 export CLUSTER="${CLUSTER:-uc3}"
 export DRY_RUN="${DRY_RUN:-0}"
 
@@ -27,7 +25,6 @@ echo "=========================================="
 echo "Submitting Retrieval Experiments to Cluster"
 echo "=========================================="
 echo "N_SAMPLES       : $N_SAMPLES"
-echo "OUTPUT_DIR      : $OUTPUT_DIR"
 echo "CLUSTER         : $CLUSTER"
 echo "DRY_RUN         : $DRY_RUN"
 echo "ONLY_PARTITIONS : ${ONLY_PARTITIONS:-all}"
@@ -84,16 +81,3 @@ echo "=========================================="
 echo "All jobs submitted!"
 echo "Total configurations submitted: $TOTAL_JOBS"
 echo "=========================================="
-echo ""
-echo "Monitor job status with:"
-echo "  squeue -u \$USER"
-echo "  watch -n 5 'squeue -u \$USER | tail -20'"
-echo ""
-echo "Results will be saved to: $OUTPUT_DIR"
-echo ""
-echo "After jobs complete, generate plots with:"
-echo "  cd $SCRIPT_DIR"
-echo "  python plot_results.py --results_dir $OUTPUT_DIR --output_dir $OUTPUT_DIR/plots"
-echo ""
-echo "To cancel all submitted jobs:"
-echo "  scancel -u \$USER -n Retrieval_*"
