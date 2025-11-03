@@ -76,7 +76,7 @@ case "$CLUSTER" in
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'debug|04:00:00|32G'
+    TUPLES=$'debug|04:00:00|16G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"

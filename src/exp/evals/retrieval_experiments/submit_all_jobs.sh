@@ -51,7 +51,7 @@ for vsa in "${VSA_MODELS[@]}"; do
         for depth in "${DEPTHS[@]}"; do
             echo ">>> Submitting QM9 - VSA=$vsa, dim=$dim, depth=$depth, iter_budget=1"
             bash "$SCRIPT_DIR/submit_single_job.sh" "$vsa" "$dim" "$depth" qm9 1
-            ((TOTAL_JOBS++))
+            TOTAL_JOBS=$((TOTAL_JOBS + 1))
             # Small delay to avoid overwhelming the scheduler
             sleep 0.2
         done
@@ -71,7 +71,7 @@ for vsa in "${VSA_MODELS[@]}"; do
             for iter_budget in "${ITER_BUDGETS[@]}"; do
                 echo ">>> Submitting ZINC - VSA=$vsa, dim=$dim, depth=$depth, iter_budget=$iter_budget"
                 bash "$SCRIPT_DIR/submit_single_job.sh" "$vsa" "$dim" "$depth" zinc "$iter_budget"
-                ((TOTAL_JOBS++))
+                TOTAL_JOBS=$((TOTAL_JOBS + 1))
                 # Small delay to avoid overwhelming the scheduler
                 sleep 0.2
             done
