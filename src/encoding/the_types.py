@@ -64,14 +64,19 @@ class Feat:
         """Final/desired node degree (degree index + 1)."""
         return self.degree_idx + 1
 
-    def to_tuple(self) -> tuple[int, int, int, int, bool | None]:
+    def to_tuple(self) -> tuple:
         """Return (atom_type, degree_idx, formal_charge_idx, explicit_hs, is_in_ring)."""
-        return (
-            self.atom_type,
-            self.degree_idx,
-            self.formal_charge_idx,
-            self.explicit_hs,
-            self.is_in_ring,
+        return tuple(
+            filter(
+                None,
+                (
+                    self.atom_type,
+                    self.degree_idx,
+                    self.formal_charge_idx,
+                    self.explicit_hs,
+                    self.is_in_ring,
+                ),
+            )
         )
 
     @staticmethod

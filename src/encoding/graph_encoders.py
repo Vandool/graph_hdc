@@ -763,7 +763,7 @@ class HyperNet(AbstractGraphEncoder):
         :returns: A list of edges represented as tuples of (u, v) where u and v are node tuples
         """
         all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
-        num_edges = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
+        num_edges = sum([(k[1] + 1) * n for k, n in node_counter.items()])
         edge_count = num_edges
 
         # Get all indices at once
@@ -1122,6 +1122,48 @@ class HyperNet(AbstractGraphEncoder):
         node_counter: Counter | None = None,
         decoder_settings: dict | None = None,
     ) -> DecodingResult:
+        """
+        Greedy beam search decoder for graph reconstruction.
+
+        This is a fallback decoder used when the main decoding strategy fails. It performs
+        beam search in the graph construction space, incrementally adding nodes while
+        maintaining the highest-scoring partial graphs according to cosine similarity
+        with the target graph_term.
+
+        Key improvements:
+        - Returns top_k graphs sorted by cosine similarity (consistent with main decoder)
+        - Final ranking ensures best candidates are returned first
+
+        Parameters
+        ----------
+        edge_term : torch.Tensor
+            Hypervector representing the edge structure.
+        graph_term : torch.Tensor
+            Hypervector representing the full graph for similarity comparison.
+        node_counter : Counter, optional
+            Pre-computed node count information (for 2D/3D vectors with G0 encoded).
+        decoder_settings : dict, optional
+            Configuration parameters:
+            - top_k: int (default: 10)
+              Number of top-scoring graphs to return.
+            - beam_size: int
+              Beam width during search.
+            - initial_limit: int (default: 1024)
+              Population size limit.
+            - pruning_fn: str (default: "cos_sim")
+              Similarity function for pruning.
+            - use_g3_instead_of_h3: bool (default: False)
+              Whether to use combined terms for similarity.
+
+        Returns
+        -------
+        DecodingResult
+            Object containing:
+            - nx_graphs: Top-k NetworkX graphs sorted by similarity (descending)
+            - final_flags: Completion status for each graph
+            - target_reached: Whether valid graph was decoded
+            - correction_level: Always CorrectionLevel.FAIL (greedy fallback)
+        """
         if decoder_settings is None:
             decoder_settings = {}
 
@@ -1282,11 +1324,31 @@ class HyperNet(AbstractGraphEncoder):
 
             ## Collect the children with highest number of edges
             if not children:
+                # Extract top_k parameter from decoder_settings
+                top_k = decoder_settings.get("top_k", 10)
+
                 graphs, edges_left = zip(*population, strict=True)
                 are_final = [len(i) == 0 for i in edges_left]
+
+                # Compute cosine similarities for all graphs
+                batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
+                enc_out = self.forward(batch)
+                g_terms = enc_out["graph_embedding"]
+                if decoder_settings.get("use_g3_instead_of_h3", False):
+                    g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
+
+                # Compute similarities and sort
+                sims = torchhd.cos(graph_term, g_terms)
+                sim_order = torch.argsort(sims, descending=True)
+
+                # Select top_k graphs based on similarity
+                top_k_indices = sim_order[:min(top_k, len(graphs))].cpu().numpy()
+                top_k_graphs = [graphs[i] for i in top_k_indices]
+                top_k_flags = [are_final[i] for i in top_k_indices]
+
                 return DecodingResult(
-                    nx_graphs=graphs,
-                    final_flags=are_final,
+                    nx_graphs=top_k_graphs,
+                    final_flags=top_k_flags,
                     target_reached=target_reached(decoded_edges),
                     correction_level=CorrectionLevel.FAIL,
                 )
@@ -1329,11 +1391,32 @@ class HyperNet(AbstractGraphEncoder):
 
             population = children
 
+        # Extract top_k parameter from decoder_settings (consistent with main decode_graph)
+        top_k = decoder_settings.get("top_k", 10)
+
+        # Sort the final population by cosine similarity to graph_term
         graphs, edges_left = zip(*population, strict=True)
         are_final = [len(i) == 0 for i in edges_left]
+
+        # Compute cosine similarities for all final graphs
+        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
+        enc_out = self.forward(batch)
+        g_terms = enc_out["graph_embedding"]
+        if decoder_settings.get("use_g3_instead_of_h3", False):
+            g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
+
+        # Compute similarities and sort
+        sims = torchhd.cos(graph_term, g_terms)
+        sim_order = torch.argsort(sims, descending=True)
+
+        # Select top_k graphs based on similarity
+        top_k_indices = sim_order[:min(top_k, len(graphs))].cpu().numpy()
+        top_k_graphs = [graphs[i] for i in top_k_indices]
+        top_k_flags = [are_final[i] for i in top_k_indices]
+
         return DecodingResult(
-            nx_graphs=graphs,
-            final_flags=are_final,
+            nx_graphs=top_k_graphs,
+            final_flags=top_k_flags,
             target_reached=target_reached(decoded_edges),
             correction_level=CorrectionLevel.FAIL,
         )
@@ -1500,7 +1583,8 @@ class HyperNet(AbstractGraphEncoder):
         3. **Pattern Matching**: Enumerate valid graph structures from the corrected edge
            multiset, encode them back to HDC, and rank by cosine similarity to graph_term.
 
-        4. **Fallback**: If all corrections fail, use the greedy beam search decoder.
+        4. **Fallback**: If all corrections fail, use the greedy beam search decoder
+           with the same top_k parameter for consistency.
 
         Parameters
         ----------
@@ -1521,7 +1605,9 @@ class HyperNet(AbstractGraphEncoder):
             - early_stopping: bool (default: False)
               Whether to stop when a near-perfect match is found.
             - fallback_decoder_settings: dict, optional
-              Settings for the greedy decoder fallback.
+              Settings for the greedy decoder fallback. If not provided or if top_k
+              is not specified in fallback_decoder_settings, the main top_k value
+              will be inherited.
 
         Returns
         -------
@@ -1615,8 +1701,13 @@ class HyperNet(AbstractGraphEncoder):
             )
 
         # Phase 4: Fallback to greedy decoder if all corrections failed
+        # Ensure top_k is passed to greedy decoder (use fallback_decoder_settings if provided,
+        # but inherit top_k from main settings if not specified in fallback settings)
+        greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
+        if "top_k" not in greedy_settings:
+            greedy_settings["top_k"] = top_k
         return self.decode_graph_greedy(
-            edge_term=edge_term, graph_term=graph_term, decoder_settings=fallback_decoder_settings
+            edge_term=edge_term, graph_term=graph_term, decoder_settings=greedy_settings
         )
 
     def decode_graph_z3(

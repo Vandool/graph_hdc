@@ -212,7 +212,6 @@ def try_find_isomorphic_graph(
     id_to_type: dict,
     *,
     max_samples: int = 200000,
-    report_interval: int = 2048,
 ) -> list[nx.Graph]:
     """
     Generate valid molecular graphs by sampling random matchings.
@@ -248,8 +247,15 @@ def try_find_isomorphic_graph(
     count = 0
     graphs = []
 
+    max_attempts = 10 * max_samples
+    attempts = 0
     while True:
         G = draw_random_graph_from_sampling_structure(matching_components, id_to_type)
+        attempts += 1
+        if attempts > max_attempts:
+            print("stop")
+        if attempts >= max_attempts and len(graphs) > 0:
+            break
 
         if not graph_is_valid(G):
             continue
@@ -257,12 +263,9 @@ def try_find_isomorphic_graph(
         graphs.append(G)
         count += 1
 
-        if count % report_interval == 0:
-            print(f"Tried {count} random matchings...")
-
         if count >= max_samples:
-            print(f"Reached {max_samples} attempts. Returning {len(graphs)} valid graphs.", flush=True)
             break
+
     return graphs
 
 
