@@ -1,7 +1,6 @@
 import random
 
 import networkx as nx
-from tqdm.auto import tqdm
 
 # ============================================================================
 # Graph Isomorphism Search via Random Matchings
@@ -246,32 +245,13 @@ def try_find_isomorphic_graph(
     """
     max_attempts = 10 * max_samples
     valid_graphs_found = []
-    invalid_count = 0
-
-    # Assign the tqdm iterator to a variable 'pbar'
-    pbar = tqdm(
-        range(max_attempts),
-        desc="Sampling valid graphs",
-        unit="attempt",
-        leave=True,
-    )
 
     # Iterate using the pbar variable
-    for i in pbar:
+    for _ in range(max_attempts):
         G = draw_random_graph_from_sampling_structure(matching_components, id_to_type)
 
-        if not graph_is_valid(G):
-            invalid_count += 1
-        else:
+        if graph_is_valid(G):
             valid_graphs_found.append(G)
-
-        # --- This is the new part ---
-        # Calculate rate based on current attempt number (i + 1)
-        invalid_rate = (invalid_count / (i + 1)) * 100
-
-        # Update the progress bar's postfix dynamically
-        pbar.set_postfix(found=len(valid_graphs_found), invalid_rate=f"{invalid_rate:.2f}%")
-        # --- End of new part ---
 
         # Check exit condition
         if len(valid_graphs_found) >= max_samples:
