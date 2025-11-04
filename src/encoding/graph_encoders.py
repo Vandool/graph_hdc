@@ -1570,11 +1570,13 @@ class HyperNet(AbstractGraphEncoder):
             if use_early_stopping:
                 for sim in top_k_sims_cpu:
                     if sim == 1.0:
+                        print("[EARLY STOPPING] One exact match found!!!")
                         break
                     if abs(sim - 1.0) <= sim_eps:
                         top_k_in_eps_range_found += 1
 
                 if top_k_in_eps_range_found >= top_k:
+                    print(f"[EARLY STOPPING] {top_k} almost exact matches found!!")
                     break
 
         return top_k_graphs
@@ -1696,7 +1698,7 @@ class HyperNet(AbstractGraphEncoder):
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
 
-    # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
+        # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
         correction_level = CorrectionLevel.ZERO
         decoded_edges = [initial_decoded_edges]
 
