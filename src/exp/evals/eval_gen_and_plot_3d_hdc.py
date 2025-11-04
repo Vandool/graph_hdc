@@ -69,7 +69,7 @@ def eval_generation(
     results.update({f"eval_{k}": v for k, v in evals.items()})
     pprint(results)
 
-    mols, valid_flags, sims = EVALUATOR.get_mols_and_valid_flags()
+    mols, valid_flags, sims = EVALUATOR.get_mols_valid_flags_sims_and_correction_levels()
 
     base_dir = (
         GLOBAL_ARTEFACTS_PATH

@@ -286,7 +286,7 @@ def eval_cond_gen(cfg: dict) -> dict[str, Any]:  # noqa: PLR0915
     if cfg.get("draw", False):
         base_dir = GLOBAL_ARTEFACTS_PATH / "cond_generation" / f"drawings_valid_target_{target:.1f}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags, sims = EVALUATOR.get_mols_and_valid_flags()
+        mols, valid_flags, sims = EVALUATOR.get_mols_valid_flags_sims_and_correction_levels()
         for i, (mol, valid, sim) in enumerate(zip(mols, valid_flags, sims, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)

@@ -9,6 +9,7 @@ from rdkit.Contrib.SA_Score import sascorer
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.encoding.graph_encoders import CorrectionLevel
 from src.utils.chem import canonical_key, is_valid_molecule, reconstruct_for_eval
 from src.utils.utils import pick_device
 
@@ -69,6 +70,7 @@ class GenerationEvaluator:
         self.mols: list[Chem.Mol | None] | None = None
         self.valid_flags: list[bool] | None = None
         self.sims: list[bool] | None = None
+        self.correction_levels: list[CorrectionLevel]
 
     def _to_mols_and_valid(self, samples: list[nx.Graph]) -> tuple[list[Chem.Mol | None], list[bool]]:
         mols: list[Chem.Mol | None] = []
@@ -81,9 +83,14 @@ class GenerationEvaluator:
         valid_flags = [(m is not None and is_valid_molecule(m)) for m in mols]
         return mols, valid_flags
 
-    def evaluate(self, samples: list[nx.Graph], final_flags: list[bool], sims: list[list[float]]) -> dict[str, float]:
-        n_samples = len(samples)
-
+    def evaluate(
+        self,
+        n_samples: int,
+        samples: list[nx.Graph],
+        final_flags: list[bool],
+        sims: list[float],
+        correction_levels: list[CorrectionLevel],
+    ) -> dict[str, float]:
         def sim_stats(values: list[float], prefix: str) -> dict[str, float]:
             if not values:
                 return {f"{prefix}_sim_mean": 0.0, f"{prefix}_sim_min": 0.0, f"{prefix}_sim_max": 0.0}
@@ -96,7 +103,7 @@ class GenerationEvaluator:
         # split sims by final vs nonfinal
         final_sims, non_final_sims = [], []
         for flag, s in zip(final_flags, sims, strict=False):
-            best = max(s) if s else 0.0
+            best = s
             (final_sims if flag else non_final_sims).append(best)
 
         sims_eval = {}
@@ -107,7 +114,8 @@ class GenerationEvaluator:
         mols, valid_flags = self._to_mols_and_valid(samples)
         self.mols = mols
         self.valid_flags = valid_flags
-        self.sims = [max(s) for s in sims]
+        self.sims = sims
+        self.correction_levels = correction_levels
 
         n_valid = sum(valid_flags)
         validity = 100.0 * n_valid / n_samples if n_samples else 0.0
@@ -314,5 +322,5 @@ class GenerationEvaluator:
 
         return out
 
-    def get_mols_and_valid_flags(self):
-        return self.mols, self.valid_flags, self.sims
+    def get_mols_valid_flags_sims_and_correction_levels(self):
+        return self.mols, self.valid_flags, self.sims, self.correction_levels

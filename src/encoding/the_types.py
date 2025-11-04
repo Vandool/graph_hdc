@@ -66,18 +66,10 @@ class Feat:
 
     def to_tuple(self) -> tuple:
         """Return (atom_type, degree_idx, formal_charge_idx, explicit_hs, is_in_ring)."""
-        return tuple(
-            filter(
-                None,
-                (
-                    self.atom_type,
-                    self.degree_idx,
-                    self.formal_charge_idx,
-                    self.explicit_hs,
-                    self.is_in_ring,
-                ),
-            )
-        )
+        res = [self.atom_type, self.degree_idx, self.formal_charge_idx, self.explicit_hs]
+        if self.is_in_ring is not None:
+            res.append(self.is_in_ring)
+        return tuple(res)
 
     @staticmethod
     def from_tuple(t: tuple) -> "Feat":

@@ -322,7 +322,7 @@ for gen_ckpt_path in gen_paths:
     if draw:
         base_dir = GLOBAL_ARTEFACTS_PATH / generation / f"drawings_valid_strict-decoder-{strict_decoder}"
         base_dir.mkdir(parents=True, exist_ok=True)
-        mols, valid_flags, sims = evaluator.get_mols_and_valid_flags()
+        mols, valid_flags, sims = evaluator.get_mols_valid_flags_sims_and_correction_levels()
         for i, (mol, valid, sim) in enumerate(zip(mols, valid_flags, sims, strict=False)):
             if valid:
                 logp = rdkit_logp(mol)

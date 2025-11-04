@@ -79,22 +79,21 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
             if target_reached(new_edge_set):
                 corrected_edge_sets.append(new_edge_set)
 
-    if len(corrected_edge_sets) == 0:
-        corrective_sets = []
-        for i in range(10):
-            candidate = find_random_valid_sample(deepcopy(extra_ctr))
-            candidate_ctr = Counter(candidate)
-            if candidate_ctr not in corrective_sets:
-                corrective_sets.append(candidate_ctr)
-                new_edge_set = deepcopy(decoded_edges_s)
-                for k, v in candidate_ctr.items():
-                    for _ in range(v):
-                        u, v = k
-                        if (u, v) in new_edge_set:
-                            new_edge_set.remove((u, v))
-                            new_edge_set.remove((v, u))
-                if target_reached(new_edge_set):
-                    corrected_edge_sets.append(new_edge_set)
+    # if len(corrected_edge_sets) == 0:
+    for i in range(10):
+        candidate = find_random_valid_sample(deepcopy(extra_ctr))
+        candidate_ctr = Counter(candidate)
+        if candidate_ctr not in corrective_sets:
+            corrective_sets.append(candidate_ctr)
+            new_edge_set = deepcopy(decoded_edges_s)
+            for k, v in candidate_ctr.items():
+                for _ in range(v):
+                    u, v = k
+                    if (u, v) in new_edge_set:
+                        new_edge_set.remove((u, v))
+                        new_edge_set.remove((v, u))
+            if target_reached(new_edge_set):
+                corrected_edge_sets.append(new_edge_set)
 
     return corrected_edge_sets
 

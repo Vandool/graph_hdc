@@ -1,8 +1,9 @@
 import enum
 import itertools
 import math
+import os
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal
 
@@ -60,6 +61,7 @@ from src.utils.utils import (
 EncoderMap = dict[Features, tuple[AbstractFeatureEncoder, IndexRange]]
 MAX_ALLOWED_DECODING_NODES_QM9: Final[int] = 18
 MAX_ALLOWED_DECODING_NODES_ZINC: Final[int] = 60
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 class CorrectionLevel(str, enum.Enum):
@@ -72,9 +74,10 @@ class CorrectionLevel(str, enum.Enum):
 
 @dataclass
 class DecodingResult:
-    nx_graphs: list[nx.Graph]
-    final_flags: list[bool]
-    target_reached: bool
+    nx_graphs: list[nx.Graph] = field(default_factory=list)
+    final_flags: list[bool] = field(default_factory=lambda: [False])
+    target_reached: bool = False
+    cos_similarities: list[float] = field(default_factory=lambda: [0.0])
     correction_level: CorrectionLevel = CorrectionLevel.ZERO
 
 
@@ -1181,12 +1184,7 @@ class HyperNet(AbstractGraphEncoder):
         node_limit = MAX_ALLOWED_DECODING_NODES_QM9 if self.base_dataset == "qm9" else MAX_ALLOWED_DECODING_NODES_ZINC
         if node_counter.total() > node_limit:
             print(f"Skipping graph with {node_counter.total()} nodes for '{self.base_dataset}'")
-            return DecodingResult(
-                nx_graphs=[nx.Graph()],
-                final_flags=[False],
-                target_reached=target_reached(decoded_edges),
-                correction_level=CorrectionLevel.FAIL,
-            )
+            return DecodingResult(correction_level=CorrectionLevel.FAIL)
 
         node_count = node_counter.total()
         ## We have the multiset of nodes and the multiset of edges
@@ -1345,10 +1343,12 @@ class HyperNet(AbstractGraphEncoder):
                 top_k_indices = sim_order[: min(top_k, len(graphs))].cpu().numpy()
                 top_k_graphs = [graphs[i] for i in top_k_indices]
                 top_k_flags = [are_final[i] for i in top_k_indices]
+                top_cos_sims = [sims[i].item() for i in top_k_indices]
 
                 return DecodingResult(
                     nx_graphs=top_k_graphs,
                     final_flags=top_k_flags,
+                    cos_similarities=top_cos_sims,
                     target_reached=target_reached(decoded_edges),
                     correction_level=CorrectionLevel.FAIL,
                 )
@@ -1413,10 +1413,12 @@ class HyperNet(AbstractGraphEncoder):
         top_k_indices = sim_order[: min(top_k, len(graphs))].cpu().numpy()
         top_k_graphs = [graphs[i] for i in top_k_indices]
         top_k_flags = [are_final[i] for i in top_k_indices]
+        top_k_sims = [sims[i].item() for i in top_k_indices]
 
         return DecodingResult(
             nx_graphs=top_k_graphs,
             final_flags=top_k_flags,
+            cos_similarities=top_k_sims,
             target_reached=target_reached(decoded_edges),
             correction_level=CorrectionLevel.FAIL,
         )
@@ -1539,6 +1541,10 @@ class HyperNet(AbstractGraphEncoder):
             decoded_graphs_iter = try_find_isomorphic_graph(
                 matching_components=matching_components, id_to_type=id_to_type, max_samples=max_graphs_per_iter
             )
+
+            if not decoded_graphs_iter:
+                print("NO isomorphic Graph found")
+                continue
 
             # Batch encode candidate graphs back to HDC
             pyg_graphs = [DataTransformer.nx_to_pyg_with_type_attr(g) for g in decoded_graphs_iter]
@@ -1688,7 +1694,7 @@ class HyperNet(AbstractGraphEncoder):
                 graphs_from_multiset = self._find_top_k_isomorphic_graphs(
                     edge_multiset=edge_multiset,
                     graph_term=graph_term,
-                    iteration_budget=iteration_budget,
+                    iteration_budget=min(2, iteration_budget // len(decoded_edges)),
                     max_graphs_per_iter=max_graphs_per_iter,
                     top_k=top_k,
                     sim_eps=sim_eps,
@@ -1696,13 +1702,23 @@ class HyperNet(AbstractGraphEncoder):
                 )
                 top_k_graphs.extend(graphs_from_multiset)
 
+            if len(top_k_graphs) == 0:
+                print("[WARNING] even with correction no valid graphs was enumerated")
+                greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
+                if "top_k" not in greedy_settings:
+                    greedy_settings["top_k"] = top_k
+                return self.decode_graph_greedy(
+                    edge_term=edge_term, graph_term=graph_term, decoder_settings=greedy_settings
+                )
+
             # Sort all candidates by similarity (descending) and take top k
             top_k_graphs = sorted(top_k_graphs, key=lambda x: x[1], reverse=True)[:top_k]
-            nx_graphs, _ = zip(*top_k_graphs, strict=False)
+            nx_graphs, cos_sims = zip(*top_k_graphs, strict=False)
 
             return DecodingResult(
                 nx_graphs=nx_graphs,
                 final_flags=[True] * len(top_k_graphs),
+                cos_similarities=cos_sims,
                 target_reached=True,
                 correction_level=correction_level,
             )

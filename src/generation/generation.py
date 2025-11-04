@@ -5,25 +5,20 @@ from pathlib import Path
 from typing import Any
 
 import attr
-import networkx as nx
 import torch
-import torchhd
 from networkx import Graph
-from torch_geometric.data import Batch
 from torchhd import VSATensor
 from tqdm.auto import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import DSHDCConfig
-from src.encoding.decoder import greedy_oracle_decoder_faster, greedy_oracle_decoder_voter_oracle
-from src.encoding.graph_encoders import DecodingResult, HyperNet, load_or_create_hypernet
-from src.encoding.oracles import Oracle, SimpleVoterOracle
+from src.encoding.configs_and_constants import ZINC_SMILES_HRR_5120_G1G4_CONFIG, DSHDCConfig
+from src.encoding.graph_encoders import CorrectionLevel, DecodingResult, HyperNet, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import FlowConfig, RealNVPV2Lightning
 from src.utils import registery
 from src.utils.registery import get_model_type
-from src.utils.utils import GLOBAL_BEST_MODEL_PATH, GLOBAL_MODEL_PATH, DataTransformer, find_files
+from src.utils.utils import GLOBAL_BEST_MODEL_PATH, GLOBAL_DATASET_PATH, GLOBAL_MODEL_PATH, find_files
 
 ## For unpickling
 sys.modules["__main__"].FlowConfig = FlowConfig
@@ -79,10 +74,16 @@ class AbstractGenerator(abc.ABC):
         self.vsa = self.ds_config.vsa
         self.base_dataset = "zinc" if "zinc" in self.ds_config.name.lower() else "qm9"
         # Limit the node codebook so we encode only valid nodes
-        ds = QM9Smiles(split="train") if self.base_dataset == "qm9" else ZincSmiles(split="train")
+        root = (
+            GLOBAL_DATASET_PATH / "ZincSmiles_bk"
+            if self.ds_config == ZINC_SMILES_HRR_5120_G1G4_CONFIG
+            else GLOBAL_DATASET_PATH / "ZincSmiles"
+        )
+        ds = QM9Smiles(split="train") if self.base_dataset == "qm9" else ZincSmiles(root=root, split="train")
         nodes_set = set(map(tuple, ds.x.long().tolist()))
         self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
         self.hypernet.normalize = self.ds_config.normalize
+        self.hypernet.decoding_limit_for = self.base_dataset
 
     def get_raw_samples(self, n_samples: int = 16) -> dict:
         return self.gen_model.sample_split(n_samples)
@@ -106,8 +107,8 @@ class AbstractGenerator(abc.ABC):
         graph_terms: VSATensor,
         node_terms: VSATensor | None = None,
         *,
-        only_final_graphs: bool = False,
-    ):
+        most_similar: bool = True,
+    ) -> dict:
         n_samples = graph_terms.shape[0]
         full_ctrs: dict[int, Counter[tuple[int, ...]]] | None = None
         if node_terms is not None:
@@ -115,8 +116,9 @@ class AbstractGenerator(abc.ABC):
 
         best_graphs: list[Graph] = []
         are_final_flags: list[bool] = []
-        all_similarities: list[list[float]] = []
+        all_similarities: list[float] = []
         intermediate_target_reached: list[bool] = []
+        correction_levels: list[CorrectionLevel] = []
 
         for i in tqdm(range(n_samples), desc="Decoding", unit="sample"):
             full_ctr = None
@@ -124,12 +126,6 @@ class AbstractGenerator(abc.ABC):
                 full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
                 total_node_limit = 20 if self.base_dataset == "qm9" else 50
                 if full_ctr is None or sum(full_ctr.values()) == 0 or full_ctr.total() > total_node_limit:
-                    print("[WARNING] full ctr is None or empty.")
-                    # nothing to decode for this sample → return empty
-                    best_graphs.append(nx.Graph())
-                    are_final_flags.append(False)
-                    all_similarities.append([0])
-                    intermediate_target_reached.append(False)
                     continue
 
             res = self._decode_single_graph(
@@ -137,42 +133,30 @@ class AbstractGenerator(abc.ABC):
                 edge_term=edge_terms[i],
                 graph_term=graph_terms[i],
             )
-            candidates, final_flags, target_reached = res.nx_graphs, res.final_flags, res.target_reached
+            candidates, cos_sims, final_flags, target_reached, correction_level = (
+                res.nx_graphs,
+                res.cos_similarities,
+                res.final_flags,
+                res.target_reached,
+                res.correction_level,
+            )
 
-            if len(candidates) == 1 and candidates[0].number_of_nodes() == 0:
+            if not candidates:
+                continue
+
+            if most_similar:
                 best_graphs.append(candidates[0])
                 are_final_flags.append(final_flags[0])
-                all_similarities.append([0])
                 intermediate_target_reached.append(target_reached)
-                continue
-
-            assert all(c.number_of_nodes() > 0 for c in candidates)
-            data_list = [DataTransformer.nx_to_pyg(c) for c in candidates]
-            try:
-                batch = Batch.from_data_list(data_list)
-                enc_out = self.hypernet.forward(batch, normalize=self.ds_config.normalize)
-                g_terms = enc_out["graph_embedding"]  # [B, D]
-            except Exception:
-                best_graphs.append(nx.Graph())
-                all_similarities.append([0])
-                are_final_flags.append(False)
-                intermediate_target_reached.append(target_reached)
-                continue
-
-            sampled_g_term = graph_terms[i].to(g_terms.device, g_terms.dtype)  # [D]
-            sims = torchhd.cos(sampled_g_term, g_terms).tolist()
-
-            all_similarities.append(sims)
-            best_idx = sims.index(max(sims))
-            best_graphs.append(candidates[best_idx])
-            are_final_flags.append(final_flags[best_idx])
-            intermediate_target_reached.append(target_reached)
+                all_similarities.append(cos_sims[0])
+                correction_levels.append(correction_level)
 
         return {
             "graphs": best_graphs,
             "final_flags": are_final_flags,
             "similarities": all_similarities,
             "intermediate_target_reached": intermediate_target_reached,
+            "correction_levels": correction_levels,
         }
 
     @abc.abstractmethod
@@ -193,8 +177,7 @@ class HDCGenerator(AbstractGenerator):
         node_counter: Counter[tuple[int, ...]] | None = None,
     ) -> DecodingResult:
         # TODO: Here we expand the 2D type
-        return self.hypernet.decode_graph_greedy(
-            node_counter=node_counter,
+        return self.hypernet.decode_graph(
             edge_term=edge_term,
             graph_term=graph_term,
             decoder_settings=self.decoder_settings,
@@ -215,37 +198,4 @@ class HDCZ3Generator(AbstractGenerator):
             edge_term=edge_term,
             graph_term=graph_term,
             decoder_settings=self.decoder_settings,
-        )
-
-
-@attr.define(slots=True, kw_only=True)
-class OracleGenerator(AbstractGenerator):
-    oracle: Oracle | SimpleVoterOracle
-    decode_skip_n_nodes_threshold: int = attr.field(init=False)
-    decoding_fn: Any = attr.field(init=False)  # put the real callable type if you have one
-
-    def __attrs_post_init__(self) -> None:
-        super().__attrs_post_init__()
-        # wire oracle
-        self.oracle.encoder = self.hypernet.eval()
-        # pick decoder
-        self.decoding_fn = (
-            greedy_oracle_decoder_voter_oracle
-            if isinstance(self.oracle, SimpleVoterOracle)
-            else greedy_oracle_decoder_faster
-        )
-        self.decode_skip_n_nodes_threshold = 70 if self.base_dataset == "zinc" else 15
-
-    def _decode_single_graph(
-        self,
-        node_counter: Counter[tuple[int, ...]],
-        edge_term: torch.Tensor,  # noqa: ARG002
-        graph_term: torch.Tensor,
-    ) -> tuple[list[nx.Graph], list[bool]]:
-        return self.decoding_fn(
-            node_multiset=node_counter,
-            oracle=self.oracle,
-            full_g_h=graph_term,
-            skip_n_nodes=self.decode_skip_n_nodes_threshold,
-            **self.decoder_settings,
         )

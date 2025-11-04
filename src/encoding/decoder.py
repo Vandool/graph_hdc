@@ -254,6 +254,9 @@ def try_find_isomorphic_graph(
         if attempts >= max_attempts and len(graphs) > 0:
             break
 
+        if attempts >= 2* max_attempts:
+            break
+
         if not graph_is_valid(G):
             continue
 
