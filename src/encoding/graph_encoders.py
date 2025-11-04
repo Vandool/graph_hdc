@@ -374,7 +374,7 @@ class HyperNet(AbstractGraphEncoder):
             self._directed_decoded_edge_limit = 122  # max 88 in train
 
     @property
-    def base_dataset(self):
+    def base_dataset(self) -> BaseDataset:
         return self._base_dataset
 
     @base_dataset.setter
@@ -1167,6 +1167,7 @@ class HyperNet(AbstractGraphEncoder):
             - target_reached: Whether valid graph was decoded
             - correction_level: Always CorrectionLevel.FAIL (greedy fallback)
         """
+        print("Using Greedy Decoder")
         if decoder_settings is None:
             decoder_settings = {}
 
@@ -1460,6 +1461,7 @@ class HyperNet(AbstractGraphEncoder):
             - Correction level achieved (ONE, TWO, THREE, or FAIL)
         """
         # Level 1: Try simple add/remove corrections
+        print(f"Target not reached. Attempting edge corrections {CorrectionLevel.ONE}")
         node_counter_fp = get_node_counter_fp(initial_decoded_edges)
         decoded_edges = correct(node_counter_fp, initial_decoded_edges)
 
@@ -1468,6 +1470,7 @@ class HyperNet(AbstractGraphEncoder):
 
         # Level 2: Corrective re-decoding with ceiling method
         # The ceiling method assumes we missed some edges and tries to find more
+        print(f"Target not reached. Attempting edge corrections {CorrectionLevel.TWO}")
         node_counter_corrective = get_node_counter_corrective(initial_decoded_edges, method="ceil")
         decoded_edges_corrective = self.decode_order_one(
             edge_term=edge_term.clone(), node_counter=node_counter_corrective
@@ -1477,6 +1480,7 @@ class HyperNet(AbstractGraphEncoder):
             return [decoded_edges_corrective], CorrectionLevel.TWO
 
         # Level 3: Re-decode + corrections
+        print(f"Target not reached. Attempting edge corrections {CorrectionLevel.THREE}")
         decoded_edges = correct(
             node_counter_fp=get_node_counter_fp(decoded_edges_corrective),
             decoded_edges_s=decoded_edges_corrective,
@@ -1486,6 +1490,7 @@ class HyperNet(AbstractGraphEncoder):
             return decoded_edges, CorrectionLevel.THREE
 
         # All corrections failed: return initial edges with FAIL level
+        print(f"Target not reached. {CorrectionLevel.FAIL}")
         return [initial_decoded_edges], CorrectionLevel.FAIL
 
     def _find_top_k_isomorphic_graphs(
@@ -1573,6 +1578,22 @@ class HyperNet(AbstractGraphEncoder):
                     break
 
         return top_k_graphs
+
+    @staticmethod
+    def _is_feasible_set(edge_multiset) -> bool:
+        # Compute sampling structure from edge multiset
+        node_counter = get_node_counter(edge_multiset)
+        matching_components, id_to_type = compute_sampling_structure(
+            nodes_multiset=[k for k, v in node_counter.items() for _ in range(v)],
+            edges_multiset=edge_multiset,
+        )
+
+        # Enumerate valid graph structures via isomorphism with a limited budget to prune the statistically impossible
+        # ones
+        decoded_graphs_iter = try_find_isomorphic_graph(
+            matching_components=matching_components, id_to_type=id_to_type, max_samples=10
+        )
+        return len(decoded_graphs_iter) > 0
 
     def decode_graph(
         self, edge_term: VSATensor, graph_term: VSATensor, decoder_settings: dict | None = None
@@ -1675,7 +1696,7 @@ class HyperNet(AbstractGraphEncoder):
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
 
-        # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
+    # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
         correction_level = CorrectionLevel.ZERO
         decoded_edges = [initial_decoded_edges]
 
@@ -1689,12 +1710,27 @@ class HyperNet(AbstractGraphEncoder):
         if correction_level != CorrectionLevel.FAIL:
             top_k_graphs: list[tuple[nx.Graph, float]] = []
 
+            before_pruning = len(decoded_edges)
+            decoded_edges = list(filter(lambda x: self._is_feasible_set(x), decoded_edges))
+            if len(decoded_edges) == 0:
+                print("[WARNING] all the corrected edge multisets are infeasible")
+                return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
+
+            print(f"Pruned {before_pruning - len(decoded_edges)}/{before_pruning} of the corrected edge multisets")
+            iteration_budget = max(1, iteration_budget // len(decoded_edges))
+            print(
+                f"[{correction_level.value}] Corrected decoded edges length: {len(decoded_edges)}, Allocated iteration budget per set: {iteration_budget}"
+            )
+
             # For each valid edge multiset, sample and rank graph candidates
             for edge_multiset in decoded_edges:
+                if not self._is_feasible_set(edge_multiset):
+                    continue
+
                 graphs_from_multiset = self._find_top_k_isomorphic_graphs(
                     edge_multiset=edge_multiset,
                     graph_term=graph_term,
-                    iteration_budget=min(2, iteration_budget // len(decoded_edges)),
+                    iteration_budget=iteration_budget,
                     max_graphs_per_iter=max_graphs_per_iter,
                     top_k=top_k,
                     sim_eps=sim_eps,
@@ -1704,12 +1740,7 @@ class HyperNet(AbstractGraphEncoder):
 
             if len(top_k_graphs) == 0:
                 print("[WARNING] even with correction no valid graphs was enumerated")
-                greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
-                if "top_k" not in greedy_settings:
-                    greedy_settings["top_k"] = top_k
-                return self.decode_graph_greedy(
-                    edge_term=edge_term, graph_term=graph_term, decoder_settings=greedy_settings
-                )
+                return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
 
             # Sort all candidates by similarity (descending) and take top k
             top_k_graphs = sorted(top_k_graphs, key=lambda x: x[1], reverse=True)[:top_k]
@@ -1723,9 +1754,14 @@ class HyperNet(AbstractGraphEncoder):
                 correction_level=correction_level,
             )
 
-        # Phase 4: Fallback to greedy decoder if all corrections failed
-        # Ensure top_k is passed to greedy decoder (use fallback_decoder_settings if provided,
-        # but inherit top_k from main settings if not specified in fallback settings)
+        return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
+
+    # Phase 4: Fallback to greedy decoder if all corrections failed
+    # Ensure top_k is passed to greedy decoder (use fallback_decoder_settings if provided,
+    # but inherit top_k from main settings if not specified in fallback settings)
+    def _fallback_greedy(
+        self, edge_term: VSATensor, fallback_decoder_settings: Any | None, graph_term: VSATensor, top_k: int
+    ) -> DecodingResult:
         greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
         if "top_k" not in greedy_settings:
             greedy_settings["top_k"] = top_k

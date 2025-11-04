@@ -5,7 +5,6 @@ This module provides functions for correcting decoded edge sets that don't meet
 target criteria by adding or removing edges based on node counter discrepancies.
 """
 
-import itertools
 import math
 import random
 from collections import Counter
@@ -66,7 +65,7 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
     corrective_sets = []
 
     for i in range(10):
-        candidate = find_random_valid_sample(deepcopy(missing_ctr))
+        candidate = find_random_valid_sample_robust(deepcopy(missing_ctr))
         candidate_ctr = Counter(candidate)
         if candidate_ctr not in corrective_sets:
             corrective_sets.append(candidate_ctr)
@@ -78,10 +77,11 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
                     new_edge_set.append((v, u))
             if target_reached(new_edge_set):
                 corrected_edge_sets.append(new_edge_set)
+    len_sets_with_added_edges = len(corrective_sets)
 
     # if len(corrected_edge_sets) == 0:
     for i in range(10):
-        candidate = find_random_valid_sample(deepcopy(extra_ctr))
+        candidate = find_random_valid_sample_robust(deepcopy(extra_ctr))
         candidate_ctr = Counter(candidate)
         if candidate_ctr not in corrective_sets:
             corrective_sets.append(candidate_ctr)
@@ -94,53 +94,78 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
                         new_edge_set.remove((v, u))
             if target_reached(new_edge_set):
                 corrected_edge_sets.append(new_edge_set)
-
+    len_sets_with_removed_edges = len(corrective_sets) - len_sets_with_added_edges
+    print(f"Applied correction. ADD: {len_sets_with_added_edges}, REMOVE: {len_sets_with_removed_edges}")
     return corrected_edge_sets
 
 
-def find_random_valid_sample(node_ctr: Counter[tuple]):
+def find_random_valid_sample_robust(node_ctr: Counter[tuple]) -> list[tuple[tuple, tuple]] | None:
     """
     Find a random valid edge pairing from node counter requirements.
 
-    Uses backtracking to find a valid combination of edges that satisfies
-    the node counter constraints.
+    Uses a robust backtracking algorithm that directly pairs nodes
+    from a list of available "stubs".
 
     Parameters
     ----------
-    node_ctr : Counter or dict
-        Counter mapping nodes to required degree counts
+    node_ctr : Counter
+        Counter mapping nodes to required degree counts.
 
     Returns
     -------
     list or None
-        List of edge tuples representing valid pairings, or None if no solution found
+        List of edge tuples representing valid pairings, or None if no
+        solution was found.
     """
+
+    # 1. Create the flat list of all "stubs" to be paired
+    # e.g., {'A': 2, 'B': 2} -> ['A', 'A', 'B', 'B']
     item_list = [k for k, v in node_ctr.items() for _ in range(v)]
-    all_combos = list(itertools.combinations(item_list, 2))
-    random.shuffle(all_combos)
 
-    # (The rest of the 'solve' function is identical to the one above)
-    def solve(combo_index, current_counts, current_sample):
-        if all(v == 0 for v in current_counts.values()):
-            return current_sample
-        if combo_index == len(all_combos):
-            return None
+    # 2. Randomize the list. This is a key source of randomness.
+    random.shuffle(item_list)
 
-        combo = all_combos[combo_index]
-        item1, item2 = combo
+    def solve(items: list[tuple]) -> list[tuple[tuple, tuple]] | None:
+        """Recursive solver using the list of remaining items."""
 
-        if current_counts[item1] > 0 and current_counts[item2] > 0:
-            current_counts[item1] -= 1
-            current_counts[item2] -= 1
-            solution = solve(combo_index + 1, current_counts, [*current_sample, combo])
-            if solution is not None:
-                return solution
-            current_counts[item1] += 1
-            current_counts[item2] += 1
+        # Base case: If no items are left, we succeeded.
+        if not items:
+            return []
 
-        return solve(combo_index + 1, current_counts, current_sample)
+        # 1. Pick the first item to pair.
+        # (It's random because the whole list was shuffled)
+        item1 = items[0]
 
-    return solve(0, node_ctr, [])
+        # 2. Create a list of indices for potential partners (all *other* items)
+        partner_indices = list(range(1, len(items)))
+
+        # 3. Shuffle the partner list. This is the second source of
+        # randomness, ensuring we don't always try to pair with item[1].
+        random.shuffle(partner_indices)
+
+        # 4. Try to find a valid partner
+        for j in partner_indices:
+            item2 = items[j]
+
+            # Create the list of remaining items *excluding* item1 and item2
+            # This is the list for the next recursive step.
+            remaining_items = items[1:j] + items[j + 1 :]
+
+            # 5. Recurse: Try to solve for the rest of the list
+            solution_for_rest = solve(remaining_items)
+
+            # 6. Check for success
+            if solution_for_rest is not None:
+                # Found a valid matching!
+                # Return the pair we just made plus the solution from recursion.
+                return [(item1, item2), *solution_for_rest]
+
+        # If we looped through all partners and none led to a solution,
+        # this path is a dead end. Backtrack.
+        return None
+
+    # Start the solver
+    return solve(item_list)
 
 
 def get_base_units(number: float, base_value: float) -> tuple[int, int]:

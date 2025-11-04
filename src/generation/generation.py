@@ -13,7 +13,14 @@ from tqdm.auto import tqdm
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import ZINC_SMILES_HRR_5120_G1G4_CONFIG, DSHDCConfig
-from src.encoding.graph_encoders import CorrectionLevel, DecodingResult, HyperNet, load_or_create_hypernet
+from src.encoding.graph_encoders import (
+    MAX_ALLOWED_DECODING_NODES_QM9,
+    MAX_ALLOWED_DECODING_NODES_ZINC,
+    CorrectionLevel,
+    DecodingResult,
+    HyperNet,
+    load_or_create_hypernet,
+)
 from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import FlowConfig, RealNVPV2Lightning
 from src.utils import registery
@@ -72,7 +79,7 @@ class AbstractGenerator(abc.ABC):
             .eval()
         )
         self.vsa = self.ds_config.vsa
-        self.base_dataset = "zinc" if "zinc" in self.ds_config.name.lower() else "qm9"
+        self.base_dataset = self.ds_config.base_dataset
         # Limit the node codebook so we encode only valid nodes
         root = (
             GLOBAL_DATASET_PATH / "ZincSmiles_bk"
@@ -84,6 +91,7 @@ class AbstractGenerator(abc.ABC):
         self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
         self.hypernet.normalize = self.ds_config.normalize
         self.hypernet.decoding_limit_for = self.base_dataset
+        self.hypernet.base_dataset = self.base_dataset
 
     def get_raw_samples(self, n_samples: int = 16) -> dict:
         return self.gen_model.sample_split(n_samples)
@@ -124,7 +132,9 @@ class AbstractGenerator(abc.ABC):
             full_ctr = None
             if full_ctrs is not None:
                 full_ctr = full_ctrs.get(i)  # may be None if dedup/failed decode
-                total_node_limit = 20 if self.base_dataset == "qm9" else 50
+                total_node_limit = (
+                    MAX_ALLOWED_DECODING_NODES_QM9 if self.base_dataset == "qm9" else MAX_ALLOWED_DECODING_NODES_ZINC
+                )
                 if full_ctr is None or sum(full_ctr.values()) == 0 or full_ctr.total() > total_node_limit:
                     continue
 

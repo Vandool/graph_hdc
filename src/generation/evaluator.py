@@ -96,8 +96,8 @@ class GenerationEvaluator:
                 return {f"{prefix}_sim_mean": 0.0, f"{prefix}_sim_min": 0.0, f"{prefix}_sim_max": 0.0}
             v = np.array(values)
             return {
-                f"{prefix}_sim_mean": v.mean(),
-                f"{prefix}_sim_std": v.std(),
+                f"{prefix}_sim_mean": float(v.mean()),
+                f"{prefix}_sim_std": float(v.std()),
             }
 
         # split sims by final vs nonfinal
@@ -179,7 +179,7 @@ class GenerationEvaluator:
             "nuv": nuv,
             "internal_diversity_p1": internal_div_p1,
             "internal_diversity_p2": internal_div_p2,
-            **sims_eval,
+            "cos_sim": sims_eval,
             **prop_stats,
         }
 
