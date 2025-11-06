@@ -34,11 +34,6 @@ num = max(1, min(8, os.cpu_count() or 1))
 torch.set_num_threads(num)
 torch.set_num_interop_threads(max(1, min(2, num)))  # coordination threads
 
-# by defualt float64
-DTYPE = torch.float32
-torch.set_default_dtype(DTYPE)
-
-
 # (optional but often helps BLAS backends)
 os.environ.setdefault("OMP_NUM_THREADS", str(num))
 os.environ.setdefault("MKL_NUM_THREADS", str(num))

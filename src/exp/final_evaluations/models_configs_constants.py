@@ -1,12 +1,15 @@
+from pathlib import Path
+
 from src.encoding.configs_and_constants import BaseDataset, SupportedDataset
+from src.utils.utils import GLOBAL_BEST_MODEL_PATH, find_files
 
 # Models ordered by performance
 GENERATOR_REGISTRY = {
     SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3: [
+        "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
-        "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
         "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
@@ -31,15 +34,21 @@ REGRESSOR_REGISTRY = {
         "logp": [
             "pr_logp_QM9SmilesHRR1600F64G1NG3_h512-256-128_actgelu_nmnone_dp0.010168_bs320_lr0.000355578_wd1e-5_dep3_h1512_h2256_h3128_h4160"
         ],
-        "qed": [],
-        "sa_score": [],
+        "qed": [
+            "pr_qed_QM9SmilesHRR1600F64G1NG3_h768-896-192_actsilu_nmln_dp0.0397431_bs288_lr8.69904e-5_wd0_dep4_h1768_h2896_h3192_h496"
+        ],
+        "sa_score": [
+            "pr_sa_score_QM9SmilesHRR1600F64G1NG3_h768-256-64_actlrelu_nmln_dp0.0600357_bs352_lr0.000649563_wd0.0005_dep4_h1768_h2256_h364_h4160"
+        ],
         "max_ring_size": [],
     },
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: {
         "logp": [
             "pr_logp_ZincSmilesHRR1024F645G1NG4_h768-384_actsilu_nmnone_dp0.121133_bs160_lr9.65386e-5_wd3e-5_dep2_h1768_h2384_h364_h4160"
         ],
-        "qed": [],
+        "qed": [
+            "pr_qed_ZincSmilesHRR1024F645G1NG4_h512-512-256_actsilu_nmln_dp0.00684795_bs128_lr5.42763e-5_wd0_dep4_h1512_h2512_h3256_h432"
+        ],
         "sa_score": [],
         "max_ring_size": [],
     },
@@ -265,3 +274,15 @@ DATASET_STATS: dict[BaseDataset, dict] = {
         "total_node_types": 39,
     },
 }
+
+
+def get_pr_path(hint: str) -> Path | None:
+    paths = find_files(
+        start_dir=GLOBAL_BEST_MODEL_PATH / "pr",
+        prefixes=("epoch",),
+        desired_ending=".ckpt",
+    )
+    for p in paths:
+        if hint in str(p):
+            return p
+    return None

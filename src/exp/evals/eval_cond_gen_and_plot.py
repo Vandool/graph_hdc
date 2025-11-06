@@ -132,17 +132,6 @@ def get_classifier(hint: str) -> Path | None:
     return None
 
 
-def get_lpr(hint: str) -> Path | None:
-    paths = find_files(
-        start_dir=GLOBAL_MODEL_PATH / "lpr",
-        prefixes=("epoch",),
-        desired_ending=".ckpt",
-        skip_substrings=("zinc",),
-    )
-    for p in paths:
-        if hint in str(p):
-            return p
-    return None
 
 
 def eval_cond_gen(cfg: dict, decoder_settings: dict) -> dict[str, Any]:  # noqa: PLR0915

@@ -1848,7 +1848,6 @@ def load_or_create_hypernet(
     depth: int = 3,
     *,
     use_edge_codebook: bool = False,
-    do_print: bool = True,
 ) -> HyperNet:
     dtype_sfx = "-f64" if cfg.dtype == "float64" else ""
     path = (
@@ -1856,19 +1855,16 @@ def load_or_create_hypernet(
         / f"hypernet_{cfg.name}_{cfg.vsa.value}_dim{cfg.hv_dim}_s{cfg.seed}_depth{depth}_ecb{int(use_edge_codebook)}{dtype_sfx}.pt"
     )
     if path.exists():
-        if do_print:
-            print(f"Loading existing HyperNet from {path}")
         encoder = HyperNet.load(path=path)
         encoder.depth = cfg.hypernet_depth
         encoder.decoding_limit_for = cfg
         encoder.normalize = cfg.normalize
+        print(f"Loaded from existing HyperNet from {path}")
     else:
-        if do_print:
-            print("Creating new HyperNet instance.")
+        print("Creating new HyperNet instance.")
         encoder = HyperNet(config=cfg, depth=depth, use_edge_codebook=use_edge_codebook)
         encoder.populate_codebooks()
         encoder.save_to_path(path)
         encoder.normalize = cfg.normalize
-        if do_print:
-            print(f"Saved new HyperNet to {path}")
+        encoder.depth = cfg.hypernet_depth
     return encoder
