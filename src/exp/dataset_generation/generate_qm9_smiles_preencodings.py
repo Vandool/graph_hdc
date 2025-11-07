@@ -4,11 +4,7 @@ from pathlib import Path
 from pytorch_lightning import seed_everything
 
 from src.datasets.qm9_smiles_generation import QM9Smiles, precompute_encodings
-from src.encoding.configs_and_constants import (
-    QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG,
-    QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG,
-    DSHDCConfig,
-)
+from src.encoding.configs_and_constants import QM9_SMILES_HRR_256_CONFIG_F64_G1NG3_CONFIG, DSHDCConfig
 from src.encoding.graph_encoders import load_or_create_hypernet
 from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
 
@@ -29,7 +25,7 @@ def generate(cfg: DSHDCConfig):
         out_path: Path = precompute_encodings(
             base_ds=ds,
             hypernet=hypernet,
-            batch_size=128,
+            batch_size=1024,
             device=device,
             normalize=cfg.normalize,
             out_suffix=cfg.name,
@@ -38,5 +34,4 @@ def generate(cfg: DSHDCConfig):
 
 
 if __name__ == "__main__":
-    generate(cfg=QM9_SMILES_HRR_1600_CONFIG_F64_G1G3_CONFIG)
-    generate(cfg=QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG)
+    generate(cfg=QM9_SMILES_HRR_256_CONFIG_F64_G1NG3_CONFIG)

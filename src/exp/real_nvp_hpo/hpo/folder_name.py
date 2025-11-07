@@ -50,10 +50,13 @@ def make_run_folder_name(
         "weight_decay": "wd",
         "num_flows": "f",
         "num_hidden_channels": "hid",
+        "hidden_dim": "hid",  # V3 uses hidden_dim instead of num_hidden_channels
+        "num_hidden_layers": "nhl",  # V3-specific parameter
         "smax_initial": "smi",
         "smax_final": "smf",
         "smax_warmup_epochs": "smw",
         "seed": "s",
+        "per_term_standardization": "np",  # norm_per: np1=term, np0=dim
         **(key_alias or {}),
     }
 

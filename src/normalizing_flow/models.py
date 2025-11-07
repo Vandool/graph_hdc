@@ -113,6 +113,10 @@ class RealNVPV2Lightning(AbstractNFModel):
         self.register_buffer("mu", torch.zeros(self.flat_dim, dtype=default))
         self.register_buffer("log_sigma", torch.zeros(self.flat_dim, dtype=default))
 
+        # Per-term standardization support (separate mu/sigma for edge_terms and graph_terms)
+        self.per_term_standardization = getattr(cfg, "per_term_standardization", False)
+        self._per_term_split = None  # Will be set during fit_per_term_standardization
+
         self.s_modules = []  # keep handles for warmup/logging
         flows = []
 
@@ -143,11 +147,44 @@ class RealNVPV2Lightning(AbstractNFModel):
 
     def _pretransform(self, x):
         """z = (x - mu) / sigma ; returns (z, +sum(log sigma)) for log-det correction."""
-        z = (x - self.mu) * torch.exp(-self.log_sigma)
+        if self.per_term_standardization and self._per_term_split is not None:
+            # Per-term standardization: separate mu/sigma for edge and graph terms
+            split = self._per_term_split
+            edge = x[..., :split]
+            graph = x[..., split:]
+
+            mu_edge = self.mu[:split]
+            mu_graph = self.mu[split:]
+            log_sigma_edge = self.log_sigma[:split]
+            log_sigma_graph = self.log_sigma[split:]
+
+            z_edge = (edge - mu_edge) * torch.exp(-log_sigma_edge)
+            z_graph = (graph - mu_graph) * torch.exp(-log_sigma_graph)
+            z = torch.cat([z_edge, z_graph], dim=-1)
+        else:
+            # Global standardization: all dimensions together
+            z = (x - self.mu) * torch.exp(-self.log_sigma)
+
         # log|det ∂z/∂x| = -sum(log_sigma); NLL must ADD +sum(log_sigma)
         return z, float(self.log_sigma.sum().item())
 
     def _posttransform(self, z):
+        """x = mu + z * sigma ; inverse of _pretransform."""
+        if self.per_term_standardization and self._per_term_split is not None:
+            # Per-term inverse: separate for edge and graph terms
+            split = self._per_term_split
+            z_edge = z[..., :split]
+            z_graph = z[..., split:]
+
+            mu_edge = self.mu[:split]
+            mu_graph = self.mu[split:]
+            log_sigma_edge = self.log_sigma[:split]
+            log_sigma_graph = self.log_sigma[split:]
+
+            edge = mu_edge + z_edge * torch.exp(log_sigma_edge)
+            graph = mu_graph + z_graph * torch.exp(log_sigma_graph)
+            return torch.cat([edge, graph], dim=-1)
+        # Global inverse: all dimensions together
         return self.mu + z * torch.exp(self.log_sigma)
 
     def decode_from_latent(self, z_std):
@@ -296,3 +333,81 @@ def _cast_to_dtype(x, dtype):
         t = type(x)
         return t(_cast_to_dtype(v, dtype) for v in x)
     return x
+
+
+@register_model("NVP-V3")
+class RealNVPV3Lightning(RealNVPV2Lightning): # Inherit all helpers
+    def __init__(self, cfg):
+        # Call AbstractNFModel init, skipping V2's init
+        AbstractNFModel.__init__(self, cfg)
+
+        D = int(cfg.hv_dim) # This is 256
+        self.D = D
+        dim_multiplier = 2 if not hasattr(cfg, "hv_count") else cfg.hv_count
+        self.hv_count = dim_multiplier
+        self.flat_dim = dim_multiplier * D # This is 512
+
+        default = torch.get_default_dtype()
+
+        # --- Semantic Masks ---
+        # Mask A: 0s for edge_terms, 1s for graph_terms
+        # We will compute s,t from graph_terms (mask=1)
+        # We will apply s,t to edge_terms (mask=0)
+        mask_a = torch.zeros(self.flat_dim, dtype=default)
+        mask_a[D:] = 1.0
+        self.register_buffer("mask_a", mask_a)
+
+        # Mask B: 1s for edge_terms, 0s for graph_terms
+        # (Opposite of above)
+        mask_b = 1.0 - mask_a
+        self.register_buffer("mask_b", mask_b)
+
+        # --- Buffers ---
+        self.register_buffer("mu", torch.zeros(self.flat_dim, dtype=default))
+        self.register_buffer("log_sigma", torch.zeros(self.flat_dim, dtype=default))
+        self.per_term_standardization = getattr(cfg, 'per_term_standardization', False)
+        self._per_term_split = None
+
+        self.s_modules = []  # To hold BoundedMLP modules for warmup
+        flows = []
+
+        # --- ActNorm ---
+        use_act_norm = getattr(cfg, "use_act_norm", True)
+        if use_act_norm and hasattr(nf.flows, "ActNorm"):
+            flows.append(nf.flows.ActNorm(self.flat_dim))
+
+        # --- Optuna Hyperparameters for Conditioner MLP ---
+        hidden_dim = int(getattr(cfg, "hidden_dim", 1024))
+        num_hidden_layers = int(getattr(cfg, "num_hidden_layers", 3))
+
+        # --- *** CORRECTED IMPLEMENTATION *** ---
+
+        # The t and s networks for MaskedAffineFlow MUST take flat_dim as input.
+        # The mask ensures only the unmasked inputs are "seen" by the weights.
+
+        # Input: self.flat_dim (512)
+        # Hidden: [1024, 1024, 1024] (example)
+        # Output: self.flat_dim (512)
+        mlp_layers = [self.flat_dim] + [hidden_dim] * num_hidden_layers + [self.flat_dim]
+
+
+        # --- V3 (Real NVP) Flow Loop ---
+        for i in range(int(cfg.num_flows)):
+            smax = getattr(cfg, "smax_final", 6)
+
+            # Create the two networks, identical to NVP-V2's method
+            t_net = nf.nets.MLP(mlp_layers.copy(), init_zeros=True)
+            s_net = BoundedMLP(mlp_layers.copy(), smax=smax)
+
+            self.s_modules.append(s_net) # Add for smax warmup
+
+            # Alternate the SEMANTIC mask
+            mask = self.mask_a if i % 2 == 0 else self.mask_b
+
+            # Use the SAME class as NVP-V2
+            flows.append(nf.flows.MaskedAffineFlow(mask, t=t_net, s=s_net))
+
+
+        # --- Base Distribution ---
+        base = nf.distributions.DiagGaussian(self.flat_dim, trainable=False)
+        self.flow = nf.NormalizingFlow(q0=base, flows=flows)

@@ -95,7 +95,7 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
             if target_reached(new_edge_set):
                 corrected_edge_sets.append(new_edge_set)
     len_sets_with_removed_edges = len(corrective_sets) - len_sets_with_added_edges
-    print(f"Applied correction. ADD: {len_sets_with_added_edges}, REMOVE: {len_sets_with_removed_edges}")
+    # print(f"Applied correction. ADD: {len_sets_with_added_edges}, REMOVE: {len_sets_with_removed_edges}")
     return corrected_edge_sets
 
 

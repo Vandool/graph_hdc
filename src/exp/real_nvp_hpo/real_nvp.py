@@ -146,6 +146,9 @@ class FlowConfig:
     continue_from: Path | None = None
     resume_retrain_last_epoch: bool = False
 
+    # Per-term standardization: separate mu/sigma for edge_terms and graph_terms
+    per_term_standardization: bool = False  # Default False for backward compatibility
+
 
 @torch.no_grad()
 def fit_featurewise_standardization(
@@ -191,9 +194,78 @@ def fit_featurewise_standardization(
     var = (sumsq_vec / cnt - mu**2).clamp_min_(0)
     sigma = var.sqrt().clamp_min_(1e-6)
 
-    # Match model’s dtype to avoid Double↔Half/Float mismatches
+    # Match model's dtype to avoid Double↔Half/Float mismatches
     tgt_dtype = model.mu.dtype if hasattr(model, "mu") else torch.get_default_dtype()
     model.set_standardization(mu.to(tgt_dtype), sigma.to(tgt_dtype))
+
+
+@torch.no_grad()
+def fit_per_term_standardization(model, loader, hv_dim: int, max_batches: int | None = None, device="cpu"):
+    """
+    Compute separate standardization for edge_terms and graph_terms.
+    Each term gets its own mu and sigma vectors, then concatenated.
+
+    Parameters
+    ----------
+    model : RealNVPV2Lightning
+        Model whose buffers will be updated.
+    loader : DataLoader
+        Provides graph batches.
+    hv_dim : int
+        Hypervector dimension D (NOT 2*D).
+    max_batches : int | None
+        Limit number of batches for faster estimation.
+    device : str | torch.device
+        Device to perform accumulation on.
+    """
+    cnt = 0
+    accum_dtype = DTYPE
+
+    # Separate accumulators for edge and graph terms
+    sum_edge = torch.zeros(hv_dim, dtype=accum_dtype, device=device)
+    sumsq_edge = torch.zeros(hv_dim, dtype=accum_dtype, device=device)
+    sum_graph = torch.zeros(hv_dim, dtype=accum_dtype, device=device)
+    sumsq_graph = torch.zeros(hv_dim, dtype=accum_dtype, device=device)
+
+    for bi, batch in enumerate(loader):
+        if max_batches is not None and bi >= max_batches:
+            break
+
+        batch = batch.to(device)
+        edge = batch.edge_terms.to(accum_dtype)  # [B, D]
+        graph = batch.graph_terms.to(accum_dtype)  # [B, D]
+
+        cnt += edge.shape[0]
+
+        sum_edge += edge.sum(dim=0)
+        sumsq_edge += (edge * edge).sum(dim=0)
+        sum_graph += graph.sum(dim=0)
+        sumsq_graph += (graph * graph).sum(dim=0)
+
+    if cnt == 0:
+        msg = "fit_per_term_standardization(): empty loader or no samples."
+        raise RuntimeError(msg)
+
+    # Compute statistics for each term
+    mu_edge = sum_edge / cnt
+    var_edge = (sumsq_edge / cnt - mu_edge**2).clamp_min_(0)
+    sigma_edge = var_edge.sqrt().clamp_min_(1e-6)
+
+    mu_graph = sum_graph / cnt
+    var_graph = (sumsq_graph / cnt - mu_graph**2).clamp_min_(0)
+    sigma_graph = var_graph.sqrt().clamp_min_(1e-6)
+
+    # Concatenate to match model's expected [2*D] format
+    mu = torch.cat([mu_edge, mu_graph])
+    sigma = torch.cat([sigma_edge, sigma_graph])
+
+    # Set in model (using existing method)
+    tgt_dtype = model.mu.dtype if hasattr(model, "mu") else torch.get_default_dtype()
+    model.set_standardization(mu.to(tgt_dtype), sigma.to(tgt_dtype))
+
+    # Store the split point for per-term transforms
+    model._per_term_split = hv_dim
+    log(f"Per-term standardization fitted: edge_terms [:{hv_dim}], graph_terms [{hv_dim}:]")
 
 
 # ---------------------------------------------------------------------
@@ -779,7 +851,13 @@ def run_experiment(cfg: FlowConfig):
     log(f"Model device: {model.device}")
     log(f"Model hparams: {model.hparams}")
 
-    fit_featurewise_standardization(model, train_dataloader, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim, device=device)
+    # Choose standardization method
+    if cfg.per_term_standardization:
+        log("Using per-term standardization (separate for edge_terms and graph_terms)")
+        fit_per_term_standardization(model, train_dataloader, hv_dim=cfg.hv_dim, device=device)
+    else:
+        log("Using global standardization (all dimensions together)")
+        fit_featurewise_standardization(model, train_dataloader, hv_count=cfg.hv_count, hv_dim=cfg.hv_dim, device=device)
 
     csv_logger = CSVLogger(save_dir=str(evals_dir), name="logs")
     checkpoint_callback = ModelCheckpoint(
@@ -803,7 +881,7 @@ def run_experiment(cfg: FlowConfig):
     early_stopping = EarlyStopping(
         monitor="val_loss",
         mode="min",
-        patience=10,
+        patience=50,
         min_delta=0.0,
         check_finite=True,  # stop if val becomes NaN/Inf
         verbose=True,
@@ -968,9 +1046,13 @@ def run_experiment(cfg: FlowConfig):
 
 def get_hidden_channel_dist(dataset: SupportedDataset):
     low, high, step = 400, 1600, 400
-    if dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
+    # 256-dim datasets (total input: 512 = 256 edge + 256 graph)
+    if dataset in [SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3,
+                   SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4]:
+        low, high, step = 128, 512, 128
+    elif dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
         low, high, step = 512, 1024, 256
-    if dataset == SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4:
+    elif dataset == SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4:
         low, high, step = 1024, 2048, 512
     return low, high, step
 
