@@ -62,7 +62,6 @@ from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import Features, SupportedDataset
 from src.encoding.graph_encoders import CorrectionLevel, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
-from src.exp.final_evaluations.models_configs_constants import DECODER_SETTINGS
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
 from src.generation.analyze import analyze_terms_only
 from src.utils.registery import resolve_model, retrieve_model
@@ -1070,8 +1069,41 @@ def run_experiment(cfg: FlowConfig):
     log(f"Decoding {n_decode} samples for {base_dataset} dataset...")
 
     # Get decoder settings from models_configs_constants
-    decoder_settings = DECODER_SETTINGS[base_dataset].copy()
-    decoder_settings["top_k"] = 1  # Override: only need best candidate for HPO
+    DECODER_SETTINGS_ = {
+        "qm9": {
+            "iteration_budget": 1,
+            "max_graphs_per_iter": 512,
+            "top_k": 10,
+            "sim_eps": 0.0001,
+            "early_stopping": True,
+            "fallback_decoder_settings": {
+                "initial_limit": 2048,
+                "limit": 1024,
+                "beam_size": 1024,
+                "pruning_method": "cos_sim",
+                "use_size_aware_pruning": True,
+                "use_one_initial_population": False,
+                "use_g3_instead_of_h3": False,
+            },
+        },
+        "zinc": {
+            "iteration_budget": 1,
+            "max_graphs_per_iter": 512,
+            "top_k": 10,
+            "sim_eps": 0.0001,
+            "early_stopping": True,
+            "fallback_decoder_settings": {
+                "initial_limit": 1024,
+                "limit": 64,
+                "beam_size": 32,
+                "pruning_method": "cos_sim",
+                "use_size_aware_pruning": True,
+                "use_one_initial_population": False,
+                "use_g3_instead_of_h3": False,
+            },
+        },
+    }
+    decoder_settings = DECODER_SETTINGS_[base_dataset]
 
     log(f"Using decoder settings: {decoder_settings}")
 

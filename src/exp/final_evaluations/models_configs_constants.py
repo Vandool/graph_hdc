@@ -87,9 +87,9 @@ DECODER_SETTINGS = {
         "sim_eps": 0.0001,
         "early_stopping": True,
         "fallback_decoder_settings": {
-            "initial_limit": 2048,
-            "limit": 128,
-            "beam_size": 64,
+            "initial_limit": 1024,
+            "limit": 64,
+            "beam_size": 32,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
