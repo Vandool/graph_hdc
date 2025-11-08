@@ -40,7 +40,7 @@ SCRIPT_NAME="${SCRIPT_NAME:-optuna_hpo_composite.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 echo "Script  : ${SCRIPT}"
 
-EXP_NAME="REAL NVP HPO ${DATASET}"
+EXP_NAME="REAL NVP HPO ${DATASET} ${NORM_PER}"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
