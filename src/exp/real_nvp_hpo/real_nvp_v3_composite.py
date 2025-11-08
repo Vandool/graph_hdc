@@ -46,7 +46,6 @@ from pathlib import Path
 from pprint import pprint
 
 import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
 import optuna
 import pandas as pd
@@ -60,6 +59,7 @@ from torchhd import HRRTensor
 
 from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import Features, SupportedDataset
+from src.encoding.correction_utilities import target_reached
 from src.encoding.graph_encoders import CorrectionLevel, load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.real_nvp_hpo.hpo.folder_name import make_run_folder_name
@@ -1061,10 +1061,7 @@ def run_experiment(cfg: FlowConfig):
 
     # Determine number of samples to decode based on dataset
     base_dataset = ds_cfg.base_dataset  # "qm9" or "zinc"
-    if cfg.n_decode_override is not None:
-        n_decode = cfg.n_decode_override
-    else:
-        n_decode = 1000 if base_dataset == "qm9" else 100
+    n_decode = 1000
 
     log(f"Decoding {n_decode} samples for {base_dataset} dataset...")
 
@@ -1129,26 +1126,28 @@ def run_experiment(cfg: FlowConfig):
             log(f"Decoding sample {i + 1}/{n_decode}...")
 
         try:
-            decode_result = hypernet.decode_graph(
-                edge_term=edge_decode[i].as_subclass(HRRTensor),
-                graph_term=graph_decode[i].as_subclass(HRRTensor),
-                decoder_settings=decoder_settings,
-            )
+            if base_dataset == "zinc":
+                initial_decoded_edges = hypernet.decode_order_one_no_node_terms(edge_decode[i].as_subclass(HRRTensor))
 
-            # Extract results
-            nx_graphs.append(decode_result.nx_graphs[0])
-            final_flags.append(decode_result.final_flags[0])
-            sims.append(decode_result.similarities[0] if hasattr(decode_result, "similarities") else 0.0)
-            correction_levels.append(decode_result.correction_level)
+                if target_reached(initial_decoded_edges):
+                    correction_levels.append(CorrectionLevel.ZERO)
+                else:
+                    correction_levels.append(CorrectionLevel.FAIL)
+            else:
+                decode_result = hypernet.decode_graph(
+                    edge_term=edge_decode[i].as_subclass(HRRTensor),
+                    graph_term=graph_decode[i].as_subclass(HRRTensor),
+                    decoder_settings=decoder_settings,
+                )
+
+                # Extract results
+                nx_graphs.append(decode_result.nx_graphs[0])
+                final_flags.append(decode_result.final_flags[0])
+                sims.append(decode_result.similarities[0] if hasattr(decode_result, "similarities") else 0.0)
+                correction_levels.append(decode_result.correction_level)
 
         except Exception as e:
             log(f"Warning: Failed to decode sample {i}: {e}")
-            # Add placeholder for failed decoding
-
-            nx_graphs.append(nx.Graph())
-            final_flags.append(False)
-            sims.append(0.0)
-
             correction_levels.append(CorrectionLevel.FAIL)
 
     decode_elapsed = time.time() - decode_start_time
