@@ -56,7 +56,7 @@ def load_study(study_name: str, sqlite_path: str) -> optuna.Study:
         directions=[DIRECTION, DIRECTION],
         storage=f"sqlite:///{sqlite_path}",
         load_if_exists=True,
-        sampler=BoTorchSampler(seed=42),
+        sampler=BoTorchSampler(seed=42, consider_running_trials=True, n_startup_trials=1),
     )
 
 
