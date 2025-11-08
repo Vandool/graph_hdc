@@ -277,7 +277,7 @@ if __name__ == "__main__":
     # Run optimization with error handling
     try:
         print(f"Starting optimization with {args.n_trials} trials...")
-        # study.optimize(objective, n_trials=args.n_trials)
+        study.optimize(objective, n_trials=args.n_trials)
     except KeyboardInterrupt:
         print("\nHPO interrupted by user (Ctrl+C)")
     except Exception as e:

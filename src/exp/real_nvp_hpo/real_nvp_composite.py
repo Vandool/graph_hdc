@@ -1194,7 +1194,7 @@ def run_zinc_trial(trial: optuna.Trial, dataset: SupportedDataset, norms_per: st
     flow_cfg.smax_initial = 2.5
     flow_cfg.smax_final = 7
     flow_cfg.smax_warmup_epochs = 17
-    flow_cfg.per_term_standardization = norms_per == "term"  # Set BEFORE creating folder name
+    flow_cfg.per_term_standardization = norms_per == "term"
     flow_cfg.exp_dir_name = make_run_folder_name(
         {k: getattr(flow_cfg, k) for k in keys if k in flow_cfg.__dict__}, prefix=f"nvp_comp_{dataset.default_cfg.name}"
     )
@@ -1209,7 +1209,7 @@ def run_qm9_trial(trial: optuna.Trial, dataset: SupportedDataset, norms_per: str
     flow_cfg.smax_initial = 2.2
     flow_cfg.smax_final = 6.5
     flow_cfg.smax_warmup_epochs = 16
-    flow_cfg.per_term_standardization = norms_per == "term"  # Set BEFORE creating folder name
+    flow_cfg.per_term_standardization = norms_per == "term"
     flow_cfg.exp_dir_name = make_run_folder_name(
         {k: getattr(flow_cfg, k) for k in keys if k in flow_cfg.__dict__}, prefix=f"nvp_comp_{dataset.default_cfg.name}"
     )
