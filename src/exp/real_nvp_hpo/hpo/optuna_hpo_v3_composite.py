@@ -33,7 +33,6 @@ import argparse
 import json
 import math
 import pathlib
-from pathlib import Path
 
 import optuna
 import pandas as pd
@@ -97,7 +96,11 @@ def rebuild_study_from_csv(
         params = {k: r[k] for k in space if k in r and pd.notna(r[k])}
         # Multi-objective: read both objectives
         obj0 = float(r["obj0_nll"]) if "obj0_nll" in r and pd.notna(r["obj0_nll"]) else None
-        obj1 = float(r["obj1_zero_correction_error"]) if "obj1_zero_correction_error" in r and pd.notna(r["obj1_zero_correction_error"]) else None
+        obj1 = (
+            float(r["obj1_zero_correction_error"])
+            if "obj1_zero_correction_error" in r and pd.notna(r["obj1_zero_correction_error"])
+            else None
+        )
         values = [obj0, obj1] if obj0 is not None and obj1 is not None else None
 
         # Restore all user attributes from CSV (not just exp_dir_name)
@@ -108,7 +111,7 @@ def rebuild_study_from_csv(
             if col not in standard_cols and col not in space and pd.notna(r[col]):
                 # Convert numpy types to Python types for JSON serialization
                 val = r[col]
-                if hasattr(val, 'item'):  # numpy scalar
+                if hasattr(val, "item"):  # numpy scalar
                     val = val.item()
                 user_attrs[col] = val
 
@@ -164,11 +167,11 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4.value,
+        default=SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_trials", type=int, default=1)
-    p.add_argument("--norm_per", type=str, default="term", choices=["term", "dim"])
+    p.add_argument("--norm_per", type=str, default="dim", choices=["term", "dim"])
     args = p.parse_args()
 
     ds = SupportedDataset(args.dataset)
@@ -215,7 +218,7 @@ if __name__ == "__main__":
             if not math.isfinite(min_nll) or not math.isfinite(incorrect_pct):
                 print(f"Trial {trial.number} resulted in non-finite values (NaN/inf)")
                 trial.set_user_attr("failure_reason", "DIVERGED")
-                return (float('inf'), float('inf'))
+                return float("inf"), float("inf")
 
             # Find the most recent metrics file (just created by the training run)
             # Training script saves to: src/exp/real_nvp_hpo/results/real_nvp_v3_composite/{exp_dir_name}/evaluations/hpo_metrics.json
@@ -261,26 +264,26 @@ if __name__ == "__main__":
                 print(f"Trial {trial.number} failed with CUDA OOM")
                 trial.set_user_attr("failure_reason", "CUDA_OOM")
                 torch.cuda.empty_cache()
-                return (float('inf'), float('inf'))
-            else:
-                print(f"Trial {trial.number} failed with RuntimeError: {e}")
-                trial.set_user_attr("failure_reason", f"RuntimeError: {str(e)[:100]}")
-                return (float('inf'), float('inf'))
+                return (float("inf"), float("inf"))
+            print(f"Trial {trial.number} failed with RuntimeError: {e}")
+            trial.set_user_attr("failure_reason", f"RuntimeError: {str(e)[:100]}")
+            return (float("inf"), float("inf"))
 
         except Exception as e:
             print(f"Trial {trial.number} failed with unexpected error: {e}")
             trial.set_user_attr("failure_reason", f"{type(e).__name__}: {str(e)[:100]}")
-            return (float('inf'), float('inf'))
+            return (float("inf"), float("inf"))
 
     # Run optimization with error handling
     try:
         print(f"Starting optimization with {args.n_trials} trials...")
-        study.optimize(objective, n_trials=args.n_trials)
+        # study.optimize(objective, n_trials=args.n_trials)
     except KeyboardInterrupt:
         print("\nHPO interrupted by user (Ctrl+C)")
     except Exception as e:
         print(f"HPO study error: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         # Always export current results, even if interrupted
