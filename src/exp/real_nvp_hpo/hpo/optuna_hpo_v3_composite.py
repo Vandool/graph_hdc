@@ -265,15 +265,15 @@ if __name__ == "__main__":
                 print(f"Trial {trial.number} failed with CUDA OOM")
                 trial.set_user_attr("failure_reason", "CUDA_OOM")
                 torch.cuda.empty_cache()
-                return (float("inf"), float("inf"))
+                return float("inf"), float("inf")
             print(f"Trial {trial.number} failed with RuntimeError: {e}")
             trial.set_user_attr("failure_reason", f"RuntimeError: {str(e)[:100]}")
-            return (float("inf"), float("inf"))
+            return float("inf"), float("inf")
 
         except Exception as e:
             print(f"Trial {trial.number} failed with unexpected error: {e}")
             trial.set_user_attr("failure_reason", f"{type(e).__name__}: {str(e)[:100]}")
-            return (float("inf"), float("inf"))
+            return float("inf"), float("inf")
 
     # Run optimization with error handling
     try:

@@ -1107,9 +1107,6 @@ def run_experiment(cfg: FlowConfig):
     correction_levels = []
 
     log("Getting Hypernet ready for decoding ...")
-    nodes_set = set(map(tuple, train_dataset.x.long().tolist()))
-    hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
-    hypernet.decoding_limit_for = base_dataset
     hypernet.base_dataset = base_dataset
 
     decode_start_time = time.time()
@@ -1118,25 +1115,12 @@ def run_experiment(cfg: FlowConfig):
             log(f"Decoding sample {i + 1}/{n_decode}...")
 
         try:
-            if base_dataset == "zinc":
-                initial_decoded_edges = hypernet.decode_order_one_no_node_terms(edge_decode[i].as_subclass(HRRTensor))
+            initial_decoded_edges = hypernet.decode_order_one_no_node_terms(edge_decode[i].as_subclass(HRRTensor))
 
-                if target_reached(initial_decoded_edges):
-                    correction_levels.append(CorrectionLevel.ZERO)
-                else:
-                    correction_levels.append(CorrectionLevel.FAIL)
+            if target_reached(initial_decoded_edges):
+                correction_levels.append(CorrectionLevel.ZERO)
             else:
-                decode_result = hypernet.decode_graph(
-                    edge_term=edge_decode[i].as_subclass(HRRTensor),
-                    graph_term=graph_decode[i].as_subclass(HRRTensor),
-                    decoder_settings=decoder_settings,
-                )
-
-                # Extract results
-                nx_graphs.append(decode_result.nx_graphs[0])
-                final_flags.append(decode_result.final_flags[0])
-                sims.append(decode_result.similarities[0] if hasattr(decode_result, "similarities") else 0.0)
-                correction_levels.append(decode_result.correction_level)
+                correction_levels.append(CorrectionLevel.FAIL)
 
         except Exception as e:
             log(f"Warning: Failed to decode sample {i}: {e}")

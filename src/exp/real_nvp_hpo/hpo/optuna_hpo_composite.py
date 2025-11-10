@@ -234,7 +234,8 @@ if __name__ == "__main__":
                         trial.set_user_attr(attr_name, count)
             else:
                 print(f"Warning: No metrics files found in {results_dir}")
-                return min_nll, incorrect_pct
+
+            return min_nll, incorrect_pct
 
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
