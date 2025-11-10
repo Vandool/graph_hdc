@@ -87,12 +87,11 @@ from torch_geometric.loader import DataLoader
 
 from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import SupportedDataset
-from src.encoding.graph_encoders import load_or_create_hypernet
 from src.encoding.the_types import VSAModel
 from src.exp.logp_regressor.hpo.folder_name import make_run_folder_name
 from src.generation.property_regressor import ACTS, NORMS
 from src.utils.registery import resolve_model, retrieve_model
-from src.utils.utils import GLOBAL_MODEL_PATH, pick_device
+from src.utils.utils import pick_device
 
 
 # ---------------------------------------------------------------------
@@ -331,12 +330,6 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     log(f"Using device: {device!s}")
     log(f"Target property: {cfg.target_property}")
 
-    log("Loading/creating hypernet …")
-    hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device).eval()
-    log(f"Hypernet Depth set to {ds_cfg.hypernet_depth}")
-    hypernet.depth = ds_cfg.hypernet_depth
-    log("Hypernet ready.")
-
     # Load datasets
     log(f"Loading {ds_cfg.base_dataset} datasets.")
     train_dataset = get_split(split="train", ds_config=ds_cfg)
@@ -344,7 +337,7 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
     log(f"Loaded {ds_cfg.base_dataset}. train={len(train_dataset)} valid={len(validation_dataset)}")
 
     # Optimize worker counts (reduced from 16 to 8 for memory efficiency)
-    num_workers = 8 if torch.cuda.is_available() else 0
+    num_workers = 12 if torch.cuda.is_available() else 0
     if local_dev:
         train_dataset = train_dataset[: cfg.batch_size]
         validation_dataset = validation_dataset[: cfg.batch_size]

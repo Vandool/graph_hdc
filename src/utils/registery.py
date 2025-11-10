@@ -43,16 +43,17 @@ def retrieve_model(name: ModelType) -> type[LightningModule]:
 
 def get_model_type(path: Union[Path, str]) -> ModelType:
     res: ModelType = "MLP"
-    if "bah" in str(path):
+    s = str(path)
+    if "bah" in s:
         res = "BAH"
-    elif "gin-c" in str(path):
+    elif "gin-c" in s:
         res = "GIN-C"
-    elif "gin-f" in str(path):
+    elif "gin-f" in s:
         res = "GIN-F"
-    elif "nvp" in str(path):
-        res = "NVP"
-    elif "lpr" in str(path):
+    elif "lpr" in s:
         res = "LPR"
-    elif "nvp" in str(path):
+    elif "nvp_v3" in s:
+        res = "NVP-V3"
+    elif "nvp" in s:
         res = "NVP"
     return res

@@ -1,11 +1,10 @@
 import hashlib
+import pickle
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-
-import pickle
 
 import torch
 from torch_geometric.data import Data, InMemoryDataset
@@ -99,7 +98,7 @@ def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
     else:
         raise ValueError(f"Unknown base_dataset: {base_dataset}")
 
-    dataset_info_file = Path(dataset_cls(split='test').processed_dir) / "dataset_info.pkl"
+    dataset_info_file = Path(dataset_cls(split="test").processed_dir) / "dataset_info.pkl"
 
     # First try to read the raw dictionary if we've already saved it
     if dataset_info_file.is_file():
@@ -126,13 +125,6 @@ def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
     ring_histogram = defaultdict(Counter)
     edge_features = set()
     node_features = set()
-
-    if base_dataset == "zinc":
-        try:
-            from rdkit import Chem
-        except ImportError:
-            print("RDKit is required for ring analysis on ZINC.")
-            raise
 
     # --- 3. Iterate over all splits and graphs ---
 

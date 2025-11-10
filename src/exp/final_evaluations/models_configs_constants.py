@@ -5,6 +5,10 @@ from src.utils.utils import GLOBAL_BEST_MODEL_PATH, find_files
 
 # Models ordered by performance
 GENERATOR_REGISTRY = {
+    SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3: [
+        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
+    ],
     SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3: [
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",

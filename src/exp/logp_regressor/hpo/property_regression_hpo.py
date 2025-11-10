@@ -42,6 +42,9 @@ def get_space_for_dataset(dataset: SupportedDataset) -> dict:
     if dataset.default_cfg.base_dataset == "qm9":
         h1_min, h1_max = 512, 1536
         h2_min, h2_max = 128, 1024
+    elif dataset == SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3:
+        h1_min, h1_max = 256, 512
+        h2_min, h2_max = 128, 256
     elif dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
         h1_min, h1_max = 512, 1024
         h2_min, h2_max = 256, 512
@@ -49,8 +52,8 @@ def get_space_for_dataset(dataset: SupportedDataset) -> dict:
         h1_min, h1_max = 1024, 2048
         h2_min, h2_max = 512, 1024
 
-    h3_min, h3_max = 64, 512
-    h4_min, h4_max = 32, 256
+    h3_min, h3_max = 64, 128
+    h4_min, h4_max = 32, 64
 
     return {
         "batch_size": optuna.distributions.IntDistribution(32, 512, step=32),
@@ -160,7 +163,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4.value,
+        default=SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
         help="Dataset to use for training",
     )
