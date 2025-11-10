@@ -39,7 +39,7 @@ ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 
 # Paths
 PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
-EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/evals/retrieval_experiments}"
+EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/final_evaluations/retrieval_experiments}"
 SCRIPT_NAME="${SCRIPT_NAME:-run_retrieval_experiment.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
 

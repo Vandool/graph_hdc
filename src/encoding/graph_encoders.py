@@ -18,14 +18,15 @@ from torch_geometric.loader import DataLoader
 from torchhd import VSATensor
 from tqdm import tqdm
 
+from src.datasets.utils import DatasetInfo, get_dataset_info
 from src.encoding.configs_and_constants import (
     BaseDataset,
     DSHDCConfig,
     Features,
     IndexRange,
 )
-from src.encoding.correction_utilities import correct, get_node_counter, target_reached
-from src.encoding.decoder import compute_sampling_structure, try_find_isomorphic_graph
+from src.encoding.correction_utilities import CorrectionResult, get_corrected_sets, get_node_counter, target_reached
+from src.encoding.decoder import compute_sampling_structure, has_valid_ring_structure, try_find_isomorphic_graph
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -374,12 +375,23 @@ class HyperNet(AbstractGraphEncoder):
             self._directed_decoded_edge_limit = 122  # max 88 in train
 
     @property
+    def dataset_info(self) -> DatasetInfo:
+        return self._dataset_info
+
+    @dataset_info.setter
+    def dataset_info(self, info: DatasetInfo) -> None:
+        self._dataset_info = info
+
+    @property
     def base_dataset(self) -> BaseDataset:
         return self._base_dataset
 
     @base_dataset.setter
     def base_dataset(self, base_dataset: BaseDataset):
         self._base_dataset = base_dataset
+        self.decoding_limit_for = base_dataset
+        self._dataset_info = get_dataset_info(base_dataset)
+        self.limit_nodes_codebook()
 
     def _init_lazy_fields(self) -> None:
         """Create attributes that __init__ normally sets but load() may bypass."""
@@ -396,6 +408,7 @@ class HyperNet(AbstractGraphEncoder):
         self._max_step_delta: float | None = None
         self._directed_decoded_edge_limit: int = 50  # Default for zinc
         self._base_dataset: BaseDataset = "qm9"
+        self._dataset_info: DatasetInfo
 
     def to(self, device, dtype=None):
         # normalize + store; also move nn.Module state if any
@@ -713,12 +726,12 @@ class HyperNet(AbstractGraphEncoder):
             # [N, D]
             self.nodes_codebook = cartesian_bind_tensor(cbs)
 
-    def limit_nodes_codebook(self, limit_node_set: set[tuple[int, ...]]) -> None:
+    def limit_nodes_codebook(self) -> None:
         self.populate_nodes_codebooks()
         self._populate_nodes_indexer()
 
         # Limit the codebook only to a subset of the nodes.
-        sorted_limit_node_set = sorted(limit_node_set)
+        sorted_limit_node_set = sorted(self.dataset_info.node_features)
         idxs = self.nodes_indexer.get_idxs(sorted_limit_node_set)
         self.nodes_indexer.idx_to_tuple = sorted_limit_node_set
         self.nodes_indexer.tuple_to_idx = {tup: idx for idx, tup in enumerate(sorted_limit_node_set)}
@@ -784,7 +797,7 @@ class HyperNet(AbstractGraphEncoder):
         norms = []
         similarities = []
         decoded_edges: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
-        for i in range(edge_count // 2):
+        for i in range(int(edge_count // 2)):
             norms.append(edge_term.norm().item())
             sims = torchhd.cos(edge_term, edges_hdc)
             idx_max = torch.argmax(sims).item()
@@ -1236,7 +1249,7 @@ class HyperNet(AbstractGraphEncoder):
                     continue
 
                 # Choose the first N anchors to expand on
-                lowest_degree_ancrs = sorted(ancrs, key=lambda n: residual_degree(G, n))[:1]
+                lowest_degree_ancrs = sorted(ancrs, key=lambda n: residual_degree(G, n))
 
                 # Try to connect the left over nodes to the lowest degree anchors
                 for a, lo_t in list(itertools.product(lowest_degree_ancrs, leftover_types)):
@@ -1253,6 +1266,14 @@ class HyperNet(AbstractGraphEncoder):
 
                     keyC = _hash(C)
                     if keyC in global_seen:
+                        continue
+
+                    # Early pruning of bad ring structures
+                    if self.base_dataset == "zinc" and not has_valid_ring_structure(
+                        G=C,
+                        processed_histogram=self.dataset_info.ring_histogram,
+                        single_ring_atom_types=self.dataset_info.single_ring_features,
+                    ):
                         continue
 
                     # self._print_and_plot(g=C, graph_terms=graph_term)
@@ -1308,6 +1329,15 @@ class HyperNet(AbstractGraphEncoder):
                         keyH = _hash(H)
                         if keyH in global_seen:
                             continue
+
+                        # Early pruning of bad ring structures
+                        if self.base_dataset == "zinc" and not has_valid_ring_structure(
+                            G=H,
+                            processed_histogram=self.dataset_info.ring_histogram,
+                            single_ring_atom_types=self.dataset_info.single_ring_features,
+                        ):
+                            continue
+
                         remaining_edges_ = remaining_edges.copy()
                         for a_t, b_t in all_new_connection:
                             try:
@@ -1434,7 +1464,7 @@ class HyperNet(AbstractGraphEncoder):
         self,
         edge_term: VSATensor,
         initial_decoded_edges: list[tuple[tuple, tuple]],
-    ) -> tuple[list[list[tuple[tuple, tuple]]], CorrectionLevel]:
+    ) -> tuple[CorrectionResult, CorrectionLevel]:
         """
         Apply progressive correction strategies to decoded edges.
 
@@ -1463,10 +1493,12 @@ class HyperNet(AbstractGraphEncoder):
         # Level 1: Try simple add/remove corrections
         # print(f"Target not reached. Attempting edge corrections {CorrectionLevel.ONE}")
         node_counter_fp = get_node_counter_fp(initial_decoded_edges)
-        decoded_edges = correct(node_counter_fp, initial_decoded_edges)
+        correction_result: CorrectionResult = get_corrected_sets(
+            node_counter_fp, initial_decoded_edges, valid_edge_tuples=self.dataset_info.edge_features
+        )
 
-        if decoded_edges:
-            return decoded_edges, CorrectionLevel.ONE
+        if correction_result.add_sets or correction_result.remove_sets:
+            return correction_result, CorrectionLevel.ONE
 
         # Level 2: Corrective re-decoding with ceiling method
         # The ceiling method assumes we missed some edges and tries to find more
@@ -1477,21 +1509,22 @@ class HyperNet(AbstractGraphEncoder):
         )
 
         if target_reached(decoded_edges_corrective):
-            return [decoded_edges_corrective], CorrectionLevel.TWO
+            return CorrectionResult(add_sets=[decoded_edges_corrective]), CorrectionLevel.TWO
 
         # Level 3: Re-decode + corrections
         # print(f"Target not reached. Attempting edge corrections {CorrectionLevel.THREE}")
-        decoded_edges = correct(
+        correction_result = get_corrected_sets(
             node_counter_fp=get_node_counter_fp(decoded_edges_corrective),
             decoded_edges_s=decoded_edges_corrective,
+            valid_edge_tuples=self.dataset_info.edge_features,
         )
 
-        if decoded_edges:
-            return decoded_edges, CorrectionLevel.THREE
+        if correction_result.add_sets or correction_result.remove_sets:
+            return correction_result, CorrectionLevel.THREE
 
         # All corrections failed: return initial edges with FAIL level
         # print(f"Target not reached. {CorrectionLevel.FAIL}")
-        return [initial_decoded_edges], CorrectionLevel.FAIL
+        return CorrectionResult(add_sets=[initial_decoded_edges]), CorrectionLevel.FAIL
 
     def _find_top_k_isomorphic_graphs(
         self,
@@ -1544,7 +1577,11 @@ class HyperNet(AbstractGraphEncoder):
 
             # Enumerate valid graph structures via isomorphism
             decoded_graphs_iter = try_find_isomorphic_graph(
-                matching_components=matching_components, id_to_type=id_to_type, max_samples=max_graphs_per_iter
+                matching_components=matching_components,
+                id_to_type=id_to_type,
+                max_samples=max_graphs_per_iter,
+                ring_histogram=self.dataset_info.ring_histogram,
+                single_ring_atom_types=self.dataset_info.single_ring_features,
             )
 
             if not decoded_graphs_iter:
@@ -1570,19 +1607,18 @@ class HyperNet(AbstractGraphEncoder):
             if use_early_stopping:
                 for sim in top_k_sims_cpu:
                     if sim == 1.0:
-                        # print("[EARLY STOPPING] One exact match found!!!")
+                        print("[EARLY STOPPING] One exact match found!!!")
                         break
-                    if abs(sim - 1.0) <= sim_eps:
-                        top_k_in_eps_range_found += 1
+                    # if abs(sim - 1.0) <= sim_eps:
+                    #     top_k_in_eps_range_found += 1
 
-                if top_k_in_eps_range_found >= top_k:
-                    # print(f"[EARLY STOPPING] {top_k} almost exact matches found!!")
-                    break
+                # if top_k_in_eps_range_found >= top_k:
+                #     # print(f"[EARLY STOPPING] {top_k} almost exact matches found!!")
+                #     break
 
         return top_k_graphs
 
-    @staticmethod
-    def _is_feasible_set(edge_multiset) -> bool:
+    def _is_feasible_set(self, edge_multiset) -> bool:
         # Compute sampling structure from edge multiset
         node_counter = get_node_counter(edge_multiset)
         matching_components, id_to_type = compute_sampling_structure(
@@ -1593,7 +1629,11 @@ class HyperNet(AbstractGraphEncoder):
         # Enumerate valid graph structures via isomorphism with a limited budget to prune the statistically impossible
         # ones
         decoded_graphs_iter = try_find_isomorphic_graph(
-            matching_components=matching_components, id_to_type=id_to_type, max_samples=10
+            matching_components=matching_components,
+            id_to_type=id_to_type,
+            max_samples=100,
+            ring_histogram=self.dataset_info.ring_histogram,
+            single_ring_atom_types=self.dataset_info.single_ring_features,
         )
         return len(decoded_graphs_iter) > 0
 
@@ -1694,6 +1734,7 @@ class HyperNet(AbstractGraphEncoder):
         sim_eps: float = decoder_settings.get("sim_eps", 0.0001)
         use_early_stopping: bool = decoder_settings.get("early_stopping", False)
         fallback_decoder_settings = decoder_settings.get("fallback_decoder_settings")
+        prefer_smaller_corrective_edits = decoder_settings.get("prefer_smaller_corrective_edits", False)
 
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
@@ -1704,7 +1745,7 @@ class HyperNet(AbstractGraphEncoder):
 
         if not target_reached(initial_decoded_edges):
             # Edges don't form valid graph → apply progressive correction strategies
-            decoded_edges, correction_level = self._apply_edge_corrections(
+            correction_results, correction_level = self._apply_edge_corrections(
                 edge_term=edge_term, initial_decoded_edges=initial_decoded_edges
             )
 
@@ -1712,8 +1753,26 @@ class HyperNet(AbstractGraphEncoder):
         if correction_level != CorrectionLevel.FAIL:
             top_k_graphs: list[tuple[nx.Graph, float]] = []
 
-            before_pruning = len(decoded_edges)
-            decoded_edges = list(filter(lambda x: self._is_feasible_set(x), decoded_edges))
+            if correction_level == CorrectionLevel.ZERO:
+                # We only have the initial set
+                decoded_edges = list(filter(self._is_feasible_set, decoded_edges))
+            elif prefer_smaller_corrective_edits:
+                if correction_results.add_edit_count <= correction_results.remove_edit_count:
+                    # Prefer ADD, fallback to REMOVE
+                    decoded_edges = list(filter(self._is_feasible_set, correction_results.add_sets))
+                    if not decoded_edges:
+                        decoded_edges = list(filter(self._is_feasible_set, correction_results.remove_sets))
+                else:
+                    # Prefer REMOVE, fallback to ADD
+                    decoded_edges = list(filter(self._is_feasible_set, correction_results.remove_sets))
+                    if not decoded_edges:
+                        decoded_edges = list(filter(self._is_feasible_set, correction_results.add_sets))
+            else:
+                # No preference, use all feasible sets
+                feasible_add_sets = list(filter(self._is_feasible_set, correction_results.add_sets))
+                feasible_remove_sets = list(filter(self._is_feasible_set, correction_results.remove_sets))
+                decoded_edges = feasible_add_sets + feasible_remove_sets
+
             if len(decoded_edges) == 0:
                 # print("[WARNING] all the corrected edge multisets are infeasible")
                 return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
@@ -1726,9 +1785,6 @@ class HyperNet(AbstractGraphEncoder):
 
             # For each valid edge multiset, sample and rank graph candidates
             for edge_multiset in decoded_edges:
-                if not self._is_feasible_set(edge_multiset):
-                    continue
-
                 graphs_from_multiset = self._find_top_k_isomorphic_graphs(
                     edge_multiset=edge_multiset,
                     graph_term=graph_term,
@@ -1746,7 +1802,9 @@ class HyperNet(AbstractGraphEncoder):
 
             # Sort all candidates by similarity (descending) and take top k
             top_k_graphs = sorted(top_k_graphs, key=lambda x: x[1], reverse=True)[:top_k]
-            nx_graphs, cos_sims = zip(*top_k_graphs, strict=False)
+            nx_graphs, cos_sims = [], []
+            if top_k_graphs:
+                nx_graphs, cos_sims = zip(*top_k_graphs, strict=False)
 
             return DecodingResult(
                 nx_graphs=nx_graphs,

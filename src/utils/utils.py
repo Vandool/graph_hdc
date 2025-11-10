@@ -514,7 +514,7 @@ class DataTransformer:
         # Node ordering: use sorted ids for determinism
         nodes = sorted(G.nodes)
         idx_of: dict[int, int] = {n: i for i, n in enumerate(nodes)}
-        node_attr = "feat" if any("feat" in G.nodes[n] for n in nodes) else "type"
+        node_attr = "feat" if "feat" in G.nodes[next(iter(G.nodes))] else "type"
 
         # Features: extract from specified attribute
         if use_to_tuple:

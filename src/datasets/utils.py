@@ -1,186 +1,18 @@
 import hashlib
-import random
+from collections import Counter, defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
-import networkx as nx
+import pickle
+
 import torch
 from torch_geometric.data import Data, InMemoryDataset
-from torch_geometric.utils import degree, k_hop_subgraph, to_undirected
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import DSHDCConfig
-
-IDX2COLOR = {
-    0: ("R", "red"),
-    1: ("G", "green"),
-    2: ("B", "blue"),
-    3: ("W", "white"),
-    4: ("X", "gray"),
-}
-
-COLOR2IDX = {color_word: idx for idx, (color_char, color_word) in IDX2COLOR.items()}
-
-
-class HashableData(Data):
-    def __eq__(self, other):
-        if not isinstance(other, Data):
-            return False
-        return torch.equal(self.x, other.x) and torch.equal(self.edge_index, other.edge_index)
-
-    def __hash__(self):
-        x_hash = hash(self.x.cpu().numpy().tobytes())
-        ei_hash = hash(self.edge_index.cpu().numpy().tobytes())
-        return hash((x_hash, ei_hash))
-
-
-torch.serialization.add_safe_globals([HashableData])
-
-
-class ColorGraphDataset(InMemoryDataset):
-    def __init__(
-        self,
-        root,
-        num_graphs=100,
-        min_nodes=5,
-        max_nodes=10,
-        edge_p=0.15,
-        transform=None,
-        pre_transform=None,
-        *,
-        use_rgb=True,
-    ):
-        self.num_graphs, self.min_nodes, self.max_nodes = num_graphs, min_nodes, max_nodes
-        self.edge_p = edge_p
-        self.use_rgb = use_rgb
-        super().__init__(root, transform, pre_transform)
-        self.load(self.processed_paths[0])
-
-    @property
-    def processed_file_names(self):
-        return ["data.pt"]
-
-    def process(self):
-        motif_centric_collections = []
-        motif_centrics = set()
-        motifs = [self.triangle_motif, self.ring_motif]
-        for _, motif_func in enumerate(motifs):
-            # Ensure Evenly distributed motifs
-            while len(motif_centrics) < self.num_graphs // len(motifs):
-                base_colors, base_edges = motif_func()
-                extra_nodes = random.randint(1, 5)
-                total_colors, total_edges = self.expand_graph_planar(base_colors, base_edges, extra_nodes)
-
-                # Add node features
-                x = torch.tensor([COLOR2IDX[c] for c in total_colors], dtype=torch.float)
-
-                # Add edges
-                edge_index = torch.tensor(total_edges, dtype=torch.long).t().contiguous()
-                edge_index = to_undirected(edge_index, num_nodes=len(total_colors))
-
-                data = HashableData(x=x, edge_index=edge_index)
-                data.validate(raise_on_error=True)
-                motif_centrics.add(data)
-
-            motif_centric_collections.append(motif_centrics)
-            motif_centrics = set()
-
-        motif_centric_collections = [g for mfs in motif_centric_collections for g in mfs]
-        if self.pre_filter is not None:
-            motif_centric_collections = [
-                graph for part in motif_centric_collections for graph in part if self.pre_filter(graph)
-            ]
-        if self.pre_transform is not None:
-            motif_centric_collections = [self.pre_transform(d) for d in motif_centric_collections]
-
-        self.save(motif_centric_collections, self.processed_paths[0])
-
-    @staticmethod
-    def ring_motif() -> tuple[list[str], list[tuple]]:
-        colors = ["red", "green", "red", "green", "red"]
-        nodes = list(range(5))
-        edges = [(i, (i + 1) % 5) for i in nodes]
-        return colors, edges
-
-    @staticmethod
-    def triangle_motif() -> tuple[list[str], list[tuple]]:
-        colors = ["red", "green", "blue"]
-        edges = [(0, 1), (1, 2), (2, 0)]
-        return colors, edges
-
-    @staticmethod
-    def expand_graph_planar(base_colors, base_edges, num_extra_nodes, max_attempts=100) -> tuple[list, list]:
-        n0 = len(base_colors)
-        G = nx.Graph()
-        G.add_nodes_from(range(n0))
-        G.add_edges_from(base_edges)
-
-        colors = base_colors[:]
-        edges = base_edges[:]
-
-        for i in range(num_extra_nodes):
-            new_node_id = n0 + i
-            G.add_node(new_node_id)
-            new_color = random.choice(list(set(COLOR2IDX.keys()).difference(set(base_colors))))
-            colors.append(new_color)
-
-            attempts = 0
-            while attempts < max_attempts:
-                # Connect to 1–3 existing nodes
-                k = random.randint(1, min(3, n0 + i))
-                targets = random.sample(sorted(G.nodes - {new_node_id}), k)
-                trial_edges = [(new_node_id, t) for t in targets]
-
-                G.add_edges_from(trial_edges)
-                is_planar, _ = nx.check_planarity(G)
-                if is_planar:
-                    edges.extend(trial_edges)
-                    break
-                G.remove_edges_from(trial_edges)
-                attempts += 1
-
-        return colors, edges
-
-
-class AddNodeDegree:
-    """
-    A PyG style transform that computes each node's (undirected) degree
-    and appends it as an extra feature column to data.x.
-    """
-
-    def __call__(self, data: Data) -> Data:
-        # data.edge_index: shape [2, num_edges]
-        # data.num_nodes: number of nodes in this graph
-        # data.x: existing node features, shape [num_nodes, num_orig_features]
-
-        # 1) Compute node degree.  We’ll treat the graph as undirected:
-        #    - edge_index[0] = source nodes
-        #    - edge_index[1] = target nodes
-        #    If the graph is already undirected, you can choose either row.
-        row, col = data.edge_index
-
-        # degree(col) counts how many times each node appears as a "destination".
-        # For an undirected graph, you typically want degree = in‐degree plus out‐degree.
-        # If edge_index is symmetric (i↔j appears twice), then degree(col) already equals full degree.
-        # If edge_index is not symmetric, you can do degree(row) + degree(col) to get full undirected degree.
-        deg_out = degree(row, data.num_nodes, dtype=torch.float)
-        deg_in = degree(col, data.num_nodes, dtype=torch.float)
-        # Since the undirected edges would count twice
-        node_deg = (deg_out + deg_in) // 2
-
-        # 2) Turn that into a column vector of shape [num_nodes, 1]
-        node_deg = node_deg.view(-1, 1)  # ensures shape [num_nodes, 1]
-
-        # 3) If data.x doesn’t exist (maybe your graphs have no node features to begin with),
-        #    create data.x = node_deg.  Otherwise, concatenate onto the existing feature matrix.
-        if data.x is None:
-            data.x = node_deg
-        else:
-            # data.x: [num_nodes, orig_dim]
-            data.x = torch.cat([data.x, node_deg], dim=1)  # → shape [num_nodes, orig_dim+1]
-
-        return data
+from src.encoding.configs_and_constants import BaseDataset, DSHDCConfig
 
 
 def stable_hash(tensor: torch.Tensor, bins: int) -> int:
@@ -195,41 +27,6 @@ def stable_hash(tensor: torch.Tensor, bins: int) -> int:
     byte_str = tensor.numpy().tobytes()
     h = hashlib.sha256(byte_str).hexdigest()
     return int(h, 16) % bins
-
-
-class AddNeighbourhoodEncodings:
-    """
-    A PyG-style transform that adds neighborhood encoding to data.x.
-    Each node receives a hash derived from the summed features of its k-hop neighbors,
-    hashed and modded into `bins` buckets to provide permutation-invariant node IDs.
-    """
-
-    def __init__(self, depth: int = 3, bins: int = 3):
-        self.depth = depth
-        self.bins = bins
-
-    def __call__(self, data: Data) -> Data:
-        x = data.x
-        edge_index = data.edge_index
-        num_nodes = data.num_nodes
-
-        hash_features = []
-        for node_idx in range(num_nodes):
-            node_ids, _, _, _ = k_hop_subgraph(node_idx, self.depth, edge_index, relabel_nodes=False)
-            # Remove self
-            mask = node_ids != node_idx
-            node_ids = node_ids[mask]
-            # neighbor_feats = x[node_ids].sum(dim=0)  # Aggregate neighborhood
-            # We're hashing
-            neighbor_feats = x[node_ids]  # Aggregate neighborhood
-            hashed_value = stable_hash(neighbor_feats.cpu(), self.bins)
-            hash_features.append([hashed_value])
-
-        nha = torch.tensor(hash_features, dtype=torch.float32)  # [num_nodes, 1]
-
-        data.x = torch.cat([data.x, nha], dim=1)
-
-        return data
 
 
 class Compose:
@@ -268,6 +65,165 @@ def get_split(
 
         return ds
     return ZincSmiles(split=split, enc_suffix=enc_suffix)
+
+
+@dataclass
+class DatasetInfo:
+    """Holds aggregated information about an entire graph dataset."""
+
+    # Set of all the features appearing in the whole Dataset
+    node_features: set[tuple]
+    # Set of all the edge tuples appearing in the whole dataset
+    # Stored as sorted( (feat_u, feat_v) ) for undirected graphs
+    edge_features: set[tuple[tuple, tuple]]
+    # Ring Histogram. Features -> ring size -> count
+    ring_histogram: dict[tuple, dict[int, int]] | None
+    # Single Ring set: These features appear only once in a ring, never part of multiple rings
+    single_ring_features: set[tuple] | None
+
+
+def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
+    """
+    Analyzes a dataset ('qm9' or 'zinc') to extract global information about
+    node features, edge features, and ring structures (for ZINC).
+
+    Results are cached as a raw dictionary to the dataset's processed_dir.
+    """
+
+    # --- 1. Setup and Cache Check ---
+
+    if base_dataset == "qm9":
+        dataset_cls = QM9Smiles
+    elif base_dataset == "zinc":
+        dataset_cls = ZincSmiles
+    else:
+        raise ValueError(f"Unknown base_dataset: {base_dataset}")
+
+    dataset_info_file = Path(dataset_cls(split='test').processed_dir) / "dataset_info.pkl"
+
+    # First try to read the raw dictionary if we've already saved it
+    if dataset_info_file.is_file():
+        print(f"Loading existing dataset info from {dataset_info_file}...")
+        try:
+            with open(dataset_info_file, "rb") as f:
+                # Load the raw dictionary
+                info_dict = pickle.load(f)
+
+            # Check if it's a dict and has at least one expected key
+            if isinstance(info_dict, dict) and "node_features" in info_dict:
+                # Cast the loaded dictionary to the DatasetInfo object
+                return DatasetInfo(**info_dict)
+            print("Warning: Cached file is corrupted or not a dict. Regenerating...")
+        except (pickle.UnpicklingError, EOFError, TypeError) as e:
+            # TypeError catches errors during unpacking (e.g., missing keys)
+            print(f"Warning: Could not load cache file ({e}). Regenerating...")
+
+    # --- 2. Initialization ---
+
+    print("Generating new dataset info...")
+    never_multiple_rings_counter = Counter()
+    atom_tuple_total_counts = Counter()
+    ring_histogram = defaultdict(Counter)
+    edge_features = set()
+    node_features = set()
+
+    if base_dataset == "zinc":
+        try:
+            from rdkit import Chem
+        except ImportError:
+            print("RDKit is required for ring analysis on ZINC.")
+            raise
+
+    # --- 3. Iterate over all splits and graphs ---
+
+    for split in ["train", "test", "valid"]:
+        ds = dataset_cls(split=split)
+        print(f"Processing {split} split with {len(ds)} graphs...")
+
+        for data in ds:
+            if "." in data.smiles:
+                print(f"Broken smiles found: {data.smiles}. Skipping ...")
+                continue
+
+            # 3a. Get Node Features
+            current_node_features = {tuple(feat.tolist()) for feat in data.x.int()}
+            node_features.update(current_node_features)
+
+            # 3b. Get Edge Features
+            node_idx_to_tuple = {i: tuple(data.x[i].int().tolist()) for i in range(data.x.size(0))}
+
+            for u, v in data.edge_index.T.tolist():
+                feat_u = node_idx_to_tuple[u]
+                feat_v = node_idx_to_tuple[v]
+                edge_tuple = tuple(sorted((feat_u, feat_v)))
+                edge_features.add(edge_tuple)
+
+            # 3c. Get Ring Information (ZINC only)
+            if base_dataset == "qm9":
+                continue
+
+            mol = Chem.MolFromSmiles(data.smiles)
+            if mol is None:
+                print(f"Warning: Could not parse SMILES: {data.smiles}")
+                continue
+
+            instance_multiple_rings = set()
+            atom_tuples_in_rings = {}
+
+            # First pass: Populate histogram and find multi-ring atoms
+            for atom in mol.GetAtoms():
+                if atom.IsInRing():
+                    atom_idx = atom.GetIdx()
+                    if atom_idx >= len(node_idx_to_tuple):
+                        continue
+
+                    atom_tuple = node_idx_to_tuple[atom_idx]
+                    atom_tuples_in_rings[atom_idx] = atom_tuple
+                    atom_tuple_total_counts[atom_tuple] += 1
+
+                    ring_count = 0
+                    for ring_size in range(3, 21):
+                        if atom.IsInRingSize(ring_size):
+                            ring_histogram[atom_tuple][ring_size] += 1
+                            ring_count += 1
+
+                    if ring_count > 1:
+                        instance_multiple_rings.add(atom_tuple)
+
+            # Second pass
+            for atom_tuple in atom_tuples_in_rings.values():
+                if atom_tuple not in instance_multiple_rings:
+                    never_multiple_rings_counter[atom_tuple] += 1
+
+    # --- 4. Finalize and Save Results ---
+
+    final_ring_histogram: dict[tuple, dict[int, int]] | None = None
+    single_ring_features: set[tuple] | None = None
+
+    if base_dataset == "zinc":
+        single_ring_features = set()
+        for atom_tuple, total_count in atom_tuple_total_counts.items():
+            if never_multiple_rings_counter[atom_tuple] == total_count:
+                single_ring_features.add(atom_tuple)
+
+        final_ring_histogram = {k: dict(v) for k, v in ring_histogram.items()}
+
+    # Create the final dictionary to be saved
+    saved_dict = {
+        "node_features": node_features,
+        "edge_features": edge_features,
+        "ring_histogram": final_ring_histogram,
+        "single_ring_features": single_ring_features,
+    }
+
+    # Save the raw dictionary in the processed dir
+    print(f"Saving new dataset info (as dict) to {dataset_info_file}...")
+    dataset_info_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(dataset_info_file, "wb") as f:
+        pickle.dump(saved_dict, f)
+
+    # Return the object casted to DatasetInfo
+    return DatasetInfo(**saved_dict)
 
 
 qm9_train_dc_list = [
@@ -496,3 +452,9 @@ qm9_valid_dc_list = [
     7791,
 ]
 qm9_test_dc_list = [489, 1097, 1495, 1757, 1988, 2532, 4164, 4738]
+
+if __name__ == "__main__":
+    dataset_info_qm9 = get_dataset_info("qm9")
+    dataset_info_zinc = get_dataset_info("zinc")
+    print(dataset_info_qm9)
+    print(dataset_info_zinc)

@@ -22,6 +22,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -79,6 +80,59 @@ def create_dynamic_config(base_dataset: str, vsa_model: str, hv_dim: int, depth:
     ds_config.hypernet_depth = depth
     ds_config.normalize = True
     return ds_config
+
+
+def plot_hit_rate_by_node_size(detailed_df: pd.DataFrame, output_dir: Path, filename_base: str):
+    """
+    Generate bar chart showing hit rate (graph accuracy) for each unique node size.
+
+    Parameters
+    ----------
+    detailed_df : pd.DataFrame
+        Detailed results DataFrame with 'num_nodes' and 'graph_accuracy' columns
+    output_dir : Path
+        Directory to save the plot
+    filename_base : str
+        Base filename (without extension) for the plot
+    """
+    # Group by number of nodes and compute hit rate (mean of graph_accuracy)
+    hit_rate_by_size = detailed_df.groupby("num_nodes")["graph_accuracy"].agg(["mean", "count"]).reset_index()
+    hit_rate_by_size.columns = ["num_nodes", "hit_rate", "count"]
+    hit_rate_by_size["hit_rate_pct"] = hit_rate_by_size["hit_rate"] * 100  # Convert to percentage
+
+    # Create bar chart
+    plt.figure(figsize=(12, 6))
+    plt.bar(
+        hit_rate_by_size["num_nodes"],
+        hit_rate_by_size["hit_rate_pct"],
+        color="steelblue",
+        alpha=0.8,
+        edgecolor="black",
+    )
+
+    # Add labels and title
+    plt.xlabel("Number of Nodes (Molecule Size)", fontsize=12)
+    plt.ylabel("Hit Rate (%)", fontsize=12)
+    plt.title("Hit Rate by Molecular Size", fontsize=14, fontweight="bold")
+    plt.grid(axis="y", alpha=0.3, linestyle="--")
+    plt.ylim(0, 105)  # 0-100% with some headroom
+
+    # Add count labels on top of bars
+    for _, row in hit_rate_by_size.iterrows():
+        plt.text(
+            row["num_nodes"],
+            row["hit_rate_pct"] + 2,
+            f"n={int(row['count'])}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    plt.tight_layout()
+    output_path = output_dir / f"{filename_base}_hit_rate_by_node_size.pdf"
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"  Hit rate by node size plot saved to: {output_path}")
 
 
 def graphs_isomorphic(g1: nx.Graph, g2: nx.Graph) -> bool:
@@ -275,6 +329,7 @@ def run_single_experiment(
                     "edge_term": edge_terms[i],
                     "graph_term": graph_terms[i],
                     "encoding_time": batch_encoding_time / len(batch_list),  # Approximate per-sample time
+                    "num_nodes": pyg_data.num_nodes,  # Track molecule size
                 }
             )
 
@@ -291,14 +346,21 @@ def run_single_experiment(
     graph_decoding_times = []
     total_times = []
 
+    # Additional tracking
+    num_nodes_list = []
+    is_max_cosine_non_hit_list = []
+    max_cosine_non_hit_indices = []
+
     # Phase 2 & 3: Edge Decoding and Graph Decoding
     for result in tqdm(encoded_results, desc="Decoding samples"):
         pyg_data = result["pyg_data"]
         edge_term = result["edge_term"]
         graph_term = result["graph_term"]
         encoding_time = result["encoding_time"]
+        num_nodes = result["num_nodes"]
 
         encoding_times.append(encoding_time)
+        num_nodes_list.append(num_nodes)
 
         # Convert PyG data to NetworkX for ground truth comparison
         nx_graph = DataTransformer.pyg_to_nx(pyg_data)
@@ -355,9 +417,16 @@ def run_single_experiment(
 
             cos_sim = torchhd.cos(graph_term, reencoded_graph_term).item()
             cosine_similarities.append(cos_sim)
+
+            # Detect max cosine similarity non-hits
+            is_max_cosine_non_hit = (cos_sim == 1.0) and (not graph_match)
+            is_max_cosine_non_hit_list.append(is_max_cosine_non_hit)
+            if is_max_cosine_non_hit:
+                max_cosine_non_hit_indices.append(len(cosine_similarities) - 1)
         else:
             graph_accuracies.append(0.0)
             cosine_similarities.append(0.0)
+            is_max_cosine_non_hit_list.append(False)
 
     # Compute summary statistics
     correction_counter = Counter(correction_levels)
@@ -385,6 +454,9 @@ def run_single_experiment(
         # Cosine similarity
         "cosine_similarity_mean": np.mean(cosine_similarities),
         "cosine_similarity_std": np.std(cosine_similarities),
+        # Max cosine non-hit tracking
+        "max_cosine_non_hit_count": len(max_cosine_non_hit_indices),
+        "max_cosine_non_hit_indices": max_cosine_non_hit_indices,
         # Timing
         "encoding_time_mean": np.mean(encoding_times),
         "encoding_time_std": np.std(encoding_times),
@@ -408,10 +480,12 @@ def run_single_experiment(
         # Save detailed results
         detailed_results = pd.DataFrame(
             {
+                "num_nodes": num_nodes_list,
                 "edge_accuracy": edge_accuracies,
                 "graph_accuracy": graph_accuracies,
                 "correction_level": correction_levels,
                 "cosine_similarity": cosine_similarities,
+                "is_max_cosine_non_hit": is_max_cosine_non_hit_list,
                 "encoding_time": encoding_times,
                 "edge_decoding_time": edge_decoding_times,
                 "graph_decoding_time": graph_decoding_times,
@@ -420,6 +494,10 @@ def run_single_experiment(
         )
         detailed_filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_detailed.csv"
         detailed_results.to_csv(output_dir / detailed_filename, index=False)
+
+        # Generate hit rate by node size plot
+        filename_base = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}"
+        plot_hit_rate_by_node_size(detailed_results, output_dir, filename_base)
 
     # Print summary
     print("\nResults Summary:")

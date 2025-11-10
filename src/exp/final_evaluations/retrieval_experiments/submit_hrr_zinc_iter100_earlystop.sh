@@ -16,7 +16,7 @@
 set -euo pipefail
 
 # Configuration
-export N_SAMPLES="${N_SAMPLES:-1000}"
+export N_SAMPLES="${N_SAMPLES:-100}"
 export CLUSTER="${CLUSTER:-uc3}"
 export DRY_RUN="${DRY_RUN:-0}"
 export CPUS_PER_TASK=4

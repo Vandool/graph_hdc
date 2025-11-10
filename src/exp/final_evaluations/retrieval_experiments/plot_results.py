@@ -354,6 +354,132 @@ def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, datase
     print(f"Saved plot: {output_path}")
 
 
+def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, dataset: str, vsa: str):
+    """
+    Plot hit rate by node size for different configurations (dimensions and depths).
+
+    Reads detailed CSV files and creates multi-line plots showing how hit rate varies
+    with molecule size across different model configurations.
+
+    Parameters
+    ----------
+    results_dir : Path
+        Directory containing detailed CSV files
+    output_dir : Path
+        Directory to save plots
+    dataset : str
+        Dataset name ("qm9" or "zinc")
+    vsa : str
+        VSA model name ("HRR" or "MAP")
+    """
+    # Find all detailed CSV files for this dataset/VSA combination
+    pattern = f"{vsa}_{dataset}_*_detailed.csv"
+    csv_files = list(results_dir.glob(pattern))
+
+    if not csv_files:
+        print(f"No detailed CSV files found for {dataset} - {vsa}")
+        return
+
+    # Parse configuration from filename and load data
+    configs_data = []
+    for csv_file in csv_files:
+        # Extract dim, depth, iter from filename
+        # Format: {vsa}_{dataset}_dim{dim}_depth{depth}_iter{iter}_detailed.csv
+        parts = csv_file.stem.split("_")
+        dim = None
+        depth = None
+        iter_budget = None
+
+        for i, part in enumerate(parts):
+            if part.startswith("dim"):
+                dim = int(part[3:])
+            elif part.startswith("depth"):
+                depth = int(part[5:])
+            elif part.startswith("iter"):
+                iter_budget = int(part[4:])
+
+        if dim is None or depth is None or iter_budget is None:
+            continue
+
+        # Load detailed results
+        df = pd.read_csv(csv_file)
+
+        # Check if num_nodes column exists (backward compatibility)
+        if "num_nodes" not in df.columns:
+            print(f"Skipping {csv_file.name} - missing 'num_nodes' column (old result file)")
+            continue
+
+        # Compute hit rate by node size
+        hit_rate_by_size = df.groupby("num_nodes")["graph_accuracy"].mean().reset_index()
+        hit_rate_by_size.columns = ["num_nodes", "hit_rate"]
+
+        configs_data.append(
+            {
+                "dim": dim,
+                "depth": depth,
+                "iter_budget": iter_budget,
+                "hit_rate_by_size": hit_rate_by_size,
+            }
+        )
+
+    if not configs_data:
+        print(f"No valid data found for {dataset} - {vsa}")
+        return
+
+    # Group by iteration budget (for ZINC, which may have multiple iter budgets)
+    iter_budgets = sorted(set(c["iter_budget"] for c in configs_data))
+
+    for iter_budget in iter_budgets:
+        configs_for_iter = [c for c in configs_data if c["iter_budget"] == iter_budget]
+
+        # Sort by dim and depth for consistent coloring
+        configs_for_iter.sort(key=lambda x: (x["dim"], x["depth"]))
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+
+        # Generate colors
+        colors = sns.color_palette("tab10", len(configs_for_iter))
+
+        # Plot each configuration
+        for i, config in enumerate(configs_for_iter):
+            hit_rate_df = config["hit_rate_by_size"]
+            label = f"D={config['dim']}, Depth={config['depth']}"
+
+            ax.plot(
+                hit_rate_df["num_nodes"],
+                hit_rate_df["hit_rate"] * 100,  # Convert to percentage
+                marker="o",
+                markersize=6,
+                linewidth=2,
+                label=label,
+                color=colors[i],
+                alpha=0.8,
+            )
+
+        ax.set_xlabel("Number of Nodes (Molecule Size)", fontsize=14, fontweight="bold")
+        ax.set_ylabel("Hit Rate (%)", fontsize=14, fontweight="bold")
+        title = f"Hit Rate by Molecular Size - {dataset.upper()} - {vsa}"
+        if len(iter_budgets) > 1:
+            title += f" (Iter Budget: {iter_budget})"
+        ax.set_title(title, fontsize=16, fontweight="bold")
+        ax.legend(loc="best", frameon=True, shadow=True, ncol=2)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 105])
+
+        plt.tight_layout()
+
+        # Save plot
+        if len(iter_budgets) > 1:
+            output_path = output_dir / f"{dataset}_{vsa}_hit_rate_by_node_size_iter{iter_budget}.pdf"
+        else:
+            output_path = output_dir / f"{dataset}_{vsa}_hit_rate_by_node_size.pdf"
+
+        plt.savefig(output_path)
+        plt.close()
+
+        print(f"Saved plot: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot retrieval experiment results")
     parser.add_argument("--results_dir", type=str, default="./results", help="Results directory")
@@ -444,6 +570,14 @@ def main():
                     dataset=dataset,
                     vsa=vsa,
                 )
+
+            # Plot 8: Hit rate by node size comparison
+            plot_hit_rate_by_node_size_comparison(
+                results_dir=results_dir,
+                output_dir=output_dir,
+                dataset=dataset,
+                vsa=vsa,
+            )
 
     print(f"\nAll plots saved to {output_dir}")
 

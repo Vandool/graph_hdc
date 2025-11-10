@@ -123,7 +123,7 @@ def current_degree(G: nx.Graph, node: int) -> int:
     return G.degree[node]
 
 
-def residual_degree(G: nx.Graph, node: int) -> int:
+def  residual_degree(G: nx.Graph, node: int) -> int:
     """
     Residual degree capacity = ``target_degree - current_degree``.
 

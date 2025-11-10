@@ -33,7 +33,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
-from src.encoding.graph_encoders import HyperNet
+# from src.encoding.graph_encoders import HyperNet
 from src.utils.chem import eval_key_from_data
 from src.utils.utils import GLOBAL_DATASET_PATH
 

@@ -9,6 +9,17 @@ import math
 import random
 from collections import Counter
 from copy import deepcopy
+from dataclasses import dataclass, field
+
+
+@dataclass
+class CorrectionResult:
+    """Holds the results of a graph correction attempt."""
+
+    add_sets: list[list[tuple[tuple, tuple]]] = field(default_factory=list)
+    remove_sets: list[list[tuple[tuple, tuple]]] = field(default_factory=list)
+    add_edit_count: int = 0
+    remove_edit_count: int = 0
 
 
 def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
@@ -29,7 +40,26 @@ def target_reached(edges: list) -> bool:
     return available_edges_cnt == target_count
 
 
-def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tuple, tuple]]):
+def _find_corrective_sets(ctr_to_solve: Counter[tuple], valid_pairs: set, max_solutions=10, max_attempts=100) -> list:
+    """Helper function to find N distinct corrective sets."""
+    found_sets = []
+    attempt = 0
+    while len(found_sets) < max_solutions and attempt < max_attempts:
+        attempt += 1
+        candidate = find_random_valid_sample_robust(deepcopy(ctr_to_solve), valid_pairs)
+
+        if candidate:
+            candidate_ctr = Counter(candidate)
+            if candidate_ctr not in found_sets:
+                found_sets.append(candidate_ctr)
+    return found_sets
+
+
+def get_corrected_sets(
+    node_counter_fp: dict[tuple, float],
+    decoded_edges_s: list[tuple[tuple, tuple]],
+    valid_edge_tuples: set[tuple[tuple, tuple]],
+) -> CorrectionResult:
     """
     Attempt to correct a decoded edge set to meet target criteria.
 
@@ -49,13 +79,14 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
         List of corrected edge sets that meet the target criteria
     """
     # Corrections
-    corrected_edge_sets = []
+    corrected_edge_sets_add = []
+    corrected_edge_sets_remove = []
     missing_ctr = {}
     extra_ctr = {}
     for k, v in node_counter_fp.items():
         if v - int(v) == 0.0:
             continue
-        extra, missing = get_base_units(number=v, base_value=1 / (k[1] + 1))
+        extra, missing = get_base_units(number=v, base_value=1 / (k[1] + 1))  # k[1] has the degree - 1 (0 indexed)
         missing_ctr[k] = missing
         extra_ctr[k] = extra
 
@@ -64,58 +95,59 @@ def correct(node_counter_fp: dict[tuple, float], decoded_edges_s: list[tuple[tup
 
     corrective_sets = []
 
-    for i in range(10):
-        candidate = find_random_valid_sample_robust(deepcopy(missing_ctr))
-        candidate_ctr = Counter(candidate)
+    removable_pairs = {tuple(sorted((u, v))) for u, v in decoded_edges_s if u <= v}
+    possible_corrective_add_sets = _find_corrective_sets(missing_ctr, removable_pairs)
+    for candidate_ctr in possible_corrective_add_sets:
         if candidate_ctr not in corrective_sets:
             corrective_sets.append(candidate_ctr)
             new_edge_set = deepcopy(decoded_edges_s)
             for k, v in candidate_ctr.items():
+                a, b = k
                 for _ in range(v):
-                    u, v = k
-                    new_edge_set.append((u, v))
-                    new_edge_set.append((v, u))
+                    new_edge_set.append((a, b))
+                    new_edge_set.append((b, a))
             if target_reached(new_edge_set):
-                corrected_edge_sets.append(new_edge_set)
-    len_sets_with_added_edges = len(corrective_sets)
+                corrected_edge_sets_add.append(new_edge_set)
 
-    # if len(corrected_edge_sets) == 0:
-    for i in range(10):
-        candidate = find_random_valid_sample_robust(deepcopy(extra_ctr))
-        candidate_ctr = Counter(candidate)
+    corrective_remove_sets = _find_corrective_sets(extra_ctr, valid_edge_tuples)
+    for candidate_ctr in corrective_remove_sets:
         if candidate_ctr not in corrective_sets:
             corrective_sets.append(candidate_ctr)
             new_edge_set = deepcopy(decoded_edges_s)
             for k, v in candidate_ctr.items():
+                a, b = k
                 for _ in range(v):
-                    u, v = k
-                    if (u, v) in new_edge_set:
-                        new_edge_set.remove((u, v))
-                        new_edge_set.remove((v, u))
+                    if (a, b) in new_edge_set:
+                        new_edge_set.remove((a, b))
+                        new_edge_set.remove((b, a))
             if target_reached(new_edge_set):
-                corrected_edge_sets.append(new_edge_set)
-    len_sets_with_removed_edges = len(corrective_sets) - len_sets_with_added_edges
-    # print(f"Applied correction. ADD: {len_sets_with_added_edges}, REMOVE: {len_sets_with_removed_edges}")
-    return corrected_edge_sets
+                corrected_edge_sets_remove.append(new_edge_set)
+    print(f"Applied correction. ADD: {len(corrected_edge_sets_add)}, REMOVE: {len(corrected_edge_sets_remove)}")
+
+    return CorrectionResult(
+        add_sets=corrected_edge_sets_add,
+        remove_sets=corrected_edge_sets_remove,
+        add_edit_count=missing_ctr.total(),
+        remove_edit_count=extra_ctr.total(),
+    )
 
 
-def find_random_valid_sample_robust(node_ctr: Counter[tuple]) -> list[tuple[tuple, tuple]] | None:
+def find_random_valid_sample_robust(
+    node_ctr: Counter[tuple], valid_pairs: set[tuple[tuple, tuple]]
+) -> list[tuple[tuple, tuple]] | None:
     """
-    Find a random valid edge pairing from node counter requirements.
+    Finds a random, *valid* edge pairing from node counter requirements.
 
-    Uses a robust backtracking algorithm that directly pairs nodes
-    from a list of available "stubs".
+    Uses a robust backtracking algorithm *pruned* by the
+    valid_pairs set.
 
     Parameters
     ----------
     node_ctr : Counter
         Counter mapping nodes to required degree counts.
-
-    Returns
-    -------
-    list or None
-        List of edge tuples representing valid pairings, or None if no
-        solution was found.
+    valid_pairs : set
+        A set of (u, v) tuples that are considered valid pairs.
+        The solver will only create edges that exist in this set.
     """
 
     # 1. Create the flat list of all "stubs" to be paired
@@ -147,18 +179,20 @@ def find_random_valid_sample_robust(node_ctr: Counter[tuple]) -> list[tuple[tupl
         for j in partner_indices:
             item2 = items[j]
 
-            # Create the list of remaining items *excluding* item1 and item2
-            # This is the list for the next recursive step.
-            remaining_items = items[1:j] + items[j + 1 :]
+            # Create a canonical pair to check against the valid set.
+            # This assumes valid_pairs also uses canonical (sorted) tuples.
+            # If not, you must check both (item1, item2) and (item2, item1).
+            canonical_pair = tuple(sorted((item1, item2)))
+            if canonical_pair not in valid_pairs:
+                continue  # This pair is invalid, try the next partner
 
-            # 5. Recurse: Try to solve for the rest of the list
+            remaining_items = items[1:j] + items[j + 1 :]
             solution_for_rest = solve(remaining_items)
 
-            # 6. Check for success
             if solution_for_rest is not None:
-                # Found a valid matching!
-                # Return the pair we just made plus the solution from recursion.
-                return [(item1, item2), *solution_for_rest]
+                # We found a valid pairing!
+                # Return the canonical pair we just made.
+                return [tuple(sorted((item1, item2))), *solution_for_rest]
 
         # If we looped through all partners and none led to a solution,
         # this path is a dead end. Backtrack.

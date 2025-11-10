@@ -10,9 +10,7 @@ from networkx import Graph
 from torchhd import VSATensor
 from tqdm.auto import tqdm
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
-from src.encoding.configs_and_constants import ZINC_SMILES_HRR_5120_G1G4_CONFIG, DSHDCConfig
+from src.encoding.configs_and_constants import DSHDCConfig
 from src.encoding.graph_encoders import (
     MAX_ALLOWED_DECODING_NODES_QM9,
     MAX_ALLOWED_DECODING_NODES_ZINC,
@@ -25,7 +23,7 @@ from src.encoding.the_types import VSAModel
 from src.normalizing_flow.models import FlowConfig, RealNVPV2Lightning
 from src.utils import registery
 from src.utils.registery import get_model_type
-from src.utils.utils import GLOBAL_BEST_MODEL_PATH, GLOBAL_DATASET_PATH, GLOBAL_MODEL_PATH, find_files
+from src.utils.utils import GLOBAL_BEST_MODEL_PATH, GLOBAL_MODEL_PATH, find_files
 
 ## For unpickling
 sys.modules["__main__"].FlowConfig = FlowConfig
@@ -80,18 +78,8 @@ class AbstractGenerator(abc.ABC):
         )
         self.vsa = self.ds_config.vsa
         self.base_dataset = self.ds_config.base_dataset
-        # Limit the node codebook so we encode only valid nodes
-        root = (
-            GLOBAL_DATASET_PATH / "ZincSmiles_bk"
-            if self.ds_config == ZINC_SMILES_HRR_5120_G1G4_CONFIG
-            else GLOBAL_DATASET_PATH / "ZincSmiles"
-        )
-        ds = QM9Smiles(split="train") if self.base_dataset == "qm9" else ZincSmiles(root=root, split="train")
-        nodes_set = set(map(tuple, ds.x.long().tolist()))
-        self.hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
-        self.hypernet.normalize = self.ds_config.normalize
-        self.hypernet.decoding_limit_for = self.base_dataset
         self.hypernet.base_dataset = self.base_dataset
+        self.hypernet.normalize = self.ds_config.normalize
 
     def get_raw_samples(self, n_samples: int = 16) -> dict:
         return self.gen_model.sample_split(n_samples)

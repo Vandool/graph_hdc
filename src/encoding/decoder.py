@@ -1,4 +1,5 @@
 import random
+from collections import defaultdict
 
 import networkx as nx
 
@@ -206,11 +207,92 @@ def graph_is_valid(G: nx.Graph) -> bool:
     return nx.is_connected(G) and nx.number_of_selfloops(G) == 0
 
 
+def has_valid_ring_structure(G, processed_histogram, single_ring_atom_types):
+    """
+    The definitive, optimized filter function.
+
+    Checks all constraints:
+    1. IsInRing flag (Acyclic vs. Cyclic)
+    2. Ring Histogram (Allowed ring sizes)
+    3. Single Ring Atoms (Node must be in *exactly* 1 ring)
+
+    Optimized for the fastest possible rejection.
+    """
+    # --- 1. Find Cycles (The expensive part) ---
+    try:
+        all_cycles = list(nx.cycle_basis(G))
+    except Exception:
+        return False  # Failsafe for rare graph errors
+
+    if len(all_cycles) == 0:
+        return True
+
+    # --- 2. Pre-collect node constraints in one pass (Fast O(N)) ---
+    nodes_must_be_acyclic = set()
+    nodes_must_be_single_ring = set()
+    nodes_must_be_in_ring = set()  # General "IsInRing == 1" set
+    attr = "feat" if "feat" in G.nodes[next(iter(G.nodes))] else "type"
+    for node_id, attrs in G.nodes(data=True):
+        node_type = attrs[attr].to_tuple() if attr == "feat" else attrs[attr]
+
+        if node_type[4] == 0:  # IsInRing == 0
+            nodes_must_be_acyclic.add(node_id)
+        else:  # IsInRing == 1
+            nodes_must_be_in_ring.add(node_id)
+            # Check the new, powerful constraint
+            if node_type in single_ring_atom_types:
+                nodes_must_be_single_ring.add(node_id)
+
+    # --- 3. Build Cycle Maps (Fast O(NumCycles * AvgCycleLen)) ---
+    node_to_ring_lengths = defaultdict(set)
+    node_to_cycle_count = defaultdict(int)
+
+    for cycle in all_cycles:
+        cycle_len = len(cycle)
+        for node_id in cycle:
+            # --- EARLY OUT 1 (Acyclic Violation) ---
+            # This is the fastest check. A node that *must* be
+            # acyclic was found in a cycle.
+            if node_id in nodes_must_be_acyclic:
+                return False
+
+            node_to_ring_lengths[node_id].add(cycle_len)
+            node_to_cycle_count[node_id] += 1
+
+    # --- 4. Final Constraint Checks (Fast O(N)) ---
+    # We now check all nodes that *should* be in a ring.
+
+    for node_id in nodes_must_be_in_ring:
+        # --- EARLY OUT 2 (Ring Node Violation) ---
+        # The node should be in a ring, but wasn't found in any cycle.
+        if node_id not in node_to_cycle_count:
+            return False
+
+            # --- EARLY OUT 3 (Single Ring Violation) ---
+        # The node *must* be in a single ring, but it's in 0 or >1.
+        if node_id in nodes_must_be_single_ring and node_to_cycle_count[node_id] != 1:
+            return False
+
+            # --- EARLY OUT 4 (Ring Size Violation) ---
+        # The node is in rings. Are they the right sizes?
+        actual_sizes = node_to_ring_lengths[node_id]
+        node_type = G.nodes[node_id][attr].to_tuple() if attr == "feat" else G.nodes[node_id][attr]
+        allowed_sizes = set(processed_histogram[node_type].keys())
+
+        if not actual_sizes.issubset(allowed_sizes):
+            return False
+
+    # If we survive all checks, the graph is 100% valid.
+    return True
+
+
 def try_find_isomorphic_graph(
     matching_components: dict,
     id_to_type: dict,
     *,
     max_samples: int = 200000,
+    ring_histogram: dict | None = None,
+    single_ring_atom_types: set | None = None,
 ) -> list[nx.Graph]:
     """
     Generate valid molecular graphs by sampling random matchings.
@@ -242,6 +324,7 @@ def try_find_isomorphic_graph(
     - This function does not guarantee finding any specific target graph
     - The search stops after max_samples attempts regardless of success
     - All returned graphs have node attribute 'type' containing feature tuples
+    :param dataset_info:
     """
     max_attempts = 10 * max_samples
     valid_graphs_found = []
@@ -250,7 +333,9 @@ def try_find_isomorphic_graph(
     for _ in range(max_attempts):
         G = draw_random_graph_from_sampling_structure(matching_components, id_to_type)
 
-        if graph_is_valid(G):
+        if graph_is_valid(G) and (
+            not ring_histogram or has_valid_ring_structure(G, ring_histogram, single_ring_atom_types)
+        ):
             valid_graphs_found.append(G)
 
         # Check exit condition

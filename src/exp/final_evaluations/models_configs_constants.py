@@ -12,9 +12,9 @@ GENERATOR_REGISTRY = {
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
-        "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
+        # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
         "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000343816_wd3e-6_bs160_smf7_smi2.5_smw17_an",
-        "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000640292_wd3e-6_bs192_smf7_smi2.5_smw17_an",
+        # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000640292_wd3e-6_bs192_smf7_smi2.5_smw17_an",
     ],
     SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4: [
         "nvp_ZincSmilesHRR2048F645G1NG4_f10_hid2048_lr0.000119405_wd0.0005_bs128_smf7_smi2.5_smw17_an",
@@ -70,6 +70,7 @@ DECODER_SETTINGS = {
         "top_k": 10,
         "sim_eps": 0.0001,
         "early_stopping": True,
+        "prefer_smaller_corrective_edits": False,
         "fallback_decoder_settings": {
             "initial_limit": 2048,
             "limit": 1024,
@@ -86,10 +87,11 @@ DECODER_SETTINGS = {
         "top_k": 10,
         "sim_eps": 0.0001,
         "early_stopping": True,
+        "prefer_smaller_corrective_edits": False,
         "fallback_decoder_settings": {
-            "initial_limit": 1024,
-            "limit": 64,
-            "beam_size": 32,
+            "initial_limit": 2048,
+            "limit": 128,
+            "beam_size": 64,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
