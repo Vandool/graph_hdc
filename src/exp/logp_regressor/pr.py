@@ -478,9 +478,9 @@ def run_experiment(cfg: Config, trial: optuna.Trial | None = None):
 
 def get_cfg(trial: optuna.Trial, dataset: SupportedDataset, target_property: str = "logp"):
     """Build configuration from Optuna trial."""
-    if dataset.default_cfg.base_dataset == "qm9":
-        h1_min, h1_max = 512, 1536
-        h2_min, h2_max = 128, 1024
+    if dataset == SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3:
+        h1_min, h1_max = 256, 512
+        h2_min, h2_max = 128, 256
     elif dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
         h1_min, h1_max = 512, 1024
         h2_min, h2_max = 256, 512
@@ -488,14 +488,14 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset, target_property: str
         h1_min, h1_max = 1024, 2048
         h2_min, h2_max = 512, 1024
 
-    h3_min, h3_max = 64, 512
-    h4_min, h4_max = 32, 256
+    h3_min, h3_max = 64, 128
+    h4_min, h4_max = 32, 64
 
     # Suggest all parameters
     cfg_dict = {
         "batch_size": trial.suggest_int("batch_size", 32, 512, step=32),
         "lr": trial.suggest_float("lr", 5e-5, 1e-3, log=True),
-        "weight_decay": trial.suggest_categorical("weight_decay", [0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
+        "weight_decay": trial.suggest_float("weight_decay", 1e-6, 5e-4, log=True),
         "depth": trial.suggest_categorical("depth", [2, 3, 4]),
         "h1": trial.suggest_int("h1", h1_min, h1_max, step=256),
         "h2": trial.suggest_int("h2", h2_min, h2_max, step=128),
@@ -528,7 +528,7 @@ def get_cfg(trial: optuna.Trial, dataset: SupportedDataset, target_property: str
     pr_cfg.hidden_dims = hidden_dims
     pr_cfg.dataset = dataset
     pr_cfg.hv_dim = dataset.default_cfg.hv_dim
-    pr_cfg.target_property = target_property  # NEW: Set target property
+    pr_cfg.target_property = target_property
     pr_cfg.exp_dir_name = make_run_folder_name(cfg_dict, prefix=f"pr_{target_property}_{dataset.default_cfg.name}")
 
     return pr_cfg

@@ -71,7 +71,7 @@ case "$CLUSTER" in
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'gpu_h100|48:00:00|64G\ngpu_a100_il|48:00:00|64G\ngpu_h100_il|48:00:00|64G'
+    TUPLES=$'gpu_h100|24:00:00|64G\ngpu_h100_il|24:00:00|64G'
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"

@@ -39,10 +39,7 @@ def get_space_for_dataset(dataset: SupportedDataset) -> dict:
     """
     # Get ranges from pr.py logic (single source of truth)
 
-    if dataset.default_cfg.base_dataset == "qm9":
-        h1_min, h1_max = 512, 1536
-        h2_min, h2_max = 128, 1024
-    elif dataset == SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3:
+    if dataset == SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3:
         h1_min, h1_max = 256, 512
         h2_min, h2_max = 128, 256
     elif dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
@@ -58,7 +55,7 @@ def get_space_for_dataset(dataset: SupportedDataset) -> dict:
     return {
         "batch_size": optuna.distributions.IntDistribution(32, 512, step=32),
         "lr": optuna.distributions.FloatDistribution(5e-5, 1e-3, log=True),
-        "weight_decay": optuna.distributions.CategoricalDistribution([0.0, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]),
+        "weight_decay": optuna.distributions.FloatDistribution(1e-6, 5e-4, log=True),
         "depth": optuna.distributions.CategoricalDistribution([2, 3, 4]),
         "h1": optuna.distributions.IntDistribution(h1_min, h1_max, step=256),
         "h2": optuna.distributions.IntDistribution(h2_min, h2_max, step=128),
