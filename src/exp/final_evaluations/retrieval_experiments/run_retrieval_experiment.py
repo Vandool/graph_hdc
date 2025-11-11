@@ -13,7 +13,6 @@ Metrics:
 
 Usage:
     python run_retrieval_experiment.py --vsa HRR --hv_dim 1024 --depth 3 --dataset qm9
-    python run_retrieval_experiment.py --vsa MAP --hv_dim 2048 --depth 4 --dataset zinc --iter_budget 10
 """
 
 import argparse
@@ -44,7 +43,7 @@ from src.encoding.configs_and_constants import (
 )
 from src.encoding.graph_encoders import HyperNet
 from src.encoding.the_types import VSAModel
-from src.utils.utils import DataTransformer
+from src.utils.utils import DataTransformer, pick_device
 
 seed_everything(seed=42)
 
@@ -189,6 +188,7 @@ def run_single_experiment(
     n_samples: int = 1000,
     output_dir: Path | None = None,
     early_stopping: bool = False,
+    decoder: str = "pattern_matching",
 ) -> dict:
     """
     Run a single retrieval experiment.
@@ -196,7 +196,7 @@ def run_single_experiment(
     Parameters
     ----------
     vsa_model : str
-        VSA model name ("HRR" or "MAP")
+        VSA model name ("HRR")
     hv_dim : int
         Hypervector dimension
     depth : int
@@ -235,12 +235,9 @@ def run_single_experiment(
         depth=depth,
         use_explain_away=True,
         use_edge_codebook=True,
-    )
+    ).eval()
     hypernet.eval()
-    hypernet.decoding_limit_for = config.base_dataset
-
-    nodes_set = set(map(tuple, dataset.x.long().tolist()))
-    hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
+    hypernet.base_dataset = config.base_dataset
 
     # Stratified sampling based on molecular size (number of atoms)
     dataset_size = len(dataset)
@@ -253,31 +250,26 @@ def run_single_experiment(
         sizes = np.array([dataset[idx].num_nodes for idx in tqdm(range(dataset_size), desc="Analyzing dataset")])
 
         # Create stratification bins based on quartiles
-        bin_labels = pd.qcut(sizes, q=4, labels=False, duplicates='drop')
+        bin_labels = pd.qcut(sizes, q=4, labels=False, duplicates="drop")
 
         # Display stratification statistics
         unique_bins, bin_counts = np.unique(bin_labels, return_counts=True)
         print(f"Stratification: {len(unique_bins)} bins")
-        for bin_id, count in zip(unique_bins, bin_counts):
+        for bin_id, count in zip(unique_bins, bin_counts, strict=False):
             bin_mask = bin_labels == bin_id
             bin_size_range = (sizes[bin_mask].min(), sizes[bin_mask].max())
             print(f"  Bin {bin_id}: {count} molecules, size range: {bin_size_range[0]}-{bin_size_range[1]} atoms")
 
         # Stratified sampling using sklearn
         all_indices = np.arange(dataset_size)
-        sample_indices, _ = train_test_split(
-            all_indices,
-            train_size=n_samples,
-            stratify=bin_labels,
-            random_state=42
-        )
+        sample_indices, _ = train_test_split(all_indices, train_size=n_samples, stratify=bin_labels, random_state=42)
         sample_indices = sample_indices.tolist()
 
         # Verify stratification
         sampled_bins = bin_labels[sample_indices]
         unique_sampled, sampled_counts = np.unique(sampled_bins, return_counts=True)
         print(f"\nSampled {len(sample_indices)} molecules:")
-        for bin_id, count in zip(unique_sampled, sampled_counts):
+        for bin_id, count in zip(unique_sampled, sampled_counts, strict=False):
             print(f"  Bin {bin_id}: {count} molecules")
 
     print(f"\nFinal sample: {len(sample_indices)} molecules from {dataset_size} total")
@@ -286,16 +278,50 @@ def run_single_experiment(
     sampled_dataset = Subset(dataset, sample_indices)
 
     # Move to GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = pick_device()
     hypernet = hypernet.to(device)
 
-    # Decoder settings
-    decoder_settings = {
-        "iteration_budget": iteration_budget,
-        "max_graphs_per_iter": 1024,
-        "top_k": 1,  # We only need the best match
-        "sim_eps": 0.0001,
-        "early_stopping": early_stopping,
+    DECODER_SETTINGS = {
+        "qm9": {
+            "iteration_budget": iteration_budget,
+            "max_graphs_per_iter": 1024,
+            "top_k": 10,
+            "sim_eps": 0.0001,
+            "early_stopping": True,
+            "prefer_smaller_corrective_edits": False,
+            "fallback_decoder_settings": {
+                "initial_limit": 2048,
+                "limit": 1024,
+                "beam_size": 1024,
+                "pruning_method": "cos_sim",
+                "use_size_aware_pruning": True,
+                "use_one_initial_population": False,
+                "use_g3_instead_of_h3": False,
+                "validate_ring_structure": False,
+                "use_modified_graph_embedding": False,
+                "random_sample_ratio": 0.0,
+            },
+        },
+        "zinc": {
+            "iteration_budget": iteration_budget,
+            "max_graphs_per_iter": 512,
+            "top_k": 10,
+            "sim_eps": 0.0001,
+            "early_stopping": True,
+            "prefer_smaller_corrective_edits": False,
+            "fallback_decoder_settings": {
+                "initial_limit": 2048,
+                "limit": 256,
+                "beam_size": 96,  # choices 32, 64, 96
+                "pruning_method": "cos_sim",
+                "use_size_aware_pruning": True,
+                "use_one_initial_population": False,
+                "use_g3_instead_of_h3": False,
+                "validate_ring_structure": False,
+                "use_modified_graph_embedding": False,
+                "random_sample_ratio": 0.0,
+            },
+        },
     }
 
     # Phase 1: Batch Encoding
@@ -388,11 +414,22 @@ def run_single_experiment(
         # Phase 3: Full Graph Decoding
         start_time = time.time()
         with torch.no_grad():
-            decoding_result = hypernet.decode_graph(
-                edge_term=edge_term,
-                graph_term=graph_term,
-                decoder_settings=decoder_settings,
-            )
+            if decoder == "pattern_matching":
+                decoding_result = hypernet.decode_graph(
+                    edge_term=edge_term,
+                    graph_term=graph_term,
+                    decoder_settings=DECODER_SETTINGS.get(config.base_dataset),
+                )
+            else:
+                decoding_result = hypernet._fallback_greedy(
+                    edge_term=edge_term,
+                    graph_term=graph_term,
+                    fallback_decoder_settings=DECODER_SETTINGS.get(config.base_dataset).get(
+                        "fallback_decoder_settings"
+                    ),
+                    top_k=1,
+                )
+
         graph_decoding_time = time.time() - start_time
         graph_decoding_times.append(graph_decoding_time)
 
@@ -440,6 +477,7 @@ def run_single_experiment(
         "iteration_budget": iteration_budget,
         "early_stopping": early_stopping,
         "n_samples": len(sample_indices),
+        "decoder": decoder,
         # Accuracies
         "edge_accuracy_mean": np.mean(edge_accuracies),
         "edge_accuracy_std": np.std(edge_accuracies),
@@ -480,6 +518,7 @@ def run_single_experiment(
         # Save detailed results
         detailed_results = pd.DataFrame(
             {
+                "decoder": decoder,
                 "num_nodes": num_nodes_list,
                 "edge_accuracy": edge_accuracies,
                 "graph_accuracy": graph_accuracies,
@@ -523,14 +562,21 @@ def run_single_experiment(
 
 def main():
     parser = argparse.ArgumentParser(description="Run retrieval experiment")
-    parser.add_argument("--vsa", type=str, default="MAP", choices=["HRR", "MAP"], help="VSA model (default: HRR)")
-    parser.add_argument("--hv_dim", type=int, default=1600, help="Hypervector dimension (default: 1600 for QM9)")
+    parser.add_argument("--vsa", type=str, default="HRR", choices=["HRR"], help="VSA model (default: HRR)")
+    parser.add_argument("--hv_dim", type=int, default=256, help="Hypervector dimension (default: 1600 for QM9)")
     parser.add_argument("--depth", type=int, default=3, help="Message passing depth (default: 3)")
     parser.add_argument(
         "--dataset", type=str, default="qm9", choices=["qm9", "zinc"], help="Dataset name (default: qm9)"
     )
     parser.add_argument("--iter_budget", type=int, default=1, help="Iteration budget for decoding (default: 1)")
     parser.add_argument("--n_samples", type=int, default=10, help="Number of samples to evaluate (default: 10)")
+    parser.add_argument(
+        "--decoder",
+        type=str,
+        default="pattern_matching",
+        choices=["pattern_matching", "greedy"],
+        help="Decoder type (default: pattern_matching)",
+    )
     parser.add_argument(
         "--early_stopping",
         action="store_true",
@@ -552,6 +598,7 @@ def main():
         n_samples=args.n_samples,
         output_dir=output_dir,
         early_stopping=args.early_stopping,
+        decoder=args.decoder,
     )
 
     # Append to summary CSV

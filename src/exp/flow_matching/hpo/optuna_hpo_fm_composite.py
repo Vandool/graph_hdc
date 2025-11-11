@@ -192,6 +192,7 @@ if __name__ == "__main__":
     def objective(trial: optuna.Trial) -> tuple[float, float]:
         try:
             min_mse, incorrect_pct = base_objective(trial, dataset=ds, norms_per=args.norm_per)
+            print(f"Trial {trial.number} completed: MSE={min_mse}, Incorrect%={incorrect_pct}")
 
             # Check for NaN/inf from a successful but diverged run
             if not math.isfinite(min_mse) or not math.isfinite(incorrect_pct):
