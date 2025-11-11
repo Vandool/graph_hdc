@@ -200,9 +200,9 @@ if __name__ == "__main__":
                 return float("inf"), float("inf")
 
             # Find the most recent metrics file (just created by the training run)
-            # Training script saves to: src/exp/real_nvp_hpo/results/real_nvp_composite/{exp_dir_name}/evaluations/hpo_metrics.json
+            # Training script saves to: src/exp/real_nvp_hpo/results/fm_composite/{exp_dir_name}/evaluations/hpo_metrics.json
             training_script_dir = here.parent  # Go up from hpo/ to real_nvp_hpo/
-            results_dir = training_script_dir / "results" / "real_nvp_composite"
+            results_dir = training_script_dir / "results" / "fm_composite"
 
             # Find all hpo_metrics.json files and get the most recent one
             metrics_files = list(results_dir.glob("*/evaluations/hpo_metrics.json"))
