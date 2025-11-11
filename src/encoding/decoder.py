@@ -186,8 +186,7 @@ def draw_random_graph_from_sampling_structure(matching_components: dict, id_to_t
     The sampling may be biased towards certain graph structures.
     """
     random_matching = draw_random_matching(matching_components)
-    G = compute_graph_from_matching(random_matching, id_to_type)
-    return G
+    return compute_graph_from_matching(random_matching, id_to_type)
 
 
 def graph_is_valid(G: nx.Graph) -> bool:
@@ -330,12 +329,16 @@ def try_find_isomorphic_graph(
     valid_graphs_found = []
 
     # Iterate using the pbar variable
-    for _ in range(max_attempts):
+    reported = False
+    for i in range(max_attempts):
         G = draw_random_graph_from_sampling_structure(matching_components, id_to_type)
 
         if graph_is_valid(G) and (
             not ring_histogram or has_valid_ring_structure(G, ring_histogram, single_ring_atom_types)
         ):
+            if not reported:
+                print(f"Found a graph at attempt #{i}")
+                reported = True
             valid_graphs_found.append(G)
 
         # Check exit condition

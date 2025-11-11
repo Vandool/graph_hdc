@@ -3,17 +3,25 @@ from pathlib import Path
 from src.encoding.configs_and_constants import BaseDataset, SupportedDataset
 from src.utils.utils import GLOBAL_BEST_MODEL_PATH, find_files
 
-# Models ordered by performance
+# Models ordered by generative performance
 GENERATOR_REGISTRY = {
     SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3: [
         "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
         "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.000183872_wd0.000202358_bs96_hid1792_nhl4_np1_smf6.5_smi2.2_smw16_an",
     ],
     SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3: [
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an",
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
+    ],
+    SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4: [
+        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
+        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
+        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000531954_wd0.000587484_bs192_hid1280_nhl2_np1_smf7_smi2.5_smw17_an",
+        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
         # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",

@@ -6,8 +6,9 @@ from pathlib import Path
 import normflows as nf
 import pytorch_lightning as pl
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
+from src.encoding.configs_and_constants import SupportedDataset
 from src.encoding.the_types import VSAModel
 from src.utils.registery import register_model
 
@@ -336,16 +337,16 @@ def _cast_to_dtype(x, dtype):
 
 
 @register_model("NVP-V3")
-class RealNVPV3Lightning(RealNVPV2Lightning): # Inherit all helpers
+class RealNVPV3Lightning(RealNVPV2Lightning):  # Inherit all helpers
     def __init__(self, cfg):
         # Call AbstractNFModel init, skipping V2's init
         AbstractNFModel.__init__(self, cfg)
 
-        D = int(cfg.hv_dim) # This is 256
+        D = int(cfg.hv_dim)  # This is 256
         self.D = D
         dim_multiplier = 2 if not hasattr(cfg, "hv_count") else cfg.hv_count
         self.hv_count = dim_multiplier
-        self.flat_dim = dim_multiplier * D # This is 512
+        self.flat_dim = dim_multiplier * D  # This is 512
 
         default = torch.get_default_dtype()
 
@@ -365,7 +366,7 @@ class RealNVPV3Lightning(RealNVPV2Lightning): # Inherit all helpers
         # --- Buffers ---
         self.register_buffer("mu", torch.zeros(self.flat_dim, dtype=default))
         self.register_buffer("log_sigma", torch.zeros(self.flat_dim, dtype=default))
-        self.per_term_standardization = getattr(cfg, 'per_term_standardization', False)
+        self.per_term_standardization = getattr(cfg, "per_term_standardization", False)
         self._per_term_split = None
 
         self.s_modules = []  # To hold BoundedMLP modules for warmup
@@ -390,7 +391,6 @@ class RealNVPV3Lightning(RealNVPV2Lightning): # Inherit all helpers
         # Output: self.flat_dim (512)
         mlp_layers = [self.flat_dim] + [hidden_dim] * num_hidden_layers + [self.flat_dim]
 
-
         # --- V3 (Real NVP) Flow Loop ---
         for i in range(int(cfg.num_flows)):
             smax = getattr(cfg, "smax_final", 6)
@@ -399,7 +399,7 @@ class RealNVPV3Lightning(RealNVPV2Lightning): # Inherit all helpers
             t_net = nf.nets.MLP(mlp_layers.copy(), init_zeros=True)
             s_net = BoundedMLP(mlp_layers.copy(), smax=smax)
 
-            self.s_modules.append(s_net) # Add for smax warmup
+            self.s_modules.append(s_net)  # Add for smax warmup
 
             # Alternate the SEMANTIC mask
             mask = self.mask_a if i % 2 == 0 else self.mask_b
@@ -407,7 +407,288 @@ class RealNVPV3Lightning(RealNVPV2Lightning): # Inherit all helpers
             # Use the SAME class as NVP-V2
             flows.append(nf.flows.MaskedAffineFlow(mask, t=t_net, s=s_net))
 
-
         # --- Base Distribution ---
         base = nf.distributions.DiagGaussian(self.flat_dim, trainable=False)
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
+
+
+# Flow mathing -------------------------------------------------------------------------------------------------------
+class SinusoidalPosEmb(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, t):
+        # t is shape (B,)
+        device = t.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = t[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
+
+# --- The Core Velocity Network ---
+# This is the "MLP" that Flow Matching trains.
+# It predicts the vector field v(z_t, t, e)
+class VelocityNet(nn.Module):
+    def __init__(
+        self,
+        data_dim: int,  # Dimension of flat (e+g), e.g., 512
+        hidden_dim: int,  # HPO param, e.g., 1024
+        num_hidden_layers: int,  # HPO param, e.g., 4
+        time_emb_dim: int = 64,  # HPO param, e.g., 64
+    ):
+        super().__init__()
+
+        self.time_embedder = nn.Sequential(
+            SinusoidalPosEmb(time_emb_dim), nn.Linear(time_emb_dim, time_emb_dim), nn.SiLU()
+        )
+
+        # Input is the flat data + time
+        input_dim = data_dim + time_emb_dim
+        output_dim = data_dim  # It predicts velocity for the flat vector
+
+        mlp_layers = [input_dim] + [hidden_dim] * num_hidden_layers + [output_dim]
+
+        self.net = nf.nets.MLP(mlp_layers)
+
+    def forward(self, z_t: Tensor, t: Tensor) -> Tensor:
+        """
+        Inputs:
+          z_t:    The noisy flat vector at time t. Shape (B, data_dim)
+          t:      The time step. Shape (B,)
+        Output:
+          v_pred: The predicted velocity. Shape (B, data_dim)
+        """
+        t_emb = self.time_embedder(t)  # (B, time_emb_dim)
+        net_input = torch.cat([z_t, t_emb], dim=-1)  # (B, data_dim + time_emb_dim)
+        v_pred = self.net(net_input)
+        return v_pred
+
+
+@dataclass
+class FMConfig:
+    exp_dir_name: str = None
+    seed: int = 42
+    epochs: int = 800  # FM can take longer, 800 is a good default
+    batch_size: int = 256  # MSE loss is stable, can often use larger BS
+    lr: float = 3e-4
+    weight_decay: float = 1e-5
+    device: str = "cuda"
+
+    hv_dim: int = 256  # This is D_edge and D_graph
+    hv_count: int = 2  # (edge_terms, graph_terms)
+    vsa: VSAModel = VSAModel.HRR
+
+    dataset: SupportedDataset = SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4
+
+    # --- New HPO Params ---
+    hidden_dim: int = 1024
+    num_hidden_layers: int = 4
+    time_emb_dim: int = 64
+
+    per_term_standardization: bool = True
+
+
+# --- The PyTorch Lightning Model ---
+@register_model("FM")
+class FlowMatchingLightning(AbstractNFModel):  # Inherit from your base class
+    def __init__(self, cfg):
+        super().__init__(cfg)  # This calls self.save_hyperparameters()
+
+        self.D = int(getattr(cfg, "hv_dim", 256))
+        self.hv_count = int(getattr(cfg, "hv_count", 2))
+        self.flat_dim = self.hv_count * self.D  # 512
+
+        self.model = VelocityNet(
+            data_dim=self.flat_dim,
+            hidden_dim=int(getattr(cfg, "hidden_dim", 1024)),
+            num_hidden_layers=int(getattr(cfg, "num_hidden_layers", 4)),
+            time_emb_dim=int(getattr(cfg, "time_emb_dim", 64)),
+        )
+
+        self.loss_fn = nn.MSELoss()
+
+        # --- Setup standardization (from V2) ---
+        default = torch.get_default_dtype()
+        self.register_buffer("mu", torch.zeros(self.flat_dim, dtype=default))
+        self.register_buffer("log_sigma", torch.zeros(self.flat_dim, dtype=default))
+        self.per_term_standardization = getattr(cfg, "per_term_standardization", True)
+        self._per_term_split = None  # Will be set by trainer
+
+    def _flat_from_batch(self, batch) -> torch.Tensor:
+        # This method is now inherited from AbstractNFModel, but if it weren't,
+        # you'd need the same one from V2.
+        D = self.D
+        B = batch.num_graphs
+        e, g = batch.edge_terms, batch.graph_terms
+        e = e.view(B, D)
+        g = g.view(B, D)
+        return torch.cat([e, g], dim=-1)
+
+    def training_step(self, batch, batch_idx):
+        flat_raw = self._flat_from_batch(batch)
+        B = flat_raw.shape[0]
+
+        # Standardize the target data
+        flat_std, _ = self._pretransform(flat_raw)
+
+        # 1. Sample noise (z0)
+        z0_noise = torch.randn_like(flat_std)
+
+        # 2. Sample time t ~ U[0, 1]
+        t = torch.rand(B, 1, device=self.device) * (1.0 - 1e-4) + 1e-4
+
+        # 3. Create the OT path *in the standardized space*
+        z_t = (1 - t) * z0_noise + t * flat_std
+
+        # 4. Define the target velocity *in the standardized space*
+        u_t_target = flat_std - z0_noise
+
+        # 5. Predict velocity
+        v_t_pred = self.model(z_t, t.squeeze(-1))
+
+        # 6. Compute loss
+        loss = self.loss_fn(v_t_pred, u_t_target)
+
+        self.log(
+            "train_loss", float(loss.detach().cpu().item()), on_step=True, on_epoch=True, prog_bar=True, batch_size=B
+        )
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        flat_raw = self._flat_from_batch(batch)
+        B = flat_raw.shape[0]
+
+        flat_std, _ = self._pretransform(flat_raw)
+
+        z0_noise = torch.randn_like(flat_std)
+        t = torch.rand(B, 1, device=self.device) * (1.0 - 1e-4) + 1e-4
+        z_t = (1 - t) * z0_noise + t * flat_std
+        u_t_target = flat_std - z0_noise
+        v_t_pred = self.model(z_t, t.squeeze(-1))
+
+        loss = self.loss_fn(v_t_pred, u_t_target)
+
+        self.log("val_loss", float(loss.detach().cpu().item()), on_epoch=True, prog_bar=True, batch_size=B)
+        return loss
+
+    @torch.no_grad()
+    def sample(self, num_samples: int, n_steps: int = 100) -> Tensor:
+        """
+        Generate flat_raw data.
+        """
+        B = num_samples
+        dt = 1.0 / n_steps
+
+        # Start from pure noise at t=0
+        z = torch.randn(B, self.flat_dim, device=self.device)
+
+        # Solve from t=0 to t=1
+        for i in range(n_steps):
+            t_now = i * dt
+            t_vec = torch.ones(B, device=self.device) * t_now
+
+            # Predict velocity
+            v = self.model(z, t_vec)
+
+            # Euler step: z_{i+1} = z_i + v * dt
+            z = z + v * dt
+
+        # z is now flat_std at t=1
+        flat_std = z
+
+        # De-standardize the result
+        flat_raw = self._posttransform(flat_std)
+
+        return flat_raw
+
+    @torch.no_grad()
+    def sample_split(self, num_samples: int) -> dict:
+        """
+        This is the new method your evaluation script needs.
+        """
+        flat_raw = self.sample(num_samples)
+
+        # Use the split method from the parent class
+        edge_terms, graph_terms = self.split(flat_raw)
+
+        return {
+            "edge_terms": edge_terms,
+            "graph_terms": graph_terms,
+            "logs": None,  # No log-det to return
+        }
+
+    # --- Methods for standardization (must be in this class) ---
+
+    def set_standardization(self, mu, sigma, eps=1e-6):
+        tgt_dtype = self.mu.dtype
+        mu = torch.as_tensor(mu, dtype=tgt_dtype, device=self.device)
+        sigma = torch.as_tensor(sigma, dtype=tgt_dtype, device=self.device)
+        self.mu.copy_(mu)
+        self.log_sigma.copy_(torch.log(torch.clamp(sigma, min=eps)))
+
+    def _pretransform(self, x):
+        if self.per_term_standardization and self._per_term_split is not None:
+            split = self._per_term_split
+            edge = x[..., :split]
+            graph = x[..., split:]
+            mu_edge = self.mu[:split]
+            mu_graph = self.mu[split:]
+            log_sigma_edge = self.log_sigma[:split]
+            log_sigma_graph = self.log_sigma[split:]
+            z_edge = (edge - mu_edge) * torch.exp(-log_sigma_edge)
+            z_graph = (graph - mu_graph) * torch.exp(-log_sigma_graph)
+            z = torch.cat([z_edge, z_graph], dim=-1)
+        else:
+            z = (x - self.mu) * torch.exp(-self.log_sigma)
+        return z, 0.0  # Return 0 for log_det
+
+    def _posttransform(self, z):
+        if self.per_term_standardization and self._per_term_split is not None:
+            split = self._per_term_split
+            z_edge = z[..., :split]
+            z_graph = z[..., split:]
+            mu_edge = self.mu[:split]
+            mu_graph = self.mu[split:]
+            log_sigma_edge = self.log_sigma[:split]
+            log_sigma_graph = self.log_sigma[split:]
+            edge = mu_edge + z_edge * torch.exp(log_sigma_edge)
+            graph = mu_graph + z_graph * torch.exp(log_sigma_graph)
+            return torch.cat([edge, graph], dim=-1)
+        return self.mu + z * torch.exp(self.log_sigma)
+
+    # --- Inherit optimizer and other helpers ---
+    def configure_optimizers(self):
+        # This is copied from your V2 and is a great scheduler
+        opt = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.cfg.lr,
+            weight_decay=self.cfg.weight_decay,
+            foreach=True,
+        )
+        steps_per_epoch = max(
+            1, getattr(self.trainer, "estimated_stepping_batches", 1000) // max(1, self.trainer.max_epochs)
+        )
+        warmup = int(0.05 * self.trainer.max_epochs) * steps_per_epoch
+        total = self.trainer.max_epochs * steps_per_epoch
+        sched = torch.optim.lr_scheduler.LambdaLR(
+            opt,
+            lambda step: min(1.0, step / max(1, warmup))
+            * 0.5
+            * (1 + math.cos(math.pi * max(0, step - warmup) / max(1, total - warmup))),
+        )
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
+
+    # --- Other helpers from V2 ---
+    def on_fit_start(self):
+        with contextlib.suppress(Exception):
+            torch.set_float32_matmul_precision("high")
+
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        return batch.to(device)
+
+    def on_after_batch_transfer(self, batch, dataloader_idx: int):
+        return _cast_to_dtype(batch, self.dtype)

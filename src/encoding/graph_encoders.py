@@ -26,7 +26,7 @@ from src.encoding.configs_and_constants import (
     IndexRange,
 )
 from src.encoding.correction_utilities import CorrectionResult, get_corrected_sets, get_node_counter, target_reached
-from src.encoding.decoder import compute_sampling_structure, has_valid_ring_structure, try_find_isomorphic_graph
+from src.encoding.decoder import compute_sampling_structure, try_find_isomorphic_graph
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -547,8 +547,8 @@ class HyperNet(AbstractGraphEncoder):
         # ~ mapping node & graph properties as hyper-vectors
         # The "encoder_properties" method will actually manage the encoding of the node and graph properties of
         # the graph (as represented by the Data object) into representative
-        # Afterwards, the data object contains the additional properties "data.node_hv" and "data.graph_hv"
-        # which represent the encoded hyper-vectors for the individual nodes or for the overall graphs respectively.
+        # Afterwards, the data object contains the additional properties "data.node_hv"
+        # which represent the encoded hyper-vectors for the individual nodes
         data = self.encode_properties(data)
 
         # ~ handling edge bi-directionality
@@ -1249,7 +1249,7 @@ class HyperNet(AbstractGraphEncoder):
                     continue
 
                 # Choose the first N anchors to expand on
-                lowest_degree_ancrs = sorted(ancrs, key=lambda n: residual_degree(G, n))
+                lowest_degree_ancrs = sorted(ancrs, key=lambda n: residual_degree(G, n))[:1]
 
                 # Try to connect the left over nodes to the lowest degree anchors
                 for a, lo_t in list(itertools.product(lowest_degree_ancrs, leftover_types)):
@@ -1268,13 +1268,13 @@ class HyperNet(AbstractGraphEncoder):
                     if keyC in global_seen:
                         continue
 
-                    # Early pruning of bad ring structures
-                    if self.base_dataset == "zinc" and not has_valid_ring_structure(
-                        G=C,
-                        processed_histogram=self.dataset_info.ring_histogram,
-                        single_ring_atom_types=self.dataset_info.single_ring_features,
-                    ):
-                        continue
+                    # # Early pruning of bad ring structures
+                    # if self.base_dataset == "zinc" and not has_valid_ring_structure(
+                    #     G=C,
+                    #     processed_histogram=self.dataset_info.ring_histogram,
+                    #     single_ring_atom_types=self.dataset_info.single_ring_features,
+                    # ):
+                    #     continue
 
                     # self._print_and_plot(g=C, graph_terms=graph_term)
 
@@ -1330,13 +1330,13 @@ class HyperNet(AbstractGraphEncoder):
                         if keyH in global_seen:
                             continue
 
-                        # Early pruning of bad ring structures
-                        if self.base_dataset == "zinc" and not has_valid_ring_structure(
-                            G=H,
-                            processed_histogram=self.dataset_info.ring_histogram,
-                            single_ring_atom_types=self.dataset_info.single_ring_features,
-                        ):
-                            continue
+                        # # Early pruning of bad ring structures
+                        # if self.base_dataset == "zinc" and not has_valid_ring_structure(
+                        #     G=H,
+                        #     processed_histogram=self.dataset_info.ring_histogram,
+                        #     single_ring_atom_types=self.dataset_info.single_ring_features,
+                        # ):
+                        #     continue
 
                         remaining_edges_ = remaining_edges.copy()
                         for a_t, b_t in all_new_connection:
@@ -1580,8 +1580,8 @@ class HyperNet(AbstractGraphEncoder):
                 matching_components=matching_components,
                 id_to_type=id_to_type,
                 max_samples=max_graphs_per_iter,
-                ring_histogram=self.dataset_info.ring_histogram,
-                single_ring_atom_types=self.dataset_info.single_ring_features,
+                # ring_histogram=self.dataset_info.ring_histogram,
+                # single_ring_atom_types=self.dataset_info.single_ring_features,
             )
 
             if not decoded_graphs_iter:
@@ -1604,17 +1604,20 @@ class HyperNet(AbstractGraphEncoder):
             top_k_graphs.extend([(decoded_graphs_iter[top_k_indices[i]], sim) for i, sim in enumerate(top_k_sims_cpu)])
 
             # Early stopping: if we found the perfect match, or top_k number of near-perfect matches, stop iterating
+            should_break = False
             if use_early_stopping:
                 for sim in top_k_sims_cpu:
                     if sim == 1.0:
                         print("[EARLY STOPPING] One exact match found!!!")
-                        break
+                        should_break = True
                     # if abs(sim - 1.0) <= sim_eps:
                     #     top_k_in_eps_range_found += 1
 
                 # if top_k_in_eps_range_found >= top_k:
                 #     # print(f"[EARLY STOPPING] {top_k} almost exact matches found!!")
                 #     break
+            if should_break:
+                break
 
         return top_k_graphs
 
@@ -1632,10 +1635,12 @@ class HyperNet(AbstractGraphEncoder):
             matching_components=matching_components,
             id_to_type=id_to_type,
             max_samples=100,
-            ring_histogram=self.dataset_info.ring_histogram,
-            single_ring_atom_types=self.dataset_info.single_ring_features,
+            # ring_histogram=self.dataset_info.ring_histogram,
+            # single_ring_atom_types=self.dataset_info.single_ring_features,
         )
-        return len(decoded_graphs_iter) > 0
+        is_feasible = len(decoded_graphs_iter) > 0
+        print(f"Feasibility test {'passed' if is_feasible else 'NOT passed'}")
+        return is_feasible
 
     def decode_graph(
         self, edge_term: VSATensor, graph_term: VSATensor, decoder_settings: dict | None = None
@@ -1738,6 +1743,9 @@ class HyperNet(AbstractGraphEncoder):
 
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
+        if len(initial_decoded_edges) > self.decoding_limit_for:
+            print(f"Too many edges to decode: {len(initial_decoded_edges)}")
+            return DecodingResult()
 
         # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
         correction_level = CorrectionLevel.ZERO

@@ -95,8 +95,13 @@ def get_corrected_sets(
 
     corrective_sets = []
 
+    max_solutions = 20
+    max_attempts = 100
+
     removable_pairs = {tuple(sorted((u, v))) for u, v in decoded_edges_s if u <= v}
-    possible_corrective_add_sets = _find_corrective_sets(missing_ctr, removable_pairs)
+    possible_corrective_add_sets = _find_corrective_sets(
+        missing_ctr, removable_pairs, max_solutions=max_solutions, max_attempts=max_attempts
+    )
     for candidate_ctr in possible_corrective_add_sets:
         if candidate_ctr not in corrective_sets:
             corrective_sets.append(candidate_ctr)
@@ -109,7 +114,9 @@ def get_corrected_sets(
             if target_reached(new_edge_set):
                 corrected_edge_sets_add.append(new_edge_set)
 
-    corrective_remove_sets = _find_corrective_sets(extra_ctr, valid_edge_tuples)
+    corrective_remove_sets = _find_corrective_sets(
+        extra_ctr, valid_edge_tuples, max_solutions=max_solutions, max_attempts=max_attempts
+    )
     for candidate_ctr in corrective_remove_sets:
         if candidate_ctr not in corrective_sets:
             corrective_sets.append(candidate_ctr)
