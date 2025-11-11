@@ -105,7 +105,7 @@ def rebuild_study_from_csv(
                 distributions=space,
                 values=values,
                 state=optuna.trial.TrialState.COMPLETE,
-                user_attrs=user_attrs,  # <-- persist exp_dir_name into DB if present
+                user_attrs=user_attrs,
             )
             study.add_trial(t)
             added += 1
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4.value,
+        default=SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     p.add_argument("--n_trials", type=int, default=1)
@@ -225,6 +225,7 @@ if __name__ == "__main__":
                 trial.set_user_attr("n_decoded", metrics.get("n_decoded"))
                 trial.set_user_attr("decode_time_sec", metrics.get("decode_time_sec"))
                 trial.set_user_attr("decode_time_per_sample_sec", metrics.get("decode_time_per_sample_sec"))
+                trial.set_user_attr("training_time", metrics.get("training_time"))
                 trial.set_user_attr("norm_per", args.norm_per)
 
                 # Store correction level distribution

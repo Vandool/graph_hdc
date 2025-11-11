@@ -576,6 +576,7 @@ def run_experiment(cfg: FMConfig):
     )
 
     # ----- train -----
+    t_start = time.perf_counter()
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader)
 
     # ----- curves to parquet / png -----
@@ -672,45 +673,6 @@ def run_experiment(cfg: FMConfig):
 
     log(f"Decoding {n_decode} samples for {base_dataset} dataset...")
 
-    # Get decoder settings from models_configs_constants
-    DECODER_SETTINGS_ = {
-        "qm9": {
-            "iteration_budget": 1,
-            "max_graphs_per_iter": 512,
-            "top_k": 10,
-            "sim_eps": 0.0001,
-            "early_stopping": True,
-            "fallback_decoder_settings": {
-                "initial_limit": 2048,
-                "limit": 1024,
-                "beam_size": 1024,
-                "pruning_method": "cos_sim",
-                "use_size_aware_pruning": True,
-                "use_one_initial_population": False,
-                "use_g3_instead_of_h3": False,
-            },
-        },
-        "zinc": {
-            "iteration_budget": 1,
-            "max_graphs_per_iter": 512,
-            "top_k": 10,
-            "sim_eps": 0.0001,
-            "early_stopping": True,
-            "fallback_decoder_settings": {
-                "initial_limit": 1024,
-                "limit": 64,
-                "beam_size": 32,
-                "pruning_method": "cos_sim",
-                "use_size_aware_pruning": True,
-                "use_one_initial_population": False,
-                "use_g3_instead_of_h3": False,
-            },
-        },
-    }
-    decoder_settings = DECODER_SETTINGS_[base_dataset]
-
-    log(f"Using decoder settings: {decoder_settings}")
-
     # Prepare samples for decoding
     edge_decode = edge_s[:n_decode]  # We only decode this as downstream task
 
@@ -770,8 +732,8 @@ def run_experiment(cfg: FMConfig):
         "base_dataset": base_dataset,
         "decode_time_sec": float(decode_elapsed),
         "decode_time_per_sample_sec": float(decode_elapsed / n_decode),
-        "decoder_settings": decoder_settings,
         "correction_level_distribution": correction_level_dist,
+        "training_time": (time.perf_counter() - t_start) // 60,
     }
 
     metrics_file = evals_dir / "hpo_metrics.json"
