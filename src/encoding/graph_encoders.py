@@ -26,7 +26,7 @@ from src.encoding.configs_and_constants import (
     IndexRange,
 )
 from src.encoding.correction_utilities import CorrectionResult, get_corrected_sets, get_node_counter, target_reached
-from src.encoding.decoder import compute_sampling_structure, try_find_isomorphic_graph
+from src.encoding.decoder import compute_sampling_structure, has_valid_ring_structure, try_find_isomorphic_graph
 from src.encoding.feature_encoders import (
     AbstractFeatureEncoder,
     CategoricalIntegerEncoder,
@@ -302,6 +302,7 @@ class HyperNet(AbstractGraphEncoder):
         use_edge_codebook: bool = True,
     ):
         AbstractGraphEncoder.__init__(self)
+        self.validate_ring_structure: bool = False
         self.use_explain_away = use_explain_away
         self.use_edge_codebook = use_edge_codebook
         self.depth = depth
@@ -1131,6 +1132,70 @@ class HyperNet(AbstractGraphEncoder):
         instance.load_from_path(path=path)
         return instance
 
+    def encode_edge_multiset(self, edge_list: list[tuple[tuple, tuple]]) -> torch.Tensor:
+        """Encode a multiset of edges into a single hypervector (vectorized for 10-100x speedup).
+        This is used during greedy decoding with use_modified_graph_embedding to encode
+        the leftover edges (edges not yet added to a partial graph) into a hypervector
+        that can be subtracted from the target graph_term.
+
+        Parameters
+        ----------
+        edge_list : list[tuple[tuple, tuple]]
+            List of (src_node_tuple, dst_node_tuple) edges, where each node tuple
+            contains the node features (atom_type, degree, formal_charge, ...).
+            Edges are bidirectional, so typically each edge appears twice.
+
+        Returns
+        -------
+        torch.Tensor
+            Hypervector representation of the edge multiset (shape: [hv_dim]).
+            Returns zero vector if edge_list is empty. Returns VSATensor type.
+        """
+        if not edge_list:
+            return torch.zeros(self.hv_dim, device=self.device, dtype=self.dtype)
+
+        # OPTIMIZATION: Use pre-computed edges_codebook if available (fastest)
+        if self.use_edge_codebook and self.edges_codebook is not None:
+            edge_indices = []
+            for src_tuple, dst_tuple in edge_list:
+                src_idx = self.nodes_indexer.get_idx(src_tuple)
+                dst_idx = self.nodes_indexer.get_idx(dst_tuple)
+                # Edge feature index is 0 (no edge features in current datasets)
+                edge_idx = self.edges_indexer.get_idx((src_idx, dst_idx, 0))
+                edge_indices.append(edge_idx)
+
+            # Batch index into edges_codebook (preserves VSATensor type)
+            edge_indices_tensor = torch.tensor(edge_indices, dtype=torch.long, device=self.device)
+            edge_hvs = self.edges_codebook[edge_indices_tensor]  # [num_edges, D] VSATensor
+
+            # Sum all edges at once (bundle operation, preserves VSATensor type)
+            edge_term = edge_hvs.sum(dim=0)
+
+            return edge_term
+
+        # FALLBACK: Vectorized computation without edges_codebook
+        # Batch convert tuples to indices
+        src_indices = []
+        dst_indices = []
+        for src_tuple, dst_tuple in edge_list:
+            src_indices.append(self.nodes_indexer.get_idx(src_tuple))
+            dst_indices.append(self.nodes_indexer.get_idx(dst_tuple))
+
+        src_indices_tensor = torch.tensor(src_indices, dtype=torch.long, device=self.device)
+        dst_indices_tensor = torch.tensor(dst_indices, dtype=torch.long, device=self.device)
+
+        # Batch index nodes_codebook (preserves VSATensor type)
+        hv_src = self.nodes_codebook[src_indices_tensor]  # [num_edges, D] VSATensor
+        hv_dst = self.nodes_codebook[dst_indices_tensor]  # [num_edges, D] VSATensor
+
+        # Vectorized bind (VSATensor.bind() handles batch operations)
+        edge_hvs = hv_src.bind(hv_dst)  # [num_edges, D] VSATensor
+
+        # Sum all edges at once (preserves VSATensor type)
+        edge_term = edge_hvs.sum(dim=0)
+
+        return edge_term
+
     def decode_graph_greedy(
         self,
         edge_term: torch.Tensor,
@@ -1183,6 +1248,10 @@ class HyperNet(AbstractGraphEncoder):
         # print("Using Greedy Decoder")
         if decoder_settings is None:
             decoder_settings = {}
+        validate_ring_structure = decoder_settings.get("validate_ring_structure", False)
+        random_sample_ratio = decoder_settings.get("random_sample_ratio", 0.0)
+        use_modified_graph_embedding = decoder_settings.get("use_modified_graph_embedding", False)
+        graph_embedding_attr = decoder_settings.get("graph_embedding_attr", "graph_embedding")
 
         # Case 2D/3D vectors with G0 encoded
         if node_counter:
@@ -1202,7 +1271,11 @@ class HyperNet(AbstractGraphEncoder):
 
         node_count = node_counter.total()
         ## We have the multiset of nodes and the multiset of edges
-        first_pop: list[tuple[nx.Graph, list[tuple]]] = []
+        # OPTIMIZATION: Convert decoded_edges to Counter for O(1) lookups throughout
+        decoded_edges_counter = Counter(decoded_edges)
+
+        # OPTIMIZATION: Store Counter instead of list in population tuples for O(1) operations
+        first_pop: list[tuple[nx.Graph, Counter]] = []
         global_seen: set = set()
         for k, (u_t, v_t) in enumerate(decoded_edges):
             G = nx.Graph()
@@ -1214,10 +1287,13 @@ class HyperNet(AbstractGraphEncoder):
             if key in global_seen:
                 continue
             global_seen.add(key)
-            remaining_edges = decoded_edges.copy()
-            remaining_edges.remove((u_t, v_t))
-            remaining_edges.remove((v_t, u_t))
-            first_pop.append((G, remaining_edges))
+
+            # OPTIMIZATION: Store Counter directly - no conversion to list needed
+            remaining_edges_counter = decoded_edges_counter.copy()
+            remaining_edges_counter[(u_t, v_t)] -= 1
+            remaining_edges_counter[(v_t, u_t)] -= 1
+
+            first_pop.append((G, remaining_edges_counter))
 
         pruning_fn = decoder_settings.get("pruning_fn", "cos_sim")
 
@@ -1234,8 +1310,9 @@ class HyperNet(AbstractGraphEncoder):
             selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
             first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
         population = first_pop
+
         for _ in tqdm(range(2, node_count)):
-            children: list[tuple[nx.Graph, list[tuple]]] = []
+            children: list[tuple[nx.Graph, Counter]] = []
 
             # Expand the current population
             for gi, (G, edges_left) in enumerate(population):
@@ -1254,10 +1331,12 @@ class HyperNet(AbstractGraphEncoder):
                 # Try to connect the left over nodes to the lowest degree anchors
                 for a, lo_t in list(itertools.product(lowest_degree_ancrs, leftover_types)):
                     a_t = G.nodes[a]["feat"].to_tuple()
-                    if (a_t, lo_t) not in edges_left:
+                    # OPTIMIZATION: Use Counter for O(1) lookup (no set conversion needed)
+                    if edges_left[(a_t, lo_t)] == 0:
                         continue
 
-                    C = G.copy()
+                    # OPTIMIZATION: Use nx.Graph(G) instead of G.copy() for faster copying
+                    C = nx.Graph(G)
                     nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=node_count)
                     if nid is None:
                         continue
@@ -1269,35 +1348,44 @@ class HyperNet(AbstractGraphEncoder):
                         continue
 
                     # # Early pruning of bad ring structures
-                    # if self.base_dataset == "zinc" and not has_valid_ring_structure(
-                    #     G=C,
-                    #     processed_histogram=self.dataset_info.ring_histogram,
-                    #     single_ring_atom_types=self.dataset_info.single_ring_features,
-                    # ):
-                    #     continue
+                    if (
+                        validate_ring_structure
+                        and self.base_dataset == "zinc"
+                        and not has_valid_ring_structure(
+                            G=C,
+                            processed_histogram=self.dataset_info.ring_histogram,
+                            single_ring_atom_types=self.dataset_info.single_ring_features,
+                            is_partial=True,  # Graph is still being constructed
+                        )
+                    ):
+                        continue
 
                     # self._print_and_plot(g=C, graph_terms=graph_term)
 
+                    # OPTIMIZATION: Use Counter arithmetic for O(1) edge removal
                     remaining_edges = edges_left.copy()
-                    remaining_edges.remove((a_t, lo_t))
-                    remaining_edges.remove((lo_t, a_t))
+                    remaining_edges[(a_t, lo_t)] -= 1
+                    remaining_edges[(lo_t, a_t)] -= 1
                     global_seen.add(keyC)
                     children.append((C, remaining_edges))
 
                     ancrs_rest = [a_ for a_ in ancrs if a_ != a]
 
+                    # OPTIMIZATION: remaining_edges is already a Counter, use it directly
+                    nid_t = C.nodes[nid]["feat"].to_tuple()
+
                     for subset in powerset(ancrs_rest):
                         if len(subset) == 0:
                             continue
 
-                        # Skip if subsets edges are not in the edge list
+                        # OPTIMIZATION: Build all_new_connection and validate using Counter
                         all_new_connection = []
-                        nid_t = C.nodes[nid]["feat"].to_tuple()
                         subset_ts = [C.nodes[s]["feat"].to_tuple() for s in subset]
                         should_continue = False
                         for st in subset_ts:
                             ts = (nid_t, st)
-                            if ts not in remaining_edges:
+                            # Check if edge exists in remaining_edges Counter (O(1))
+                            if remaining_edges[ts] == 0:
                                 should_continue = True
                                 break
                             all_new_connection.append(ts)
@@ -1305,21 +1393,24 @@ class HyperNet(AbstractGraphEncoder):
                         if should_continue:
                             continue
 
+                        # OPTIMIZATION: Validate edge counts using Counter
                         all_new_counter = Counter(all_new_connection)
                         # if both ends of an edge is the same tuple, it should be considered twice
                         for k, v in all_new_counter.items():
                             if k[0] == k[1]:
                                 all_new_counter[k] = 2 * v
-                        left_over_edges_counter = Counter(remaining_edges)
+
+                        # Check if we have enough edges in remaining_edges
                         for k, v in all_new_counter.items():
-                            if left_over_edges_counter[k] < v:
+                            if remaining_edges[k] < v:
                                 should_continue = True
                                 break
 
                         if should_continue:
                             continue
 
-                        H = C.copy()
+                        # OPTIMIZATION: Use nx.Graph(C) instead of C.copy()
+                        H = nx.Graph(C)
                         new_nid = connect_all_if_possible(H, nid, connect_to=list(subset), total_nodes=node_count)
                         if new_nid is None:
                             continue
@@ -1331,20 +1422,23 @@ class HyperNet(AbstractGraphEncoder):
                             continue
 
                         # # Early pruning of bad ring structures
-                        # if self.base_dataset == "zinc" and not has_valid_ring_structure(
-                        #     G=H,
-                        #     processed_histogram=self.dataset_info.ring_histogram,
-                        #     single_ring_atom_types=self.dataset_info.single_ring_features,
-                        # ):
-                        #     continue
+                        if (
+                            validate_ring_structure
+                            and self.base_dataset == "zinc"
+                            and not has_valid_ring_structure(
+                                G=H,
+                                processed_histogram=self.dataset_info.ring_histogram,
+                                single_ring_atom_types=self.dataset_info.single_ring_features,
+                                is_partial=True,  # Graph is still being constructed
+                            )
+                        ):
+                            continue
 
+                        # OPTIMIZATION: Use Counter arithmetic for O(1) batch edge removal
                         remaining_edges_ = remaining_edges.copy()
                         for a_t, b_t in all_new_connection:
-                            try:
-                                remaining_edges_.remove((a_t, b_t))
-                                remaining_edges_.remove((b_t, a_t))
-                            except Exception as e:
-                                continue
+                            remaining_edges_[(a_t, b_t)] -= 1
+                            remaining_edges_[(b_t, a_t)] -= 1
 
                         # self._print_and_plot(g=H, graph_terms=graph_term)
 
@@ -1357,12 +1451,13 @@ class HyperNet(AbstractGraphEncoder):
                 top_k = decoder_settings.get("top_k", 10)
 
                 graphs, edges_left = zip(*population, strict=True)
-                are_final = [len(i) == 0 for i in edges_left]
+                # OPTIMIZATION: Use Counter.total() to check if empty
+                are_final = [i.total() == 0 for i in edges_left]
 
                 # Compute cosine similarities for all graphs
                 batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
                 enc_out = self.forward(batch)
-                g_terms = enc_out["graph_embedding"]
+                g_terms = enc_out[graph_embedding_attr]
                 if decoder_settings.get("use_g3_instead_of_h3", False):
                     g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
 
@@ -1376,20 +1471,32 @@ class HyperNet(AbstractGraphEncoder):
                 top_k_flags = [are_final[i] for i in top_k_indices]
                 top_cos_sims = [sims[i].item() for i in top_k_indices]
 
+                # Convert Counter to list for target_reached function
+                decoded_edges_list = []
+                for edge, count in decoded_edges_counter.items():
+                    if count > 0:
+                        decoded_edges_list.extend([edge] * count)
+
                 return DecodingResult(
                     nx_graphs=top_k_graphs,
                     final_flags=top_k_flags,
                     cos_similarities=top_cos_sims,
-                    target_reached=target_reached(decoded_edges),
+                    target_reached=target_reached(decoded_edges_list),
                     correction_level=CorrectionLevel.FAIL,
                 )
 
             if len(children) > initial_limit:
                 initial_limit = decoder_settings.get("limit", initial_limit)
-                keep = decoder_settings.get("beam_size")
+                beam_size = decoder_settings.get("beam_size")
+
+                # Calculate split: top-k by similarity + random from rest
+                keep = int((1 - random_sample_ratio) * beam_size)
+                random_pick = int(random_sample_ratio * beam_size)
 
                 if use_size_aware_pruning:
                     repo = defaultdict(list)
+
+                    # Prune for each size separately
                     for c, l in children:
                         repo[c.number_of_edges()].append((c, l))
 
@@ -1398,27 +1505,111 @@ class HyperNet(AbstractGraphEncoder):
                         # Encode and compute similaity
                         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in ch])
                         enc_out = self.forward(batch)
-                        g_terms = enc_out["graph_embedding"]
+                        g_terms = enc_out[graph_embedding_attr]
                         if decoder_settings.get("use_g3_instead_of_h3", False):
                             g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
-                        sims = get_similarities(graph_term, g_terms)
+
+                        if use_modified_graph_embedding:
+                            # Modify graph_term for each child based on its leftover edges
+                            # This provides fairer comparison by accounting for edges not yet added
+                            sims_list = []
+
+                            for idx, (c, leftover_edges_counter) in enumerate(ch):
+                                if leftover_edges_counter and leftover_edges_counter.total() > 0:
+                                    # Convert Counter to list for encode_edge_multiset
+                                    leftover_edges = []
+                                    for edge, count in leftover_edges_counter.items():
+                                        if count > 0:
+                                            leftover_edges.extend([edge] * count)
+                                    # Encode the leftover edges into a hypervector
+                                    leftover_edge_term = self.encode_edge_multiset(leftover_edges)
+                                    # Subtract from target to get modified graph_term
+                                    modified_graph_term = graph_term - leftover_edge_term
+                                else:
+                                    # No leftover edges, use original graph_term
+                                    modified_graph_term = graph_term
+
+                                # Compute element-wise similarity for this child
+                                child_sim = get_similarities(modified_graph_term, g_terms[idx].unsqueeze(0))
+                                sims_list.append(child_sim)
+
+                            # Concatenate all similarities into a single tensor
+                            sims = torch.cat(sims_list)
+                        else:
+                            # Original behavior: compare all to the same graph_term
+                            sims = get_similarities(graph_term, g_terms)
 
                         # Sort by similarity first
                         sim_order = torch.argsort(sims, descending=True)
-                        res.extend([ch[i.item()] for i in sim_order[:keep]])
+
+                        # Take top 'keep' by similarity
+                        top_candidates = [ch[i.item()] for i in sim_order[:keep]]
+                        res.extend(top_candidates)
+
+                        # Randomly pick 'random_pick' from the rest
+                        if random_pick > 0 and len(ch) > keep:
+                            remaining_indices = sim_order[keep:].cpu().numpy()
+                            if len(remaining_indices) > 0:
+                                n_random = min(random_pick, len(remaining_indices))
+                                random_indices = np.random.choice(remaining_indices, size=n_random, replace=False)
+                                random_candidates = [ch[i] for i in random_indices]
+                                res.extend(random_candidates)
                     children = res
                 else:
                     # Encode and compute similaity
                     batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
                     enc_out = self.forward(batch)
-                    g_terms = enc_out["graph_embedding"]
+                    g_terms = enc_out[graph_embedding_attr]
                     if decoder_settings.get("use_g3_instead_of_h3", False):
                         g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
-                    sims = get_similarities(graph_term, g_terms)
+
+                    if use_modified_graph_embedding:
+                        # Modify graph_term for each child based on its leftover edges
+                        # This provides fairer comparison by accounting for edges not yet added
+                        sims_list = []
+
+                        for idx, (c, leftover_edges_counter) in enumerate(children):
+                            if leftover_edges_counter and leftover_edges_counter.total() > 0:
+                                # Convert Counter to list for encode_edge_multiset
+                                leftover_edges = []
+                                for edge, count in leftover_edges_counter.items():
+                                    if count > 0:
+                                        leftover_edges.extend([edge] * count)
+                                # Encode the leftover edges into a hypervector
+                                leftover_edge_term = self.encode_edge_multiset(leftover_edges)
+                                # Subtract from target to get modified graph_term
+                                modified_graph_term = graph_term - leftover_edge_term
+                            else:
+                                # No leftover edges, use original graph_term
+                                modified_graph_term = graph_term
+
+                            # Compute element-wise similarity for this child
+                            child_sim = get_similarities(modified_graph_term, g_terms[idx].unsqueeze(0))
+                            sims_list.append(child_sim)
+
+                        # Concatenate all similarities into a single tensor
+                        sims = torch.cat(sims_list)
+                    else:
+                        # Original behavior: compare all to the same graph_term
+                        sims = get_similarities(graph_term, g_terms)
 
                     # Sort by similarity first
                     sim_order = torch.argsort(sims, descending=True)
-                    children = [children[i.item()] for i in sim_order[:keep]]
+
+                    # Take top 'keep' by similarity
+                    top_candidates = [children[i.item()] for i in sim_order[:keep]]
+
+                    # Randomly pick 'random_pick' from the rest
+                    result = top_candidates.copy()
+                    if random_pick > 0 and len(children) > keep:
+                        remaining_indices = sim_order[keep:].cpu().numpy()
+                        if len(remaining_indices) > 0:
+                            n_random = min(random_pick, len(remaining_indices))
+                            random_indices = np.random.choice(remaining_indices, size=n_random, replace=False)
+                            random_candidates = [children[i] for i in random_indices]
+                            result.extend(random_candidates)
+
+                    children = result
 
             population = children
 
@@ -1427,12 +1618,13 @@ class HyperNet(AbstractGraphEncoder):
 
         # Sort the final population by cosine similarity to graph_term
         graphs, edges_left = zip(*population, strict=True)
-        are_final = [len(i) == 0 for i in edges_left]
+        # OPTIMIZATION: Use Counter.total() to check if empty
+        are_final = [i.total() == 0 for i in edges_left]
 
         # Compute cosine similarities for all final graphs
         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
         enc_out = self.forward(batch)
-        g_terms = enc_out["graph_embedding"]
+        g_terms = enc_out[graph_embedding_attr]
         if decoder_settings.get("use_g3_instead_of_h3", False):
             g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
 
@@ -1446,11 +1638,17 @@ class HyperNet(AbstractGraphEncoder):
         top_k_flags = [are_final[i] for i in top_k_indices]
         top_k_sims = [sims[i].item() for i in top_k_indices]
 
+        # Convert Counter to list for target_reached function
+        decoded_edges_list = []
+        for edge, count in decoded_edges_counter.items():
+            if count > 0:
+                decoded_edges_list.extend([edge] * count)
+
         return DecodingResult(
             nx_graphs=top_k_graphs,
             final_flags=top_k_flags,
             cos_similarities=top_k_sims,
-            target_reached=target_reached(decoded_edges),
+            target_reached=target_reached(decoded_edges_list),
             correction_level=CorrectionLevel.FAIL,
         )
 
@@ -1580,8 +1778,8 @@ class HyperNet(AbstractGraphEncoder):
                 matching_components=matching_components,
                 id_to_type=id_to_type,
                 max_samples=max_graphs_per_iter,
-                # ring_histogram=self.dataset_info.ring_histogram,
-                # single_ring_atom_types=self.dataset_info.single_ring_features,
+                ring_histogram=self.dataset_info.ring_histogram if self.validate_ring_structure else None,
+                single_ring_atom_types=self.dataset_info.single_ring_features if self.validate_ring_structure else None,
             )
 
             if not decoded_graphs_iter:
@@ -1635,8 +1833,8 @@ class HyperNet(AbstractGraphEncoder):
             matching_components=matching_components,
             id_to_type=id_to_type,
             max_samples=100,
-            # ring_histogram=self.dataset_info.ring_histogram,
-            # single_ring_atom_types=self.dataset_info.single_ring_features,
+            ring_histogram=self.dataset_info.ring_histogram if self.validate_ring_structure else None,
+            single_ring_atom_types=self.dataset_info.single_ring_features if self.validate_ring_structure else None,
         )
         is_feasible = len(decoded_graphs_iter) > 0
         print(f"Feasibility test {'passed' if is_feasible else 'NOT passed'}")
@@ -1740,6 +1938,9 @@ class HyperNet(AbstractGraphEncoder):
         use_early_stopping: bool = decoder_settings.get("early_stopping", False)
         fallback_decoder_settings = decoder_settings.get("fallback_decoder_settings")
         prefer_smaller_corrective_edits = decoder_settings.get("prefer_smaller_corrective_edits", False)
+        self.validate_ring_structure = decoder_settings.get("fallback_decoder_settings", {}).get(
+            "validate_ring_structure", False
+        )
 
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
@@ -1830,7 +2031,7 @@ class HyperNet(AbstractGraphEncoder):
     def _fallback_greedy(
         self, edge_term: VSATensor, fallback_decoder_settings: Any | None, graph_term: VSATensor, top_k: int
     ) -> DecodingResult:
-        print("Fall back greedy..")
+        # print("Fall back greedy..")
         greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
         if "top_k" not in greedy_settings:
             greedy_settings["top_k"] = top_k

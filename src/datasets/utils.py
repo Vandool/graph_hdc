@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import torch
+from rdkit import Chem
 from torch_geometric.data import Data, InMemoryDataset
 
 from src.datasets.qm9_smiles_generation import QM9Smiles

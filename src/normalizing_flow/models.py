@@ -472,7 +472,7 @@ class VelocityNet(nn.Module):
 class FMConfig:
     exp_dir_name: str = None
     seed: int = 42
-    epochs: int = 1500
+    epochs: int = 1800
     batch_size: int = 256  # MSE loss is stable, can often use larger BS
     lr: float = 3e-4
     weight_decay: float = 1e-5

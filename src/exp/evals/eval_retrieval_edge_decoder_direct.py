@@ -1,12 +1,15 @@
 import argparse
+import datetime
 import os
+import time
 from collections import Counter
+from pathlib import Path
 from pprint import pprint
 
 import numpy as np
 import pandas as pd
 import torch
-from matplotlib import pyplot as plt
+from networkx.algorithms import isomorphism
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
@@ -14,36 +17,59 @@ from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     SupportedDataset,
 )
-from src.encoding.decoder import new_decoder  # noqa: F401
-from src.encoding.graph_encoders import HyperNet, load_or_create_hypernet
-from src.utils.utils import GLOBAL_ARTEFACTS_PATH, DataTransformer, pick_device
-from src.utils.visualisations import draw_nx_with_atom_colorings
+from src.encoding.graph_encoders import DecodingResult, HyperNet, load_or_create_hypernet
+from src.utils.utils import DataTransformer, pick_device
 
 PLOT = False
 
 HV_DIMS = {
-    "qm9": [
-        # 1024,
-        # 1280,
-        # 1536,
-        1600,
-        1792,
-    ],
-    "zinc": [
-        # 5120, 5632,
-        6144,
-        # 7168, 7744, 8192
-    ],
+    "qm9": [256],
+    "zinc": [256],
 }
 
 DECODER_SETTINGS = {
-    "qm9": [{"max_solutions": 1000}],
+    "qm9": [
+        {
+            "initial_limit": 2048,
+            "limit": 1024,
+            "beam_size": 1024,
+            "pruning_method": "cos_sim",
+            "use_size_aware_pruning": True,
+            "use_one_initial_population": False,
+            "use_g3_instead_of_h3": False,
+            "validate_ring_structure": False,  # qm9 does not have information about ring structure
+            "use_modified_graph_embedding": True,
+            "random_sample_ratio": 0.0,
+        }
+    ],
     "zinc": [
-        {"max_solutions": 1000},
+        {
+            "initial_limit": 4096,
+            "limit": 2048 + 1024,
+            "beam_size": 96,
+            "pruning_method": "cos_sim",
+            "use_size_aware_pruning": True,
+            "use_one_initial_population": False,
+            "use_g3_instead_of_h3": False,
+            "validate_ring_structure": True,
+            "use_modified_graph_embedding": False,
+            "random_sample_ratio": 0.0,
+            "graph_embedding_attr": "graph_embedding",
+        },
     ],
 }
 DTYPE = torch.float64
 torch.set_default_dtype(DTYPE)
+
+
+def are_isomorphic(G1, G2, attr="feat"):
+    """
+    Check if two graphs are isomorphic, considering node attributes.
+    Is more expansive than WL hashing.
+    """
+    nm = isomorphism.categorical_node_match(attr, None)
+    GM = isomorphism.GraphMatcher(G1, G2, node_match=nm)
+    return GM.is_isomorphic()
 
 
 def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
@@ -55,30 +81,26 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
             print(f"Running on {device}")
             ds_config.hv_dim = hv_dim
             ds_config.device = device
+            ds_config.name = f"DELETE_ME_LATER_{hv_dim}_{base_dataset}"
             hypernet: HyperNet = (
                 load_or_create_hypernet(cfg=ds_config, use_edge_codebook=False).to(device, dtype=DTYPE).eval()
             )
-            hypernet.decoding_limit_for = ds
+            hypernet.base_dataset = base_dataset
 
             dataset = get_split(split="train", ds_config=ds.default_cfg, use_no_suffix=True)
 
-            nodes_set = set(map(tuple, dataset.x.long().tolist()))
-            hypernet.limit_nodes_codebook(limit_node_set=nodes_set)
-
             dataset = dataset[:n_samples]
             dataloader = DataLoader(dataset=dataset, batch_size=1, shuffle=False)
+            embedding = decoder_setting.get("graph_embedding_attr", "graph_embedding")
 
-            hits = []
+            edge_hits = []
+            graph_hits = []
+            best_sims = []
             ts = []
             results = []
             pbar = tqdm(dataloader)
             for data in pbar:
-                if PLOT:
-                    nx_g = DataTransformer.pyg_to_nx(data)
-                    draw_nx_with_atom_colorings(
-                        nx_g, dataset="QM9Smiles" if dataset == "qm9" else "ZincSmiles", label="Original"
-                    )
-                    plt.show()
+                original_nx_graph = DataTransformer.pyg_to_nx(data)
 
                 # Real Data
                 node_tuples = [tuple(i) for i in data.x.int().tolist()]
@@ -87,13 +109,33 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
 
                 forward = hypernet.forward(data)
                 edge_terms = forward["edge_terms"]
+                graph_terms = forward[embedding]
+                ts_start = time.perf_counter()
                 decoded_edges = hypernet.decode_order_one_no_node_terms(edge_terms[0].clone())
                 decoded_edge_counter = Counter(decoded_edges)
 
                 is_hit = decoded_edge_counter == real_edge_counter
-                hits.append(is_hit)
-                curr_acc = sum(hits) / len(hits) if hits else 0
-                pbar.set_postfix(curr_acc=f"{curr_acc:.4f}")
+                edge_hits.append(is_hit)
+
+                decoded_graph_results: DecodingResult = hypernet._fallback_greedy(
+                    edge_term=edge_terms[0].clone(),
+                    fallback_decoder_settings=decoder_setting,
+                    graph_term=graph_terms[0].clone(),
+                    top_k=1,
+                )
+                ts.append(time.perf_counter() - ts_start)
+                if decoded_graph_results.nx_graphs:
+                    best_graph = decoded_graph_results.nx_graphs[0]
+                    best_sim = decoded_graph_results.cos_similarities[0]
+                    graph_hits.append(are_isomorphic(best_graph, original_nx_graph))
+                    best_sims.append(best_sim)
+                else:
+                    graph_hits.append(False)
+                    best_sims.append(0)
+
+                curr_edge_acc = sum(edge_hits) / len(edge_hits) if edge_hits else 0
+                curr_graph_acc = sum(graph_hits) / len(graph_hits) if graph_hits else 0
+                pbar.set_postfix(edge_acc=f"{curr_edge_acc:.4f}", graph_acc=f"{curr_graph_acc:.4f}")
 
             ts = np.array(ts)
             results.append(
@@ -104,18 +146,21 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                     "hv_dim": ds_config.hv_dim,
                     "device": str(device),
                     "time_per_sample": ts.mean(),
-                    "accuracy": sum(hits) / len(hits),
-                    "decoder_settings": decoder_setting,
+                    "edge_accuracy": sum(edge_hits) / len(edge_hits),
+                    "graph_accuracy": sum(graph_hits) / len(graph_hits),
+                    "best_sims_avg": sum(best_sims) / len(best_sims),
+                    **decoder_setting,
+                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
             )
             pprint(results[-1])
 
             # --- save metrics to disk ---
-            asset_dir = GLOBAL_ARTEFACTS_PATH / "retrieval"
+            asset_dir = Path(__file__).parent / "retrieval"
             asset_dir.mkdir(parents=True, exist_ok=True)
 
-            parquet_path = asset_dir / "edge_decoder_direct.parquet"
-            csv_path = asset_dir / "edge_decoder_direct.csv"
+            parquet_path = asset_dir / "decoding_ablations_new_settings.parquet"
+            csv_path = asset_dir / "decoding_ablations_new_settings.csv"
 
             metrics_df = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
 
@@ -132,10 +177,10 @@ if __name__ == "__main__":
     p.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3.value,
+        default=SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4.value,
         choices=[ds.value for ds in SupportedDataset],
     )
-    p.add_argument("--n_samples", type=int, default=1000)
+    p.add_argument("--n_samples", type=int, default=50)
     args = p.parse_args()
     ds = SupportedDataset(args.dataset)
 

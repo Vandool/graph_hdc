@@ -91,6 +91,9 @@ DECODER_SETTINGS = {
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
             "use_g3_instead_of_h3": False,
+            "validate_ring_structure": False,
+            "use_modified_graph_embedding": True,
+            "random_sample_ratio": 0.0,
         },
     },
     "zinc": {
@@ -102,12 +105,15 @@ DECODER_SETTINGS = {
         "prefer_smaller_corrective_edits": False,
         "fallback_decoder_settings": {
             "initial_limit": 2048,
-            "limit": 128,
-            "beam_size": 64,
+            "limit": 256,
+            "beam_size": 96,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
             "use_g3_instead_of_h3": False,
+            "validate_ring_structure": True,
+            "use_modified_graph_embedding": True,
+            "random_sample_ratio": 0.0,
         },
     },
 }

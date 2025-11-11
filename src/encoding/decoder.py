@@ -206,7 +206,7 @@ def graph_is_valid(G: nx.Graph) -> bool:
     return nx.is_connected(G) and nx.number_of_selfloops(G) == 0
 
 
-def has_valid_ring_structure(G, processed_histogram, single_ring_atom_types):
+def has_valid_ring_structure(G, processed_histogram, single_ring_atom_types, *, is_partial: bool = False):
     """
     The definitive, optimized filter function.
 
@@ -216,6 +216,18 @@ def has_valid_ring_structure(G, processed_histogram, single_ring_atom_types):
     3. Single Ring Atoms (Node must be in *exactly* 1 ring)
 
     Optimized for the fastest possible rejection.
+
+    Parameters
+    ----------
+    G : nx.Graph
+        The graph to validate
+    processed_histogram : dict
+        Mapping of node types to allowed ring sizes
+    single_ring_atom_types : set
+        Node types that must be in exactly one ring
+    is_partial : bool, default=False
+        If True, allows cyclic nodes to not yet be in rings (for partial graphs
+        being constructed). Still validates acyclic nodes and existing ring sizes.
     """
     # --- 1. Find Cycles (The expensive part) ---
     try:
@@ -264,16 +276,23 @@ def has_valid_ring_structure(G, processed_histogram, single_ring_atom_types):
     for node_id in nodes_must_be_in_ring:
         # --- EARLY OUT 2 (Ring Node Violation) ---
         # The node should be in a ring, but wasn't found in any cycle.
+        # Skip this check for partial graphs - the ring might be formed later
         if node_id not in node_to_cycle_count:
-            return False
+            if not is_partial:
+                return False
+            continue  # For partial graphs, skip nodes not yet in rings
 
             # --- EARLY OUT 3 (Single Ring Violation) ---
         # The node *must* be in a single ring, but it's in 0 or >1.
+        # Skip this check for partial graphs - additional rings might be formed later
         if node_id in nodes_must_be_single_ring and node_to_cycle_count[node_id] != 1:
-            return False
+            if not is_partial:
+                return False
+            continue  # For partial graphs, allow flexibility
 
             # --- EARLY OUT 4 (Ring Size Violation) ---
         # The node is in rings. Are they the right sizes?
+        # This check applies to both partial and complete graphs
         actual_sizes = node_to_ring_lengths[node_id]
         node_type = G.nodes[node_id][attr].to_tuple() if attr == "feat" else G.nodes[node_id][attr]
         allowed_sizes = set(processed_histogram[node_type].keys())
