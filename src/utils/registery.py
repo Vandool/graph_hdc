@@ -7,7 +7,7 @@ from typing import Any, Literal, Union
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
 
-ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "GIN-LF", "NVP", "NVP-V3", "LPR", "PR", "FM"]
+ModelType = Literal["MLP", "BAH", "GIN-F", "GIN-C", "GIN-LF", "NVP", "NVP-V3", "LPR", "PR", "FM", "SplineFlow"]
 
 # Store CLASSES (constructors), not instances
 _MODEL_REGISTRY: dict[ModelType, type[LightningModule]] = {}
@@ -46,6 +46,10 @@ def get_model_type(path: Union[Path, str]) -> ModelType:
     s = str(path)
     if "bah" in s:
         res = "BAH"
+    elif "fm_comp" in s:
+        res = "FM"
+    elif "fm_single" in s:
+        return "FM"
     elif "gin-c" in s:
         res = "GIN-C"
     elif "gin-f" in s:

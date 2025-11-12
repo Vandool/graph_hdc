@@ -77,6 +77,7 @@ class GenerationEvaluator:
         for g in samples:
             try:
                 mols.append(reconstruct_for_eval(g, dataset=self.base_dataset))
+                # mols.append(reconstruct_for_eval_v2(g, dataset=self.base_dataset))
             except Exception as e:
                 print(f"nx_to_mol error: {e}")
                 mols.append(None)

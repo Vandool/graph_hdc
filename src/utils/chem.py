@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import networkx as nx
 import torch
 from IPython.display import display
@@ -46,7 +48,17 @@ def draw_mol(
     else:
         raise ValueError(f"Unsupported fmt {fmt}, choose 'svg' or 'png'.")
 
-    drawer.DrawMolecule(mol)
+    # Prepare molecule for drawing
+    try:
+        mol.UpdatePropertyCache(strict=False)
+        Chem.GetSymmSSSR(mol)
+        drawer.DrawMolecule(mol)
+    except Exception as e:
+        print(f"Error drawing molecule: {e}")
+        # Draw an empty box or error message if fails
+        drawer.ClearDrawing()
+        drawer.DrawString("Drawing Error", 0, 0)
+
     drawer.FinishDrawing()
     data = drawer.GetDrawingText()
 
@@ -59,8 +71,6 @@ def draw_mol(
             f.write(data)
     else:
         # inline display for PNG in notebooks
-        from IPython.display import Image
-
         display(Image(data=data))
 
 
@@ -95,6 +105,32 @@ def mol_to_data(mol: Chem.Mol) -> Data:
     )
 
 
+@dataclass
+class ReconstructionResult:
+    """Result of molecule reconstruction with diagnostics.
+
+    Attributes:
+        mol: Reconstructed RDKit molecule
+        strategy: Name of the fallback strategy that succeeded
+        confidence: Confidence score (1.0 = best, lower = more permissive)
+        warnings: List of diagnostic messages or warnings
+    """
+
+    mol: Chem.Mol
+    strategy: str
+    confidence: float
+    warnings: list[str]
+
+
+# Confidence scores for each reconstruction strategy
+RECONSTRUCTION_STRATEGY_CONFIDENCE = {
+    "standard": 1.0,
+    "kekulized": 0.95,
+    "single_bonds": 0.7,
+    "partial_sanitize": 0.6,
+}
+
+
 def reconstruct_for_eval(nx: nx.Graph, *, dataset="qm9"):
     # Variant A: aromatic flags kept (preferred for QM9-like SMILES)
     try:
@@ -125,6 +161,153 @@ def reconstruct_for_eval(nx: nx.Graph, *, dataset="qm9"):
     # now full pass (will no-op if OK)
     Chem.SanitizeMol(mol)
     return mol
+
+
+def reconstruct_for_eval_v2(
+    nx_graph: nx.Graph, *, dataset="qm9", return_diagnostics=False
+) -> Chem.Mol | ReconstructionResult:
+    """
+    Reconstruct RDKit molecule from NetworkX graph with enhanced diagnostics.
+
+    This is an improved version of `reconstruct_for_eval` that provides:
+    - Additional fallback strategies (single bonds variant)
+    - Diagnostic information (which strategy succeeded, confidence score)
+    - Enhanced error messages with graph statistics
+    - Backward compatible when return_diagnostics=False
+
+    The function tries progressively more permissive reconstruction strategies:
+    1. Standard aromatic (preferred for QM9/ZINC)
+    2. Kekulized (handles N-O bonds, fused rings)
+    3. Single bonds only (bypasses valence inference issues)
+    4. Partial sanitization (staged sanitize operations)
+
+    Args:
+        nx_graph: NetworkX graph with node features (type or feat attributes)
+        dataset: Dataset name ("qm9" or "zinc") - determines atom symbol mapping
+        return_diagnostics: If True, returns ReconstructionResult with metadata
+
+    Returns:
+        If return_diagnostics=False: RDKit Mol object (backward compatible)
+        If return_diagnostics=True: ReconstructionResult with mol + diagnostics
+
+    Raises:
+        ValueError: If all reconstruction strategies fail
+
+    Example:
+        >>> # Backward compatible usage
+        >>> mol = reconstruct_for_eval_v2(graph, dataset="zinc")
+        >>>
+        >>> # With diagnostics
+        >>> result = reconstruct_for_eval_v2(graph, dataset="zinc", return_diagnostics=True)
+        >>> print(f"Strategy: {result.strategy}, Confidence: {result.confidence}")
+    """
+    warnings = []
+    n_nodes = nx_graph.number_of_nodes()
+    n_edges = nx_graph.number_of_edges()
+
+    # Variant A: Standard aromatic (preferred for both QM9 and ZINC)
+    try:
+        mol, _ = DataTransformer.nx_to_mol_v3(
+            nx_graph, dataset=dataset, infer_bonds=True, sanitize=True, kekulize=False
+        )
+        # Handle empty graph or structural issues
+        if mol is None:
+            warnings.append("Standard aromatic failed: empty graph or structural issues")
+        elif is_valid_molecule(mol):
+            if return_diagnostics:
+                return ReconstructionResult(
+                    mol=mol,
+                    strategy="standard",
+                    confidence=RECONSTRUCTION_STRATEGY_CONFIDENCE["standard"],
+                    warnings=warnings,
+                )
+            return mol
+    except Exception as e:
+        warnings.append(f"Standard aromatic failed: {type(e).__name__}")
+
+    # Variant B: Kekulized (handles N-O bonds, fused rings with unusual electron distribution)
+    try:
+        mol, _ = DataTransformer.nx_to_mol_v3(nx_graph, dataset=dataset, infer_bonds=True, sanitize=True, kekulize=True)
+        # Handle empty graph or structural issues
+        if mol is None:
+            warnings.append("Kekulized failed: empty graph or structural issues")
+        elif is_valid_molecule(mol):
+            if return_diagnostics:
+                return ReconstructionResult(
+                    mol=mol,
+                    strategy="kekulized",
+                    confidence=RECONSTRUCTION_STRATEGY_CONFIDENCE["kekulized"],
+                    warnings=warnings,
+                )
+            return mol
+    except Exception as e:
+        warnings.append(f"Kekulized failed: {type(e).__name__}")
+
+    # Variant C: Single bonds only (bypasses valence inference heuristics)
+    # Useful when bond order inference fails on unusual structures
+    try:
+        mol, _ = DataTransformer.nx_to_mol_v3(
+            nx_graph, dataset=dataset, infer_bonds=False, sanitize=True, kekulize=False
+        )
+        # Handle empty graph or structural issues
+        if mol is None:
+            warnings.append("Single bonds failed: empty graph or structural issues")
+        elif is_valid_molecule(mol):
+            warnings.append("Used single bonds only (no bond order inference)")
+            if return_diagnostics:
+                return ReconstructionResult(
+                    mol=mol,
+                    strategy="single_bonds",
+                    confidence=RECONSTRUCTION_STRATEGY_CONFIDENCE["single_bonds"],
+                    warnings=warnings,
+                )
+            return mol
+    except Exception as e:
+        warnings.append(f"Single bonds failed: {type(e).__name__}")
+
+    # Variant D: Partial sanitization (staged ops: cleanup → rings → aromaticity → full)
+    # Last resort for molecules that fail standard sanitization
+    try:
+        mol, _ = DataTransformer.nx_to_mol_v3(
+            nx_graph, dataset=dataset, infer_bonds=True, sanitize=False, kekulize=False
+        )
+        # Handle empty graph or structural issues
+        if mol is None:
+            warnings.append("Partial sanitize failed: empty graph or structural issues")
+        else:
+            # Stage 1: Light sanitization operations
+            Chem.SanitizeMol(
+                mol,
+                sanitizeOps=(
+                    SanitizeFlags.SANITIZE_CLEANUP
+                    | SanitizeFlags.SANITIZE_SYMMRINGS
+                    | SanitizeFlags.SANITIZE_SETAROMATICITY
+                ),
+            )
+            # Stage 2: Full sanitization
+            Chem.SanitizeMol(mol)
+
+            if is_valid_molecule(mol):
+                warnings.append("Used partial sanitization strategy")
+                if return_diagnostics:
+                    return ReconstructionResult(
+                        mol=mol,
+                        strategy="partial_sanitize",
+                        confidence=RECONSTRUCTION_STRATEGY_CONFIDENCE["partial_sanitize"],
+                        warnings=warnings,
+                    )
+                return mol
+    except Exception as e:
+        warnings.append(f"Partial sanitize failed: {type(e).__name__}")
+
+    # All strategies failed - raise informative error
+    error_msg = (
+        f"All reconstruction strategies failed for graph:\n"
+        f"  Nodes: {n_nodes}, Edges: {n_edges}, Dataset: {dataset}\n"
+        f"  Attempted strategies: standard, kekulized, single_bonds, partial_sanitize\n"
+        f"  Failure details: {'; '.join(warnings)}"
+    )
+    raise ValueError(error_msg)
 
 
 def canonical_key(mol: Chem.Mol) -> str:

@@ -6,10 +6,14 @@ from src.utils.utils import GLOBAL_BEST_MODEL_PATH, find_files
 # Models ordered by generative performance
 GENERATOR_REGISTRY = {
     SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3: [
-        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
-        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
-        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
-        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.000183872_wd0.000202358_bs96_hid1792_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # Flow Matching Best sofar
+        "fm_comp_QM9SmilesHRR256F64G1NG3_s42_lr8.76102e-5_wd1e-6_bs128_hid1536_nhl8_np1_tim32_an",  # Best Edge Correction 63.4%
+        "fm_comp_QM9SmilesHRR256F64G1NG3_s42_lr0.00015242_wd1e-6_bs512_hid2048_nhl7_np1_tim32_an",  # Best MSE 0.3
+        # NVP V3
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.000183872_wd0.000202358_bs96_hid1792_nhl4_np1_smf6.5_smi2.2_smw16_an",
     ],
     SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3: [
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
@@ -18,10 +22,14 @@ GENERATOR_REGISTRY = {
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
     ],
     SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4: [
-        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
-        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
-        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000531954_wd0.000587484_bs192_hid1280_nhl2_np1_smf7_smi2.5_smw17_an",
-        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
+        # Flow Matching Best Sofar
+        "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000586244_wd6.70521e-5_bs512_hid2048_nhl5_np1_tim32_an",  # Best Edge Correction 4.1%
+        "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000607711_wd3.04221e-5_bs512_hid2048_nhl4_np1_tim32_an",  # Best MSE 0.32
+        # NVP V3
+        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
+        # # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
+        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000531954_wd0.000587484_bs192_hid1280_nhl2_np1_smf7_smi2.5_smw17_an",
+        # # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
         # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
@@ -42,6 +50,24 @@ GENERATOR_REGISTRY = {
 }
 
 REGRESSOR_REGISTRY = {
+    SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3: {
+        "logp": [
+            # R2 0.997
+            "pr_logp_QM9SmilesHRR256F64G1NG3_h256-256_actgelu_nmnone_dp0.0608484_bs192_lr0.000862736_wd9.45431e-5_dep2_h1256_h2256_h3128_h464"
+        ],
+        "qed": [
+            # R2 0.972
+            "pr_qed_QM9SmilesHRR256F64G1NG3_h512-256-128_actsilu_nmln_dp0.0488179_bs64_lr0.000635342_wd0.000222651_dep4_h1512_h2256_h3128_h432"
+        ],
+        "sa_score": [
+            # R2 0.962
+            "pr_sa_score_QM9SmilesHRR256F64G1NG3_h512-256_actgelu_nmln_dp0.0968623_bs64_lr0.00045275_wd1.98273e-6_dep2_h1512_h2256_h3128_h464"
+        ],
+        "max_ring_size": [
+            # R2 0.981
+            "pr_max_ring_size_QM9SmilesHRR256F64G1NG3_h256-128-64_actgelu_nmln_dp0.160439_bs416_lr0.000834231_wd0.000260083_dep3_h1256_h2128_h364_h432"
+        ],
+    },
     SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3: {
         "logp": [
             "pr_logp_QM9SmilesHRR1600F64G1NG3_h512-256-128_actgelu_nmnone_dp0.010168_bs320_lr0.000355578_wd1e-5_dep3_h1512_h2256_h3128_h4160"
@@ -53,6 +79,24 @@ REGRESSOR_REGISTRY = {
             "pr_sa_score_QM9SmilesHRR1600F64G1NG3_h768-256-64_actlrelu_nmln_dp0.0600357_bs352_lr0.000649563_wd0.0005_dep4_h1768_h2256_h364_h4160"
         ],
         "max_ring_size": [],
+    },
+    SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4: {
+        "logp": [
+            # R2 0.993
+            "pr_logp_ZincSmilesHRR256F645G1NG4_h1536-896-128_actsilu_nmnone_dp0.126723_bs352_lr8.63507e-5_wd2.79657e-5_dep3_h11536_h2896_h3128_h432"
+        ],
+        "qed": [
+            # R2 0.972
+            "pr_qed_ZincSmilesHRR256F645G1NG4_h1536-768-128_actsilu_nmln_dp0.177653_bs224_lr0.000535982_wd1.36428e-6_dep3_h11536_h2768_h3128_h464"
+        ],
+        "sa_score": [
+            # R2 0.991
+            "pr_sa_score_ZincSmilesHRR256F645G1NG4_h1792-896-128_actsilu_nmln_dp0.0621965_bs64_lr0.000961478_wd0.000121413_dep4_h11792_h2896_h3128_h432"
+        ],
+        "max_ring_size": [
+            # R2 0.947
+            "pr_max_ring_size_ZincSmilesHRR256F645G1NG4_h1792-896-128_actsilu_nmnone_dp0.171144_bs384_lr0.00010041_wd1.91305e-5_dep3_h11792_h2896_h3128_h432"
+        ],
     },
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: {
         "logp": [
@@ -85,19 +129,19 @@ DECODER_SETTINGS = {
         "prefer_smaller_corrective_edits": False,
         "fallback_decoder_settings": {
             "initial_limit": 2048,
-            "limit": 1024,
-            "beam_size": 1024,
+            "limit": 2048,
+            "beam_size": 2048,
             "pruning_method": "cos_sim",
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
             "use_g3_instead_of_h3": False,
             "validate_ring_structure": False,
-            "use_modified_graph_embedding": True,
+            "use_modified_graph_embedding": False,
             "random_sample_ratio": 0.0,
         },
     },
     "zinc": {
-        "iteration_budget": 20,
+        "iteration_budget": 40,
         "max_graphs_per_iter": 512,
         "top_k": 10,
         "sim_eps": 0.0001,
@@ -111,8 +155,8 @@ DECODER_SETTINGS = {
             "use_size_aware_pruning": True,
             "use_one_initial_population": False,
             "use_g3_instead_of_h3": False,
-            "validate_ring_structure": True,
-            "use_modified_graph_embedding": True,
+            "validate_ring_structure": False,
+            "use_modified_graph_embedding": False,
             "random_sample_ratio": 0.0,
         },
     },

@@ -6,6 +6,8 @@ from pathlib import Path
 import normflows as nf
 import pytorch_lightning as pl
 import torch
+from normflows.flows.neural_spline.coupling import PiecewiseRationalQuadraticCoupling
+from normflows.nets import ResidualNet
 from torch import Tensor, nn
 
 from src.encoding.configs_and_constants import SupportedDataset
@@ -410,6 +412,202 @@ class RealNVPV3Lightning(RealNVPV2Lightning):  # Inherit all helpers
         # --- Base Distribution ---
         base = nf.distributions.DiagGaussian(self.flat_dim, trainable=False)
         self.flow = nf.NormalizingFlow(q0=base, flows=flows)
+
+
+@dataclass
+class SFConfig:
+    """Configuration for the SplineFlowLightning Model."""
+
+    exp_dir_name: str | None = None
+    seed: int = 42
+    epochs: int = 1200
+    batch_size: int = 256
+    lr: float = 1e-4
+    weight_decay: float = 1e-6
+    device: str = "cuda"
+    dropout_probability: float = 0.0
+
+    hv_dim: int = 256
+    hv_count: int = 2
+    vsa: str = "HRR"
+    dataset: SupportedDataset = SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4
+
+    per_term_standardization: bool = True
+    use_act_norm: bool = True
+
+    num_flows: int = 8
+    num_hidden_channels: int = 512
+    num_bins: int = 8
+    num_blocks: int = 2  # Number of residual blocks in the conditioner
+
+
+@register_model("SplineFlow")
+class SplineFlowLightning(RealNVPV2Lightning):  # Inherits from your base class
+    def __init__(self, cfg):
+        AbstractNFModel.__init__(self, cfg)
+        D = int(cfg.hv_dim)
+        self.D = D
+        dim_multiplier = 2 if not hasattr(cfg, "hv_count") else cfg.hv_count
+        self.hv_count = dim_multiplier
+        self.flat_dim = dim_multiplier * D
+
+        # --- Buffers ---
+        default = torch.get_default_dtype()
+        self.register_buffer("mu", torch.zeros(self.flat_dim, dtype=default))
+        self.register_buffer("log_sigma", torch.zeros(self.flat_dim, dtype=default))
+
+        self.per_term_standardization = getattr(cfg, "per_term_standardization", True)
+        self._per_term_split = D
+
+        # --- Semantic Masks ---
+        mask_a = torch.zeros(self.flat_dim, dtype=default)
+        mask_a[D:] = 1.0  # Uses graph_terms (1s) to update edge_terms (0s)
+        self.register_buffer("mask_a", mask_a)
+
+        mask_b = 1.0 - mask_a  # Uses edge_terms (1s) to update graph_terms (0s)
+        self.register_buffer("mask_b", mask_b)
+
+        # --- Build the Spline Flow ---
+        flows = []
+
+        use_act_norm = getattr(cfg, "use_act_norm", True)
+        if use_act_norm:
+            flows.append(nf.flows.ActNorm(self.flat_dim))
+
+        # --- Get HPO parameters from config ---
+        hidden = int(getattr(cfg, "num_hidden_channels", 512))
+        num_bins = int(getattr(cfg, "num_bins", 8))
+        num_blocks = int(getattr(cfg, "num_blocks", 2))  # Get the new HPO param
+        dropout_prob = float(getattr(cfg, "dropout_probability", 0.0))
+
+        for i in range(int(cfg.num_flows)):
+            # The API needs a function that *creates* the net
+            def create_conditioner(in_features, out_features):
+                """
+                in_features will be D (256)
+                out_features will be D * ((3*num_bins)+1)
+                """
+                # Use ResidualNet, which has the correct forward(inputs, context=None) signature
+                return ResidualNet(
+                    in_features=in_features,
+                    out_features=out_features,
+                    hidden_features=hidden,  # HPO param
+                    num_blocks=num_blocks,  # HPO param
+                    activation=nn.ReLU(),
+                    dropout_probability=dropout_prob,
+                    use_batch_norm=False,
+                    context_features=None,  # We are not using external context
+                )
+
+            mask = self.mask_a if i % 2 == 0 else self.mask_b
+
+            flows.append(
+                PiecewiseRationalQuadraticCoupling(
+                    mask=mask,
+                    transform_net_create_fn=create_conditioner,
+                    num_bins=num_bins,
+                    tails="linear",
+                    # This bound is now for the *central* spline region.
+                    # 3.0 is a safe and robust choice that covers
+                    # >99% of a standard Gaussian.
+                    tail_bound=3.0,
+                )
+            )
+
+            flows.append(nf.flows.Permute(self.flat_dim, mode="shuffle"))
+
+        base = nf.distributions.DiagGaussian(self.flat_dim, trainable=False)
+        self.flow = nf.NormalizingFlow(q0=base, flows=flows)
+
+    def set_standardization(self, mu, sigma, eps=1e-6):
+        tgt_dtype = self.mu.dtype
+        mu = torch.as_tensor(mu, dtype=tgt_dtype, device=self.device)
+        sigma = torch.as_tensor(sigma, dtype=tgt_dtype, device=self.device)
+        self.mu.copy_(mu)
+        self.log_sigma.copy_(torch.log(torch.clamp(sigma, min=eps)))
+
+    def _pretransform(self, x):
+        if self.per_term_standardization and self._per_term_split is not None:
+            split = self._per_term_split
+            edge, graph = x[..., :split], x[..., split:]
+            mu_edge, mu_graph = self.mu[:split], self.mu[split:]
+            log_sigma_edge, log_sigma_graph = self.log_sigma[:split], self.log_sigma[split:]
+            z_edge = (edge - mu_edge) * torch.exp(-log_sigma_edge)
+            z_graph = (graph - mu_graph) * torch.exp(-log_sigma_graph)
+            z = torch.cat([z_edge, z_graph], dim=-1)
+        else:
+            z = (x - self.mu) * torch.exp(-self.log_sigma)
+        return z, float(self.log_sigma.sum().item())
+
+    def _posttransform(self, z):
+        if self.per_term_standardization and self._per_term_split is not None:
+            split = self._per_term_split
+            z_edge, z_graph = z[..., :split], z[..., split:]
+            mu_edge, mu_graph = self.mu[:split], self.mu[split:]
+            log_sigma_edge, log_sigma_graph = self.log_sigma[:split], self.log_sigma[split:]
+            edge = mu_edge + z_edge * torch.exp(log_sigma_edge)
+            graph = mu_graph + z_graph * torch.exp(log_sigma_graph)
+            return torch.cat([edge, graph], dim=-1)
+        return self.mu + z * torch.exp(self.log_sigma)
+
+    def decode_from_latent(self, z_std):
+        x_std = self.flow.forward(z_std)
+        return self._posttransform(x_std)
+
+    def on_train_epoch_start(self):
+        """
+        Override parent's method.
+        The parent method warms up s_modules, which we don't have.
+        So we just do nothing.
+        """
+
+    def training_step(self, batch, batch_idx):
+        """
+        Override parent's method to remove s_modules logging.
+        """
+        flat = self._flat_from_batch(batch)
+        obj = self.nf_forward_kld(flat)  # [B]
+        obj = obj[torch.isfinite(obj)]
+        if obj.numel() == 0:
+            self.log("nan_loss_batches", 1.0, on_step=True, prog_bar=True, batch_size=flat.size(0))
+            return None
+
+        loss = obj.mean()
+        self.log(
+            "train_loss",
+            float(loss.detach().cpu().item()),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            batch_size=flat.size(0),
+        )
+
+        # The s_pre_absmax logging from the parent is now gone.
+
+        return loss
+
+    @torch.no_grad()
+    def sample_split(self, num_samples: int) -> dict:
+        z, _logs = self.sample(num_samples)
+        x = self._posttransform(z)
+        edge_terms, graph_terms = self.split(x)
+        return {"edge_terms": edge_terms, "graph_terms": graph_terms, "logs": _logs}
+
+    def nf_forward_kld(self, flat):
+        z, log_det_corr = self._pretransform(flat)
+        nll = -self.flow.log_prob(z) + log_det_corr
+        return nll
+
+    # --- Other helpers from V2 ---
+    def on_fit_start(self):
+        with contextlib.suppress(Exception):
+            torch.set_float32_matmul_precision("high")
+
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        return batch.to(device)
+
+    def on_after_batch_transfer(self, batch, dataloader_idx: int):
+        return _cast_to_dtype(batch, self.dtype)
 
 
 # Flow mathing -------------------------------------------------------------------------------------------------------

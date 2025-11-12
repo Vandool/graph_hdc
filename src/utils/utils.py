@@ -1334,6 +1334,383 @@ class DataTransformer:
 
         return mol, nx_to_rd
 
+    @staticmethod
+    def nx_to_mol_v3(
+        G: nx.Graph,
+        *,
+        dataset: Literal["qm9", "zinc"] | None = None,
+        atom_symbols: Sequence[str] | None = None,
+        infer_bonds: bool = False,
+        set_atom_map_nums: bool = False,
+        sanitize: bool = True,
+        kekulize: bool = False,
+        validate_heavy_degree: bool = False,
+    ):
+        r"""
+        Build an RDKit molecule from an **undirected** NetworkX graph whose node features are **frozen**.
+
+        **V3: Correctness-Focused Version**
+        -----------------------------------
+        This is an improved version of ``nx_to_mol_v2`` with critical correctness fixes:
+
+        **Improvements over V2:**
+
+        1. **Fixed nitrogen valence bug**: Removed chemically impossible valence 5 for neutral nitrogen
+        2. **Self-loop validation**: Raises ``ValueError`` if graph contains self-loops (atoms cannot bond to themselves)
+        3. **Halogen safety**: Final enforcement that halogen bonds remain SINGLE (chemical constraint)
+        4. **Empty graph handling**: Returns ``(None, None)`` to signal invalid/failed generation
+        5. **Type hint fix**: Proper type annotation for ``dataset`` parameter
+        6. **ValueError over AssertionError**: Production-safe validation (cannot be disabled with -O flag)
+
+        **Node feature contract**
+        -------------------------
+        Each node must have ``feat`` as a 4-tuple (or 5-tuple):
+
+        - ``atom_type_idx``: int — index into the dataset's atom symbol list
+        - ``degree_idx``: int — **heavy** degree minus 1 (i.e., ``nx_degree == degree_idx + 1``)
+        - ``charge_idx``: int — mapped formal charge where {0, +1, −1} → {0, 1, 2}
+        - ``total_hs``: int — **total** hydrogens (explicit + implicit) to be *frozen*
+        - (optional 5th element): **silently ignored** for backward compatibility
+
+        The function **does not change** these features. It sets:
+        - ``Atom.SetNoImplicit(True)`` and
+        - ``Atom.SetNumExplicitHs(total_hs)``
+
+        So RDKit will neither add nor remove hydrogens during sanitization.
+
+        **Over-bonded atoms**: If features encode chemically impossible valence (e.g., F with 2 neighbors),
+        no error is raised during bond inference. Instead, sanitization will fail and the ``_SanitizationError``
+        property will be set on the returned molecule. This allows the generation pipeline to detect
+        chemically invalid molecules while preserving the frozen feature contract.
+
+        Parameters
+        ----------
+        G:
+            Undirected ``networkx.Graph``. Each node has ``feat=(atom_type_idx, degree_idx, charge_idx, total_hs)``
+            or ``feat=(atom_type_idx, degree_idx, charge_idx, total_hs, ignored)``.
+        dataset:
+            Literal ``"qm9"`` or ``"zinc"`` to pick the correct atom symbol list, unless ``atom_symbols`` is provided.
+            ``"qm9"`` → ``["C", "N", "O", "F"]``; ``"zinc"`` → ``["Br","C","Cl","F","I","N","O","P","S"]``.
+        atom_symbols:
+            Optional override atom list (indexable by ``atom_type_idx``). If provided, ``dataset`` is ignored.
+        infer_bonds:
+            If True, infer double/triple bond orders by minimizing per-atom valence deficits using a
+            small valence menu. Otherwise, all bonds are SINGLE.
+        set_atom_map_nums:
+            If True, sets each RDKit atom's map number to the original NX node id (for debugging).
+        sanitize:
+            If True, call ``Chem.SanitizeMol``; on failure, attach ``_SanitizationError`` property and return the
+            unsanitized molecule.
+        kekulize:
+            If True and sanitize succeeded, call ``Chem.Kekulize(mol, clearAromaticFlags=True)``.
+        validate_heavy_degree:
+            If True, validates that ``G.degree[n] == degree_idx + 1`` for all nodes.
+
+        Returns
+        -------
+        (mol, nx_to_rd):
+            The RDKit ``Mol`` and a mapping from NX node id → RDKit atom index.
+            Returns ``(None, None)`` if the graph is empty (signals invalid generation).
+
+        Raises
+        ------
+        ValueError:
+            If self-loop detected, invalid atom type index, unsupported charge index,
+            or heavy degree mismatch (when ``validate_heavy_degree=True``).
+
+        Notes
+        -----
+        - Bond order inference uses backtracking search (can be slow for complex molecules).
+        - If total deficit is odd (mathematically impossible to satisfy), bond inference is disabled.
+        - Resonance/aromatic systems may have multiple valid assignments.
+        - Empty graphs return ``(None, None)`` to indicate failed/invalid generation.
+
+        Examples
+        --------
+        >>> G = nx.Graph()
+        >>> G.add_node(0, feat=(1, 0, 0, 3))  # C with degree=1, 3 H
+        >>> G.add_node(1, feat=(1, 0, 0, 3))  # C with degree=1, 3 H
+        >>> G.add_edge(0, 1)
+        >>> mol, mapping = DataTransformer.nx_to_mol_v3(G, dataset="qm9", infer_bonds=False)
+        >>> # Returns ethane (CH3-CH3) with single bond
+        """
+        # --- presets & charge mapping ---
+        PRESETS = {
+            "qm9": ["C", "N", "O", "F"],
+            "zinc": ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"],
+        }
+        CHARGE_IDX_TO_VAL = {0: 0, 1: +1, 2: -1}
+
+        # --- EARLY EXIT: empty graph signals invalid generation ---
+        if G.number_of_nodes() == 0:
+            return None, None
+
+        if atom_symbols is None:
+            atom_symbols = PRESETS["zinc"] if dataset is None else PRESETS[str(dataset)]
+
+        def _as_tuple(feat_obj) -> tuple[int, int, int, int, bool | None]:
+            t = feat_obj.to_tuple() if hasattr(feat_obj, "to_tuple") else tuple(int(x) for x in feat_obj)
+            if len(t) not in [4, 5]:
+                msg = f"feat must be a 4-tuple (atom_type_idx, degree_idx, charge_idx, total_hs); got {t}"
+                raise ValueError(msg)
+            return t
+
+        # --- unpack & validate features ---
+        feats: dict[int, tuple] = {}
+        symbols: dict[int, str] = {}
+        charges: dict[int, int] = {}
+        totalHs: dict[int, int] = {}
+        target_deg: dict[int, int] = {}
+
+        max_type_idx = len(atom_symbols) - 1
+        # Efficient attribute detection
+        if G.number_of_nodes() > 0:
+            first_node = next(iter(G.nodes))
+            attr = "feat" if "feat" in G.nodes[first_node] else "type"
+        else:
+            attr = "feat"
+
+        for n in G.nodes:
+            t = _as_tuple(G.nodes[n][attr])
+            at_idx, deg_idx, ch_idx, hs_total = t[0], t[1], t[2], t[3]
+            if not (0 <= at_idx <= max_type_idx):
+                msg = f"atom_type_idx out of range on node {n}: {at_idx} (max {max_type_idx})"
+                raise ValueError(msg)
+            ch_val = CHARGE_IDX_TO_VAL.get(int(ch_idx))
+            if ch_val is None:
+                msg = f"Unsupported charge_idx {ch_idx}; expected 0 (0), 1 (+1), or 2 (-1)"
+                raise ValueError(msg)
+            feats[n] = (at_idx, deg_idx, ch_idx, hs_total)
+            symbols[n] = atom_symbols[at_idx]
+            charges[n] = ch_val
+            totalHs[n] = int(hs_total)
+            target_deg[n] = int(deg_idx) + 1  # heavy degree
+
+        if validate_heavy_degree:
+            for n in G.nodes:
+                if G.degree[n] != target_deg[n]:
+                    msg = f"Heavy degree mismatch at node {n}: NX={G.degree[n]} vs feature={target_deg[n]}"
+                    raise ValueError(msg)  # Changed from AssertionError
+
+        # --- initial bond orders (SINGLE) on undirected edges ---
+        # --- ADDED: self-loop validation ---
+        order: dict[tuple[int, int], int] = {}
+        for u, v in G.edges:
+            if u == v:
+                raise ValueError(
+                    f"Self-loop detected on node {u}. "
+                    f"Atoms cannot bond to themselves (chemically impossible)."
+                )
+            a, b = (u, v) if u < v else (v, u)
+            order[(a, b)] = 1
+
+        # --- bond-order inference (balanced), replaces your current infer_bonds block ---
+        if infer_bonds and order:
+            # FIXED: Nitrogen valence menu - removed impossible valence 5
+            VALENCE = {
+                "C": {0: (4,), -1: (3, 4), +1: (3,)},
+                "N": {0: (3,), -1: (2, 3), +1: (4,)},  # FIXED: was (3, 5)
+                "O": {0: (2,), -1: (1, 2), +1: (3,)},
+                "P": {0: (3, 5), +1: (4, 5)},
+                "S": {0: (2, 4, 6), +1: (3, 5), -1: (1, 2)},
+                "F": {0: (1,)},
+                "Cl": {0: (1,)},
+                "Br": {0: (1,)},
+                "I": {0: (1,)},
+            }
+            hetero = {"N", "O", "S", "P"}
+            halogens = {"F", "Cl", "Br", "I"}
+
+            def target_valence(n: int) -> int:
+                sym, ch = symbols[n], charges[n]
+                menu = VALENCE.get(sym, {0: (target_deg[n] + totalHs[n],)})
+                opts = menu.get(ch, menu.get(0, (target_deg[n] + totalHs[n],)))
+                # choose the smallest allowed valence ≥ current usage with single bonds
+                used_single = totalHs[n] + target_deg[n]
+                for v in sorted(opts):
+                    if v >= used_single:
+                        return v
+                return max(opts)
+
+            # deficits relative to all-single bonds
+            b = {n: max(0, target_valence(n) - (totalHs[n] + target_deg[n])) for n in G.nodes}
+
+            # quick impossibility checks
+            total_b = sum(b.values())
+            if total_b % 2 != 0:
+                # impossible to satisfy all deficits exactly; leave singles and let sanitize decide
+                b = dict.fromkeys(b, 0)  # no raises
+            else:
+                # per-edge capacity (0..2 increments), disallow raises on halogen bonds
+                cap = {}
+                for u, v in G.edges:
+                    a, c = (u, v) if u < v else (v, u)
+                    if symbols[a] in halogens or symbols[c] in halogens:
+                        cap[(a, c)] = 0  # halogens kept SINGLE
+                    else:
+                        cap[(a, c)] = 2  # can raise to DOUBLE/TRIPLE
+
+                # per-node capacity: sum of incident caps
+                for n in G.nodes:
+                    if b[n] > sum(cap[(min(n, m), max(n, m))] for m in G.neighbors(n)):
+                        # impossible at this valence choice
+                        b = dict.fromkeys(b, 0)
+                        break
+
+                # backtracking search for x_e ∈ {0,1,2} s.t. degree constraints hit exactly b[n]
+                if any(b.values()):
+                    # deterministic edge order: prefer ring edges and hetero involvement
+                    try:
+                        cycles = nx.cycle_basis(G)
+                    except Exception:
+                        cycles = []
+                    ring_edges = {
+                        tuple(sorted((cyc[i], cyc[(i + 1) % len(cyc)]))) for cyc in cycles for i in range(len(cyc))
+                    }
+
+                    def e_priority(a, c):
+                        in_ring = (a, c) in ring_edges
+                        het = int(symbols[a] in hetero) + int(symbols[c] in hetero)
+                        return (int(in_ring), het, -(cap[(a, c)]))  # ring>hetero>higher cap
+
+                    E = sorted(
+                        (tuple(sorted(e)) for e in G.edges if cap[tuple(sorted(e))] > 0),
+                        key=lambda ec: e_priority(*ec),
+                        reverse=True,
+                    )
+                    x = dict.fromkeys(order, 0)  # increments; defaults to 0 for edges
+
+                    # choose next vertex with largest remaining deficit
+                    def next_vertex():
+                        cand = [n for n, dv in b.items() if dv > 0]
+                        if not cand:
+                            return None
+                        cand.sort(key=lambda n: (b[n], symbols[n] in hetero, n), reverse=True)
+                        return cand[0]
+
+                    # map edges incident to n
+                    inc = {n: [e for e in E if n in e] for n in G.nodes}
+
+                    solved = False
+
+                    def dfs():
+                        nonlocal solved
+                        v = next_vertex()
+                        if v is None:
+                            solved = True
+                            return
+                        # try to push increments on incident edges that also help a neighbor with deficit
+                        nbs = [e for e in inc[v] if x[e] < cap[e]]
+                        # sort neighbors by neighbor deficit and edge priority
+                        nbs.sort(key=lambda e: (b[e[0] if e[1] == v else e[1]], e_priority(*e)), reverse=True)
+                        for e in nbs:
+                            u, w = e
+                            other = w if u == v else u
+                            if b[other] <= 0:
+                                continue
+                            # add one increment on e
+                            x[e] += 1
+                            b[v] -= 1
+                            b[other] -= 1
+                            dfs()
+                            if solved:
+                                return
+                            # backtrack
+                            x[e] -= 1
+                            b[v] += 1
+                            b[other] += 1
+
+                    dfs()
+                    if solved:
+                        for (a, c), incs in x.items():
+                            order[(a, c)] = 1 + incs
+                    else:
+                        # fall back to original greedy raiser (keeps previous 'order' singles unless raised)
+                        def current_usage(n: int) -> int:
+                            s = totalHs[n]
+                            for nb in G.neighbors(n):
+                                aa, bb = (n, nb) if n < nb else (nb, n)
+                                s += order[(aa, bb)]
+                            return s
+
+                        def deficit(n: int) -> int:
+                            return max(0, target_valence(n) - current_usage(n))
+
+                        def bond_priority(u: int, v: int):
+                            a, c = (u, v) if u < v else (v, u)
+                            in_ring = 1 if (a, c) in ring_edges else 0
+                            het_count = int(symbols[u] in hetero) + int(symbols[v] in hetero)
+                            return (in_ring, het_count, -order[(a, c)])
+
+                        MAX_ITERS = 4 * len(order)
+                        iters = 0
+                        while True:
+                            cand = [n for n in G.nodes if deficit(n) > 0]
+                            if not cand or iters >= MAX_ITERS:
+                                break
+                            cand.sort(key=lambda n: (deficit(n), symbols[n] in hetero, n), reverse=True)
+                            changed = False
+                            for n in cand:
+                                if deficit(n) <= 0:
+                                    continue
+                                nbs = [
+                                    m
+                                    for m in G.neighbors(n)
+                                    if deficit(m) > 0 and order[(n, m) if n < m else (m, n)] < 3
+                                ]
+                                if not nbs:
+                                    continue
+                                nbs.sort(key=lambda m: bond_priority(n, m), reverse=True)
+                                m = nbs[0]
+                                a, c = (n, m) if n < m else (m, n)
+                                if symbols[a] in halogens or symbols[c] in halogens:
+                                    continue
+                                order[(a, c)] += 1
+                                changed = True
+                            iters += 1
+                            if not changed:
+                                break
+
+            # --- ADDED: Final halogen safety clip (defense-in-depth) ---
+            for (a, b), bo in list(order.items()):
+                if symbols[a] in halogens or symbols[b] in halogens:
+                    if bo > 1:
+                        order[(a, b)] = 1
+
+        # --- build RDKit mol (features frozen) ---
+        rw = Chem.RWMol()
+        nx_to_rd: dict[int, int] = {}
+        for n in sorted(G.nodes):
+            at_idx, deg_idx, ch_idx, hs_total = feats[n]
+            a = Chem.Atom(symbols[n])
+            a.SetFormalCharge(charges[n])
+            a.SetNumExplicitHs(totalHs[n])
+            a.SetNoImplicit(True)
+            nx_to_rd[n] = rw.AddAtom(a)
+
+        for a, b in sorted(tuple(sorted(e)) for e in G.edges):
+            bo = order.get((a, b), 1)
+            bt = Chem.BondType.SINGLE if bo == 1 else Chem.BondType.DOUBLE if bo == 2 else Chem.BondType.TRIPLE
+            rw.AddBond(nx_to_rd[a], nx_to_rd[b], bt)
+
+        mol = rw.GetMol()
+
+        if set_atom_map_nums:
+            for n, rd_idx in nx_to_rd.items():
+                mol.GetAtomWithIdx(rd_idx).SetAtomMapNum(int(n))
+
+        if sanitize:
+            try:
+                Chem.SanitizeMol(mol)
+                if kekulize:
+                    with contextlib.suppress(Exception):
+                        Chem.Kekulize(mol, clearAromaticFlags=True)
+            except Exception as e:
+                with contextlib.suppress(Exception):
+                    mol.SetProp("_SanitizationError", str(e))
+
+        return mol, nx_to_rd
+
 
 def generated_node_edge_dist(
     generated_node_types: dict[int, Counter],
