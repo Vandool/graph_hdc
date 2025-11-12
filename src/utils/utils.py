@@ -517,7 +517,7 @@ class DataTransformer:
         node_attr = "feat" if "feat" in G.nodes[next(iter(G.nodes))] else "type"
 
         # Features: extract from specified attribute
-        if use_to_tuple:
+        if node_attr == "feat":
             feats: list[list[int]] = [list(G.nodes[n][node_attr].to_tuple()) for n in nodes]
         else:
             feats: list[list[int]] = [list(G.nodes[n][node_attr]) for n in nodes]

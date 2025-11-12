@@ -153,7 +153,7 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                         matching_components=matching_components, id_to_type=id_to_type, max_samples=1024
                     )
                     # custom nx -> data
-                    pyg_graphs = [DataTransformer.nx_to_pyg_with_type_attr(g) for g in decoded_graphs]
+                    pyg_graphs = [DataTransformer.nx_to_pyg(g) for g in decoded_graphs]
                     batch = Batch.from_data_list(pyg_graphs)
                     g_hdc = hypernet.forward(batch)["graph_embedding"]
 

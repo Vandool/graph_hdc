@@ -84,7 +84,7 @@ class DatasetInfo:
 
 def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
     """
-    Analyzes a dataset ('qm9' or 'zinc') to extract global information about
+    Analyzes a dataset ('qm9', 'zinc', or 'zinc_ring_count') to extract global information about
     node features, edge features, and ring structures (for ZINC).
 
     Results are cached as a raw dictionary to the dataset's processed_dir.

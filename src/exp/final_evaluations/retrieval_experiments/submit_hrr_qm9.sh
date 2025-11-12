@@ -1,7 +1,7 @@
 #!/bin/bash
 #!/usr/bin/env bash
 # Submit HRR experiments on QM9 dataset
-# 40 jobs: 5 dimensions × 4 depths × 1 iteration_budget
+# 24 jobs: 3 dimensions × 4 depths × 1 iteration_budget × 2 decoders
 # Runtime: 2h, CPUs: 4
 #
 # Usage:
@@ -35,8 +35,9 @@ echo "=========================================="
 VSA="HRR"
 DATASET="qm9"
 ITER_BUDGET=1
-HV_DIMS=(256 512 1024 1600 2048)
+HV_DIMS=(256 512 1024)
 DEPTHS=(2 3 4 5)
+DECODERS=("pattern_matching" "greedy")
 
 # Counter for submitted jobs
 TOTAL_JOBS=0
@@ -47,13 +48,15 @@ echo ""
 
 for dim in "${HV_DIMS[@]}"; do
     for depth in "${DEPTHS[@]}"; do
-        echo ">>> Submitting HRR QM9 - dim=$dim, depth=$depth, iter_budget=$ITER_BUDGET"
+        for decoder in "${DECODERS[@]}"; do
+            echo ">>> Submitting HRR QM9 - dim=$dim, depth=$depth, iter_budget=$ITER_BUDGET, decoder=$decoder"
 
-        # Override time for QM9 (2 hours)
-        TIME_LIMIT="02:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$ITER_BUDGET"
+            # Override time for QM9 (2 hours)
+            TIME_LIMIT="02:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$ITER_BUDGET" "$decoder"
 
-        TOTAL_JOBS=$((TOTAL_JOBS + 1))
-        sleep 0.2
+            TOTAL_JOBS=$((TOTAL_JOBS + 1))
+            sleep 0.2
+        done
     done
 done
 

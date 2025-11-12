@@ -25,7 +25,7 @@ plt.rcParams["savefig.dpi"] = 300
 plt.rcParams["savefig.bbox"] = "tight"
 
 
-def plot_accuracy_vs_dim_by_depth(df: pd.DataFrame, metric: str, output_path: Path, dataset: str, vsa: str):
+def plot_accuracy_vs_dim_by_depth(df: pd.DataFrame, metric: str, output_path: Path, dataset: str, vsa: str, decoder: str):
     """
     Plot accuracy vs. hypervector dimension, with separate lines for each depth.
 
@@ -41,11 +41,13 @@ def plot_accuracy_vs_dim_by_depth(df: pd.DataFrame, metric: str, output_path: Pa
         Dataset name for title
     vsa : str
         VSA model name for title
+    decoder : str
+        Decoder type for filtering and title
     """
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Filter for specific dataset and VSA
-    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa)]
+    # Filter for specific dataset, VSA, and decoder
+    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa) & (df["decoder"] == decoder)]
 
     # Get unique depths
     depths = sorted(df_filtered["depth"].unique())
@@ -81,7 +83,7 @@ def plot_accuracy_vs_dim_by_depth(df: pd.DataFrame, metric: str, output_path: Pa
 
     ax.set_xlabel("Hypervector Dimension", fontsize=14, fontweight="bold")
     ax.set_ylabel(metric.replace("_", " ").title(), fontsize=14, fontweight="bold")
-    ax.set_title(f"{dataset.upper()} - {vsa}", fontsize=16, fontweight="bold")
+    ax.set_title(f"{dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()}", fontsize=16, fontweight="bold")
     ax.legend(loc="best", frameon=True, shadow=True)
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 1.05])
@@ -93,7 +95,7 @@ def plot_accuracy_vs_dim_by_depth(df: pd.DataFrame, metric: str, output_path: Pa
     print(f"Saved plot: {output_path}")
 
 
-def plot_timing_breakdown(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str):
+def plot_timing_breakdown(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str, decoder: str):
     """
     Plot timing breakdown (stacked bar chart) for different configurations.
 
@@ -107,9 +109,11 @@ def plot_timing_breakdown(df: pd.DataFrame, output_path: Path, dataset: str, vsa
         Dataset name for filtering
     vsa : str
         VSA model name for filtering
+    decoder : str
+        Decoder type for filtering
     """
-    # Filter for specific dataset and VSA
-    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa)]
+    # Filter for specific dataset, VSA, and decoder
+    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa) & (df["decoder"] == decoder)]
 
     # Select a few representative configurations
     df_filtered = df_filtered[df_filtered["depth"].isin([3, 4])]
@@ -146,7 +150,7 @@ def plot_timing_breakdown(df: pd.DataFrame, output_path: Path, dataset: str, vsa
 
     ax.set_xlabel("Configuration", fontsize=14, fontweight="bold")
     ax.set_ylabel("Time (seconds)", fontsize=14, fontweight="bold")
-    ax.set_title(f"Timing Breakdown - {dataset.upper()} - {vsa}", fontsize=16, fontweight="bold")
+    ax.set_title(f"Timing Breakdown - {dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()}", fontsize=16, fontweight="bold")
     ax.set_xticks(x)
     ax.set_xticklabels(configs, fontsize=10)
     ax.legend(loc="best", frameon=True, shadow=True)
@@ -159,7 +163,7 @@ def plot_timing_breakdown(df: pd.DataFrame, output_path: Path, dataset: str, vsa
     print(f"Saved plot: {output_path}")
 
 
-def plot_correction_level_distribution(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str):
+def plot_correction_level_distribution(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str, decoder: str):
     """
     Plot distribution of correction levels as a stacked bar chart.
 
@@ -173,9 +177,11 @@ def plot_correction_level_distribution(df: pd.DataFrame, output_path: Path, data
         Dataset name for filtering
     vsa : str
         VSA model name for filtering
+    decoder : str
+        Decoder type for filtering
     """
-    # Filter for specific dataset and VSA
-    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa)]
+    # Filter for specific dataset, VSA, and decoder
+    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa) & (df["decoder"] == decoder)]
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
@@ -211,7 +217,7 @@ def plot_correction_level_distribution(df: pd.DataFrame, output_path: Path, data
 
     ax.set_xlabel("Configuration", fontsize=14, fontweight="bold")
     ax.set_ylabel("Percentage (%)", fontsize=14, fontweight="bold")
-    ax.set_title(f"Correction Level Distribution - {dataset.upper()} - {vsa}", fontsize=16, fontweight="bold")
+    ax.set_title(f"Correction Level Distribution - {dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()}", fontsize=16, fontweight="bold")
     ax.set_xticks(x)
     ax.set_xticklabels(configs, fontsize=10, rotation=45, ha="right")
     ax.legend(loc="best", frameon=True, shadow=True)
@@ -225,7 +231,7 @@ def plot_correction_level_distribution(df: pd.DataFrame, output_path: Path, data
     print(f"Saved plot: {output_path}")
 
 
-def plot_heatmap_accuracy(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str, metric: str):
+def plot_heatmap_accuracy(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str, decoder: str, metric: str):
     """
     Plot heatmap of accuracy with depth on y-axis and dimension on x-axis.
 
@@ -239,11 +245,13 @@ def plot_heatmap_accuracy(df: pd.DataFrame, output_path: Path, dataset: str, vsa
         Dataset name for filtering
     vsa : str
         VSA model name for filtering
+    decoder : str
+        Decoder type for filtering
     metric : str
         Metric to plot
     """
-    # Filter for specific dataset and VSA
-    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa)]
+    # Filter for specific dataset, VSA, and decoder
+    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa) & (df["decoder"] == decoder)]
 
     # Pivot table for heatmap
     pivot_df = df_filtered.pivot_table(values=metric, index="depth", columns="hv_dim")
@@ -263,7 +271,7 @@ def plot_heatmap_accuracy(df: pd.DataFrame, output_path: Path, dataset: str, vsa
 
     ax.set_xlabel("Hypervector Dimension", fontsize=14, fontweight="bold")
     ax.set_ylabel("Depth", fontsize=14, fontweight="bold")
-    ax.set_title(f"{dataset.upper()} - {vsa} - {metric.replace('_', ' ').title()}", fontsize=16, fontweight="bold")
+    ax.set_title(f"{dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()} - {metric.replace('_', ' ').title()}", fontsize=16, fontweight="bold")
 
     plt.tight_layout()
     plt.savefig(output_path)
@@ -272,7 +280,7 @@ def plot_heatmap_accuracy(df: pd.DataFrame, output_path: Path, dataset: str, vsa
     print(f"Saved plot: {output_path}")
 
 
-def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str):
+def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, dataset: str, vsa: str, decoder: str):
     """
     Plot comparison of iteration budgets (for ZINC only).
 
@@ -286,9 +294,11 @@ def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, datase
         Dataset name (should be "zinc")
     vsa : str
         VSA model name for filtering
+    decoder : str
+        Decoder type for filtering
     """
-    # Filter for specific dataset and VSA
-    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa)]
+    # Filter for specific dataset, VSA, and decoder
+    df_filtered = df[(df["dataset"] == dataset) & (df["vsa_model"] == vsa) & (df["decoder"] == decoder)]
 
     # Get unique iteration budgets
     iter_budgets = sorted(df_filtered["iteration_budget"].unique())
@@ -319,7 +329,7 @@ def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, datase
 
     ax.set_xlabel("Hypervector Dimension", fontsize=14, fontweight="bold")
     ax.set_ylabel("Graph Accuracy", fontsize=14, fontweight="bold")
-    ax.set_title(f"Accuracy vs Iteration Budget - {dataset.upper()} - {vsa}", fontsize=14, fontweight="bold")
+    ax.set_title(f"Accuracy vs Iteration Budget - {dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()}", fontsize=14, fontweight="bold")
     ax.legend(loc="best", frameon=True, shadow=True)
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 1.05])
@@ -343,7 +353,7 @@ def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, datase
 
     ax.set_xlabel("Hypervector Dimension", fontsize=14, fontweight="bold")
     ax.set_ylabel("Graph Decoding Time (s)", fontsize=14, fontweight="bold")
-    ax.set_title(f"Timing vs Iteration Budget - {dataset.upper()} - {vsa}", fontsize=14, fontweight="bold")
+    ax.set_title(f"Timing vs Iteration Budget - {dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()}", fontsize=14, fontweight="bold")
     ax.legend(loc="best", frameon=True, shadow=True)
     ax.grid(True, alpha=0.3)
 
@@ -354,7 +364,7 @@ def plot_iteration_budget_comparison(df: pd.DataFrame, output_path: Path, datase
     print(f"Saved plot: {output_path}")
 
 
-def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, dataset: str, vsa: str):
+def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, dataset: str, vsa: str, decoder: str):
     """
     Plot hit rate by node size for different configurations (dimensions and depths).
 
@@ -370,25 +380,28 @@ def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, d
     dataset : str
         Dataset name ("qm9" or "zinc")
     vsa : str
-        VSA model name ("HRR" or "MAP")
+        VSA model name ("HRR")
+    decoder : str
+        Decoder type ("pattern_matching" or "greedy")
     """
-    # Find all detailed CSV files for this dataset/VSA combination
-    pattern = f"{vsa}_{dataset}_*_detailed.csv"
+    # Find all detailed CSV files for this dataset/VSA/decoder combination
+    pattern = f"{vsa}_{dataset}_*_{decoder}_detailed.csv"
     csv_files = list(results_dir.glob(pattern))
 
     if not csv_files:
-        print(f"No detailed CSV files found for {dataset} - {vsa}")
+        print(f"No detailed CSV files found for {dataset} - {vsa} - {decoder}")
         return
 
     # Parse configuration from filename and load data
     configs_data = []
     for csv_file in csv_files:
         # Extract dim, depth, iter from filename
-        # Format: {vsa}_{dataset}_dim{dim}_depth{depth}_iter{iter}_detailed.csv
+        # Format: {vsa}_{dataset}_dim{dim}_depth{depth}_iter{iter}_{decoder}_detailed.csv
         parts = csv_file.stem.split("_")
         dim = None
         depth = None
         iter_budget = None
+        found_decoder = None
 
         for i, part in enumerate(parts):
             if part.startswith("dim"):
@@ -397,8 +410,14 @@ def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, d
                 depth = int(part[5:])
             elif part.startswith("iter"):
                 iter_budget = int(part[4:])
+            elif part in ["pattern", "greedy"]:
+                # Handle decoder name (might be split across parts for pattern_matching)
+                if part == "pattern" and i + 1 < len(parts) and parts[i + 1] == "matching":
+                    found_decoder = "pattern_matching"
+                elif part == "greedy":
+                    found_decoder = "greedy"
 
-        if dim is None or depth is None or iter_budget is None:
+        if dim is None or depth is None or iter_budget is None or found_decoder != decoder:
             continue
 
         # Load detailed results
@@ -458,7 +477,7 @@ def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, d
 
         ax.set_xlabel("Number of Nodes (Molecule Size)", fontsize=14, fontweight="bold")
         ax.set_ylabel("Hit Rate (%)", fontsize=14, fontweight="bold")
-        title = f"Hit Rate by Molecular Size - {dataset.upper()} - {vsa}"
+        title = f"Hit Rate by Molecular Size - {dataset.upper()} - {vsa} - {decoder.replace('_', ' ').title()}"
         if len(iter_budgets) > 1:
             title += f" (Iter Budget: {iter_budget})"
         ax.set_title(title, fontsize=16, fontweight="bold")
@@ -470,9 +489,9 @@ def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, d
 
         # Save plot
         if len(iter_budgets) > 1:
-            output_path = output_dir / f"{dataset}_{vsa}_hit_rate_by_node_size_iter{iter_budget}.pdf"
+            output_path = output_dir / f"{dataset}_{vsa}_{decoder}_hit_rate_by_node_size_iter{iter_budget}.pdf"
         else:
-            output_path = output_dir / f"{dataset}_{vsa}_hit_rate_by_node_size.pdf"
+            output_path = output_dir / f"{dataset}_{vsa}_{decoder}_hit_rate_by_node_size.pdf"
 
         plt.savefig(output_path)
         plt.close()
@@ -502,82 +521,95 @@ def main():
     print(f"Loaded {len(df)} experiment results")
     print(f"Datasets: {df['dataset'].unique()}")
     print(f"VSA models: {df['vsa_model'].unique()}")
+    print(f"Decoders: {df['decoder'].unique() if 'decoder' in df.columns else ['unknown']}")
     print(f"Dimensions: {sorted(df['hv_dim'].unique())}")
     print(f"Depths: {sorted(df['depth'].unique())}")
 
-    # Generate plots for each dataset and VSA combination
+    # Generate plots for each dataset, VSA, and decoder combination
     for dataset in df["dataset"].unique():
         for vsa in df["vsa_model"].unique():
-            print(f"\nGenerating plots for {dataset.upper()} - {vsa}...")
+            # Check if decoder column exists (backward compatibility)
+            decoders = df["decoder"].unique() if "decoder" in df.columns else ["pattern_matching"]
 
-            # Plot 1: Graph accuracy vs dimension by depth
-            plot_accuracy_vs_dim_by_depth(
-                df,
-                metric="graph_accuracy_mean",
-                output_path=output_dir / f"{dataset}_{vsa}_graph_accuracy_vs_dim.pdf",
-                dataset=dataset,
-                vsa=vsa,
-            )
+            for decoder in decoders:
+                print(f"\nGenerating plots for {dataset.upper()} - {vsa} - {decoder}...")
 
-            # Plot 2: Edge accuracy vs dimension by depth
-            plot_accuracy_vs_dim_by_depth(
-                df,
-                metric="edge_accuracy_mean",
-                output_path=output_dir / f"{dataset}_{vsa}_edge_accuracy_vs_dim.pdf",
-                dataset=dataset,
-                vsa=vsa,
-            )
-
-            # Plot 3: Cosine similarity vs dimension by depth
-            plot_accuracy_vs_dim_by_depth(
-                df,
-                metric="cosine_similarity_mean",
-                output_path=output_dir / f"{dataset}_{vsa}_cosine_similarity_vs_dim.pdf",
-                dataset=dataset,
-                vsa=vsa,
-            )
-
-            # Plot 4: Timing breakdown
-            plot_timing_breakdown(
-                df,
-                output_path=output_dir / f"{dataset}_{vsa}_timing_breakdown.pdf",
-                dataset=dataset,
-                vsa=vsa,
-            )
-
-            # Plot 5: Correction level distribution
-            plot_correction_level_distribution(
-                df,
-                output_path=output_dir / f"{dataset}_{vsa}_correction_levels.pdf",
-                dataset=dataset,
-                vsa=vsa,
-            )
-
-            # Plot 6: Heatmap of graph accuracy
-            plot_heatmap_accuracy(
-                df,
-                output_path=output_dir / f"{dataset}_{vsa}_heatmap_graph_accuracy.pdf",
-                dataset=dataset,
-                vsa=vsa,
-                metric="graph_accuracy_mean",
-            )
-
-            # Plot 7: Iteration budget comparison (ZINC only)
-            if dataset == "zinc":
-                plot_iteration_budget_comparison(
+                # Plot 1: Graph accuracy vs dimension by depth
+                plot_accuracy_vs_dim_by_depth(
                     df,
-                    output_path=output_dir / f"{dataset}_{vsa}_iteration_budget_comparison.pdf",
+                    metric="graph_accuracy_mean",
+                    output_path=output_dir / f"{dataset}_{vsa}_{decoder}_graph_accuracy_vs_dim.pdf",
                     dataset=dataset,
                     vsa=vsa,
+                    decoder=decoder,
                 )
 
-            # Plot 8: Hit rate by node size comparison
-            plot_hit_rate_by_node_size_comparison(
-                results_dir=results_dir,
-                output_dir=output_dir,
-                dataset=dataset,
-                vsa=vsa,
-            )
+                # Plot 2: Edge accuracy vs dimension by depth
+                plot_accuracy_vs_dim_by_depth(
+                    df,
+                    metric="edge_accuracy_mean",
+                    output_path=output_dir / f"{dataset}_{vsa}_{decoder}_edge_accuracy_vs_dim.pdf",
+                    dataset=dataset,
+                    vsa=vsa,
+                    decoder=decoder,
+                )
+
+                # Plot 3: Cosine similarity vs dimension by depth
+                plot_accuracy_vs_dim_by_depth(
+                    df,
+                    metric="cosine_similarity_mean",
+                    output_path=output_dir / f"{dataset}_{vsa}_{decoder}_cosine_similarity_vs_dim.pdf",
+                    dataset=dataset,
+                    vsa=vsa,
+                    decoder=decoder,
+                )
+
+                # Plot 4: Timing breakdown
+                plot_timing_breakdown(
+                    df,
+                    output_path=output_dir / f"{dataset}_{vsa}_{decoder}_timing_breakdown.pdf",
+                    dataset=dataset,
+                    vsa=vsa,
+                    decoder=decoder,
+                )
+
+                # Plot 5: Correction level distribution
+                plot_correction_level_distribution(
+                    df,
+                    output_path=output_dir / f"{dataset}_{vsa}_{decoder}_correction_levels.pdf",
+                    dataset=dataset,
+                    vsa=vsa,
+                    decoder=decoder,
+                )
+
+                # Plot 6: Heatmap of graph accuracy
+                plot_heatmap_accuracy(
+                    df,
+                    output_path=output_dir / f"{dataset}_{vsa}_{decoder}_heatmap_graph_accuracy.pdf",
+                    dataset=dataset,
+                    vsa=vsa,
+                    decoder=decoder,
+                    metric="graph_accuracy_mean",
+                )
+
+                # Plot 7: Iteration budget comparison (ZINC only)
+                if dataset == "zinc":
+                    plot_iteration_budget_comparison(
+                        df,
+                        output_path=output_dir / f"{dataset}_{vsa}_{decoder}_iteration_budget_comparison.pdf",
+                        dataset=dataset,
+                        vsa=vsa,
+                        decoder=decoder,
+                    )
+
+                # Plot 8: Hit rate by node size comparison
+                plot_hit_rate_by_node_size_comparison(
+                    results_dir=results_dir,
+                    output_dir=output_dir,
+                    dataset=dataset,
+                    vsa=vsa,
+                    decoder=decoder,
+                )
 
     print(f"\nAll plots saved to {output_dir}")
 

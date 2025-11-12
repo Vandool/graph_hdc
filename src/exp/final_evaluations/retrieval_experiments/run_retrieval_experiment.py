@@ -2,7 +2,7 @@
 Retrieval Experiment: Encoding-Decoding Ablation Study
 
 This script evaluates the encoding-decoding performance of HDC graph representations
-with ablations over VSA models (HRR, MAP), dimensions, and depths.
+with ablations over VSA models (HRR), dimensions, and depths.
 
 Metrics:
 - Edge decoding accuracy
@@ -55,9 +55,9 @@ def create_dynamic_config(base_dataset: str, vsa_model: str, hv_dim: int, depth:
     Parameters
     ----------
     base_dataset : str
-        Either "qm9" or "zinc"
+        Either "qm9", "zinc", or "zinc_ring_count"
     vsa_model : str
-        Either "HRR" or "MAP"
+        VSA model name (currently only "HRR" is supported)
     hv_dim : int
         Hypervector dimension
     depth : int
@@ -291,8 +291,8 @@ def run_single_experiment(
             "prefer_smaller_corrective_edits": False,
             "fallback_decoder_settings": {
                 "initial_limit": 2048,
-                "limit": 1024,
-                "beam_size": 1024,
+                "limit": 2048,
+                "beam_size": 2048,
                 "pruning_method": "cos_sim",
                 "use_size_aware_pruning": True,
                 "use_one_initial_population": False,
@@ -304,7 +304,7 @@ def run_single_experiment(
         },
         "zinc": {
             "iteration_budget": iteration_budget,
-            "max_graphs_per_iter": 512,
+            "max_graphs_per_iter": 1024,
             "top_k": 10,
             "sim_eps": 0.0001,
             "early_stopping": True,
@@ -510,8 +510,8 @@ def run_single_experiment(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save summary
-        filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}.json"
+        # Save summary (include decoder type in filename)
+        filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder}.json"
         with (output_dir / filename).open(mode="w") as f:
             json.dump(results, f, indent=2)
 
@@ -531,11 +531,13 @@ def run_single_experiment(
                 "total_time": total_times,
             }
         )
-        detailed_filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_detailed.csv"
+        detailed_filename = (
+            f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder}_detailed.csv"
+        )
         detailed_results.to_csv(output_dir / detailed_filename, index=False)
 
-        # Generate hit rate by node size plot
-        filename_base = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}"
+        # Generate hit rate by node size plot (include decoder type in filename)
+        filename_base = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder}"
         plot_hit_rate_by_node_size(detailed_results, output_dir, filename_base)
 
     # Print summary

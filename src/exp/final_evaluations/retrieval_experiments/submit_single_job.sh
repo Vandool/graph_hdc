@@ -1,7 +1,7 @@
 #!/bin/bash
 #!/usr/bin/env bash
 # Cluster-aware submission script for a single retrieval experiment
-# Usage: bash submit_single_job.sh HRR 1024 3 qm9 1
+# Usage: bash submit_single_job.sh HRR 1024 3 qm9 1 pattern_matching
 # CLUSTER: uc3 | hk | haic | local
 
 set -euo pipefail
@@ -20,6 +20,7 @@ HV_DIM="${2:-1024}"
 DEPTH="${3:-3}"
 DATASET="${4:-qm9}"
 ITER_BUDGET="${5:-1}"
+DECODER="${6:-greedy}"  # pattern_matching or greedy
 
 # -----------------------------
 # User-configurable parameters
@@ -49,8 +50,9 @@ echo "HV_DIM  : ${HV_DIM}"
 echo "DEPTH   : ${DEPTH}"
 echo "DATASET : ${DATASET}"
 echo "ITER_BDG: ${ITER_BUDGET}"
+echo "DECODER : ${DECODER}"
 
-EXP_NAME="Retrieval_${VSA}_${DATASET}_d${HV_DIM}_D${DEPTH}_i${ITER_BUDGET}"
+EXP_NAME="Retrieval_${VSA}_${DATASET}_d${HV_DIM}_D${DEPTH}_i${ITER_BUDGET}_${DECODER}"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
@@ -63,6 +65,7 @@ PY_ARGS=(
   --dataset "$DATASET"
   --iter_budget "$ITER_BUDGET"
   --n_samples "$N_SAMPLES"
+  --decoder "$DECODER"
 )
 
 # Add extra args if provided (e.g., --early_stopping)
@@ -153,6 +156,7 @@ echo 'HV_DIM  : ${HV_DIM}'
 echo 'DEPTH   : ${DEPTH}'
 echo 'DATASET : ${DATASET}'
 echo 'ITER_BDG: ${ITER_BUDGET}'
+echo 'DECODER : ${DECODER}'
 echo 'N_SAMP  : ${N_SAMPLES}'
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1

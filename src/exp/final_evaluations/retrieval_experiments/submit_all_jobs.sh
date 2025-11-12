@@ -31,8 +31,8 @@ echo "ONLY_PARTITIONS : ${ONLY_PARTITIONS:-all}"
 echo "=========================================="
 
 # Define experiment parameters
-VSA_MODELS=("HRR" "MAP")
-HV_DIMS=(256 512 1024 1600 2048)
+VSA_MODELS=("HRR")
+HV_DIMS=(256 512 1024)
 DEPTHS=(2 3 4 5)
 
 # Counter for submitted jobs
