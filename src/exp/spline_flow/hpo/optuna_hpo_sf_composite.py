@@ -2,7 +2,7 @@
 """
 Optuna HPO Script for Spline Flow with Multi-Objective Optimization
 
-This script uses `spline_flow_training.py` to find the Pareto front between:
+This script uses `spline_flow.py` to find the Pareto front between:
   1. Minimizing NLL (min_val_loss)
   2. Maximizing Generation Quality (by minimizing incorrect_pct)
 """
@@ -79,7 +79,7 @@ def load_study(study_name: str, sqlite_path: str) -> optuna.Study:
         directions=["minimize", "minimize"],  # [0] min_val_loss, [1] incorrect_pct
         storage=f"sqlite:///{sqlite_path}",
         load_if_exists=True,
-        sampler=BoTorchSampler(seed=42, consider_running_trials=True, n_startup_trials=5),
+        sampler=BoTorchSampler(seed=43, consider_running_trials=True, n_startup_trials=5),
     )
 
 
@@ -196,13 +196,12 @@ def objective(trial: optuna.Trial, dataset: SupportedDataset, norm_per: str) -> 
             trial.set_user_attr("failure_reason", "DIVERGED")
             return float("inf"), float("inf")  # Prune this trial
 
-        # 3. *** NEW: Log all metrics from the JSON file ***
         # (This logic is adapted from your FM HPO script)
         try:
             # Find the metrics file that was just created
             here = pathlib.Path(__file__).parent
-            # Assumes training script is at ../spline_flow_training.py
-            results_dir = here.parent / "results" / "spline_flow_training"
+            # Assumes training script is at ../spline_flow.py
+            results_dir = here.parent / "results" / "spline_flow"
             metrics_file = results_dir / cfg.exp_dir_name / "evaluations" / "hpo_metrics.json"
 
             if metrics_file.exists():

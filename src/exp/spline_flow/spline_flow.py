@@ -402,7 +402,7 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
         dirpath=str(models_dir),
         auto_insert_metric_name=False,
         filename="epoch{epoch:02d}-val{val_loss:.4f}",
-        save_last=True,
+        save_last=False,
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     time_logger = TimeLoggingCallback()  # Make sure TimeLoggingCallback is defined

@@ -46,6 +46,8 @@ def get_model_type(path: Union[Path, str]) -> ModelType:
     s = str(path)
     if "bah" in s:
         res = "BAH"
+    if "sf" in s:
+        res = "SplineFlow"
     elif "fm_comp" in s:
         res = "FM"
     elif "fm_single" in s:
