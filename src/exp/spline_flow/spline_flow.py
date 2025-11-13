@@ -30,12 +30,15 @@ import torch
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
+from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 from torchhd import HRRTensor
 
 from src.datasets.utils import get_split
+from src.encoding.configs_and_constants import Features
 from src.encoding.correction_utilities import target_reached
 from src.encoding.graph_encoders import CorrectionLevel, load_or_create_hypernet
+from src.generation.analyze import analyze_terms_only
 from src.normalizing_flow.models import SFConfig
 from src.utils.registery import resolve_model, retrieve_model
 
@@ -57,6 +60,12 @@ def log(msg: str) -> None:
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
+if os.getenv("CLUSTER") == "local":
+    torch.backends.fp32_precision = "ieee"
+    torch.backends.cuda.matmul.fp32_precision = "ieee"
+    torch.backends.cudnn.fp32_precision = "ieee"
+    torch.backends.cudnn.conv.fp32_precision = "ieee"
 
 
 def setup_exp(dir_name: str | None = None) -> dict:
@@ -137,8 +146,9 @@ def fit_per_term_standardization(model, loader, hv_dim: int, max_batches: int | 
         if max_batches is not None and bi >= max_batches:
             break
         batch = batch.to(device)
-        edge = batch.edge_terms.to(accum_dtype).view(-1, hv_dim)
-        graph = batch.graph_terms.to(accum_dtype).view(-1, hv_dim)
+        edge = batch.edge_terms.to(accum_dtype)  # [B, D]
+        graph = batch.graph_terms.to(accum_dtype)  # [B, D]
+
         cnt += edge.shape[0]
         sum_edge += edge.sum(dim=0)
         sumsq_edge += (edge * edge).sum(dim=0)
@@ -149,13 +159,20 @@ def fit_per_term_standardization(model, loader, hv_dim: int, max_batches: int | 
     mu_edge = sum_edge / cnt
     var_edge = (sumsq_edge / cnt - mu_edge**2).clamp_min_(0)
     sigma_edge = var_edge.sqrt().clamp_min_(1e-6)
+
     mu_graph = sum_graph / cnt
     var_graph = (sumsq_graph / cnt - mu_graph**2).clamp_min_(0)
     sigma_graph = var_graph.sqrt().clamp_min_(1e-6)
+
+    # Concatenate to match model's expected [2*D] format
     mu = torch.cat([mu_edge, mu_graph])
     sigma = torch.cat([sigma_edge, sigma_graph])
+
+    # Set in model (using existing method)
     tgt_dtype = model.mu.dtype if hasattr(model, "mu") else torch.get_default_dtype()
     model.set_standardization(mu.to(tgt_dtype), sigma.to(tgt_dtype))
+
+    # Store the split point for per-term transforms
     model._per_term_split = hv_dim
     log(f"Per-term standardization fitted: edge_terms [:{hv_dim}], graph_terms [{hv_dim}:]")
 
@@ -215,7 +232,9 @@ def plot_train_val_loss(
             s["y"] = s["y"].rolling(smooth_window, min_periods=1).mean()
         return s
 
-    train_s, val_s = _series(train_col), _series(val_col)
+    train_s = _series(train_col)
+    val_s = _series(val_col)
+
     if train_s is None and val_s is None:
         print("Nothing to plot after filtering; skipping.")
         return
@@ -288,6 +307,8 @@ def configure_tf32(precision):
             torch.backends.cudnn.allow_tf32 = False
             print(f"[TF32] Disabled for {precision}")
     else:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
         print(f"[TF32] Not supported on {name}")
 
 
@@ -358,6 +379,24 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
     hypernet = load_or_create_hypernet(path=GLOBAL_MODEL_PATH, cfg=ds_cfg).to(device=device, dtype=DTYPE).eval()
     hypernet.depth = ds_cfg.hypernet_depth
     log("Hypernet ready.")
+    rtol, atol = (1e-4, 1e-6) if torch.float32 == DTYPE else (1e-5, 1e-8)
+    assert torch.allclose(
+        hypernet.forward(Batch.from_data_list([train_dataset[42]]))["edge_terms"],
+        train_dataset[42].edge_terms.to(device=device),
+        rtol=rtol,
+        atol=atol,
+    ), "edge terms are not equal"
+    assert torch.allclose(
+        hypernet.forward(Batch.from_data_list([train_dataset[0]]))["edge_terms"],
+        train_dataset[0].edge_terms.to(device=device),
+        rtol=rtol,
+        atol=atol,
+    ), "edge terms are not equal"
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
+    assert torch.equal(hypernet.nodes_codebook, hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook)
+    assert hypernet.nodes_codebook.dtype == DTYPE
+    assert hypernet.node_encoder_map[Features.NODE_FEATURES][0].codebook.dtype == DTYPE
+    log("Hypernet ready.")
 
     num_workers = 14 if os.getenv("CLUSTER") != "local" else 8
     train_dataloader = DataLoader(
@@ -384,6 +423,8 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
 
     model = resolve_model("SplineFlow", cfg=cfg).to(device=device)  # <-- This was the bug
     log(f"Model: {model!s}")
+    log(f"Model device: {model.device}")
+    log(f"Model hparams: {model.hparams}")
 
     if cfg.per_term_standardization:
         log("Using per-term standardization")
@@ -414,19 +455,24 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
         check_finite=True,
         verbose=True,
     )
-    precision = pick_precision()  # Make sure pick_precision is defined
+
+    loggers = [csv_logger]
+
+    precision = pick_precision()
     log(f"Using precision {precision!s}")
-    configure_tf32(precision)  # Make sure configure_tf32 is defined
+    configure_tf32(precision)
 
     trainer = Trainer(
         max_epochs=cfg.epochs,
-        logger=[csv_logger],
+        logger=loggers,
         callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
         gradient_clip_val=1.0,
         log_every_n_steps=500,
+        enable_progress_bar=True,
+        deterministic=False,
         precision=precision,
         num_sanity_val_steps=0,
     )
@@ -438,10 +484,19 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
     min_val_loss = float("inf")
     if metrics_path.exists():
         df = pd.read_csv(metrics_path)
-        if "val_loss" in df.columns and not df["val_loss"].isnull().all():
-            min_val_loss = df["val_loss"].min()
+        ## Determine best val loos
+        idx = df["val_loss"].idxmin()
+        min_val_loss = df.loc[idx, "val_loss"]
         df.to_parquet(evals_dir / "metrics.parquet", index=False)
-        plot_train_val_loss(df, artefacts_dir, logy=True)  # Make sure plot_train_val_loss is defined
+        plot_train_val_loss(df, artefacts_dir, logy=True)
+        # Optional: print final numbers for quick scan
+        train_last = df.loc[df["train_loss_epoch"].notna(), "train_loss_epoch"].tail(1)
+        val_last = df.loc[df["val_loss"].notna(), "val_loss"].tail(1)
+        if not train_last.empty or not val_last.empty:
+            print(
+                f"Final losses → train: {float(train_last.values[-1]) if not train_last.empty else 'n/a'} "
+                f"| val: {float(val_last.values[-1]) if not val_last.empty else 'n/a'}"
+            )
 
     best_path = checkpoint_callback.best_model_path
     if (not best_path) or ("nan" in Path(best_path).name) or (not Path(best_path).exists()):
@@ -453,43 +508,99 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
 
     log(f"Loading best checkpoint: {best_path}")
 
-    best_model = retrieve_model("SplineFlow").load_from_checkpoint(best_path)  # <-- This was the bug
+    best_model = retrieve_model("SplineFlow").load_from_checkpoint(best_path)
 
     best_model.to(device).eval()
     best_model.to(dtype=DTYPE)
 
     with torch.no_grad():
-        samples = best_model.sample_split(1000)
+        samples = best_model.sample_split(1000)  # each [K, D]
+        analyze_terms_only(samples, name=ds_cfg.name, pdf_dir=artefacts_dir)
+        # node_s = samples["node_terms"]
         edge_s = samples["edge_terms"]
         graph_s = samples["graph_terms"]
 
     edge_s = edge_s.as_subclass(HRRTensor)
+    graph_s = graph_s.as_subclass(HRRTensor)
 
-    log("=== Starting generation quality evaluation ===")
-    base_dataset = ds_cfg.base_dataset
-    n_decode = 1000 if base_dataset == "qm9" else 100
+    # log(f"node_s device: {node_s.device!s}")
+    log(f"graph_s device: {graph_s.device!s}")
+    log(f"Hypernet node codebook device: {hypernet.nodes_codebook.device!s}")
+
+    edge_np = edge_s.detach().cpu().numpy()
+    graph_np = graph_s.detach().cpu().numpy()
+
+    # per-branch norms and pairwise cosine samples
+    edge_norm = np.linalg.norm(edge_np, axis=1)
+    graph_norm = np.linalg.norm(graph_np, axis=1)
+
+    def _pairwise_cosine(x: np.ndarray, m: int = 2000) -> np.ndarray:
+        n = x.shape[0]
+        if n < 2:
+            return np.array([])
+        idx = np.random.choice(n, size=(min(m, n - 1), 2), replace=True)
+        a = x[idx[:, 0]]
+        b = x[idx[:, 1]]
+        an = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-8)
+        bn = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-8)
+        return np.sum(an * bn, axis=1)
+
+    # node_cos = _pairwise_cosine(node_np, m=4000)
+    edge_cos = _pairwise_cosine(edge_np, m=4000)
+    graph_cos = _pairwise_cosine(graph_np, m=4000)
+
+    # plots
+    # _hist(artefacts_dir / "sample_node_norm_hist.png", node_norm, "Sample node L2 norm", "||node||")
+    _hist(artefacts_dir / "sample_node_edge_hist.png", edge_norm, "Sample edge L2 norm", "||edge||")
+    _hist(artefacts_dir / "sample_graph_norm_hist.png", graph_norm, "Sample graph L2 norm", "||graph||")
+    # if node_cos.size:
+    #     _hist(artefacts_dir / "sample_node_cos_hist.png", node_cos, "Node pairwise cosine", "cos")
+    if edge_cos.size:
+        _hist(artefacts_dir / "sample_edge_cos_hist.png", edge_cos, "Edge pairwise cosine", "cos")
+    if graph_cos.size:
+        _hist(artefacts_dir / "sample_graph_cos_hist.png", graph_cos, "Graph pairwise cosine", "cos")
+
+    # =================================================================
+    # NEW: Decode samples and compute validity for composite metric
+    # =================================================================
+    log("=== Starting validity evaluation for composite metric ===")
+
+    # Determine number of samples to decode based on dataset
+    base_dataset = ds_cfg.base_dataset  # "qm9" or "zinc"
+    n_decode = 1000
+
     log(f"Decoding {n_decode} samples for {base_dataset} dataset...")
-    edge_decode = edge_s[:n_decode]
 
-    hypernet.base_dataset = base_dataset
+    # Prepare samples for decoding
+    edge_decode = edge_s[:n_decode]  # We only decode this as downstream task
+
+    # Decode samples
     correction_levels = []
-    decode_start_time = time.time()
 
+    log("Getting Hypernet ready for decoding ...")
+    hypernet.base_dataset = base_dataset
+
+    decode_start_time = time.time()
     for i in range(n_decode):
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 100 == 0 or i == 0:
             log(f"Decoding sample {i + 1}/{n_decode}...")
+
         try:
-            initial_decoded_edges = hypernet.decode_order_one_no_node_terms(edge_decode[i])
+            initial_decoded_edges = hypernet.decode_order_one_no_node_terms(edge_decode[i].as_subclass(HRRTensor))
+
             if target_reached(initial_decoded_edges):
                 correction_levels.append(CorrectionLevel.ZERO)
             else:
                 correction_levels.append(CorrectionLevel.FAIL)
-        except Exception:
+
+        except Exception as e:
+            log(f"Warning: Failed to decode sample {i}: {e}")
             correction_levels.append(CorrectionLevel.FAIL)
 
     decode_elapsed = time.time() - decode_start_time
-    log(f"Decoding completed in {decode_elapsed:.2f}s")
+    log(f"Decoding completed in {decode_elapsed:.2f}s ({decode_elapsed / n_decode:.2f}s per sample)")
 
+    # Compute CorrectionLevel.ZERO percentage (perfect decoding without corrections)
     n_zero_corrections = sum(1 for cl in correction_levels if cl == CorrectionLevel.ZERO)
     zero_correction_pct = 100.0 * n_zero_corrections / n_decode if n_decode else 0.0
     incorrect_pct = 100.0 - zero_correction_pct
@@ -497,13 +608,36 @@ def run_experiment(cfg: SFConfig) -> tuple[float, float]:
     log(f"CorrectionLevel.ZERO percentage: {zero_correction_pct:.2f}%")
     log(f"Incorrect percentage: {incorrect_pct:.2f}%")
 
+    log("Correction Level Distribution:")
+    for level in CorrectionLevel:
+        count = sum(1 for cl in correction_levels if cl == level)
+        pct = 100.0 * count / n_decode if n_decode else 0.0
+        log(f"  {level.value}: {count}/{n_decode} ({pct:.2f}%)")
+    log(f"CorrectionLevel.ZERO percentage: {zero_correction_pct:.2f}%")
+
+    log("=== Composite Metric Computation ===")
+    log(f"Min validation MSE: {min_val_loss:.4f}")
+    log(f"CorrectionLevel.ZERO: {zero_correction_pct:.2f}%")
+
+    # Save comprehensive metrics to JSON
+    # Store correction level distribution
+    correction_level_dist = {
+        level.value: sum(1 for cl in correction_levels if cl == level) for level in CorrectionLevel
+    }
+
     metrics_dict = {
         "exp_dir_name": cfg.exp_dir_name,
         "min_val_loss": float(min_val_loss),
         "zero_correction_pct": float(zero_correction_pct),
-        "incorrect_pct": float(incorrect_pct),
-        # ... (rest of metrics) ...
+        "incorrect_pct": 100.0 - float(zero_correction_pct),
+        "n_decoded": int(n_decode),
+        "base_dataset": base_dataset,
+        "decode_time_sec": float(decode_elapsed),
+        "decode_time_per_sample_sec": float(decode_elapsed / n_decode),
+        "correction_level_distribution": correction_level_dist,
+        "training_time": (time.perf_counter() - t_start) // 60,
     }
+
     metrics_file = evals_dir / "hpo_metrics.json"
     metrics_file.write_text(json.dumps(metrics_dict, indent=2, default=str))
 

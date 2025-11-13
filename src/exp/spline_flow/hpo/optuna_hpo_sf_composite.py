@@ -79,7 +79,7 @@ def load_study(study_name: str, sqlite_path: str) -> optuna.Study:
         directions=["minimize", "minimize"],  # [0] min_val_loss, [1] incorrect_pct
         storage=f"sqlite:///{sqlite_path}",
         load_if_exists=True,
-        sampler=BoTorchSampler(seed=43, consider_running_trials=True, n_startup_trials=5),
+        sampler=BoTorchSampler(seed=42, consider_running_trials=True, n_startup_trials=5),
     )
 
 
@@ -234,17 +234,18 @@ def objective(trial: optuna.Trial, dataset: SupportedDataset, norm_per: str) -> 
         return min_val_loss, incorrect_pct
 
     except RuntimeError as e:
+        traceback.print_exc()
         if "out of memory" in str(e).lower():
             log(f"Trial {trial.number} failed with CUDA OOM")
             trial.set_user_attr("failure_reason", "CUDA_OOM")
             torch.cuda.empty_cache()
             raise optuna.TrialPruned("CUDA OOM")
-        log(f"Trial {trial.number} failed with RuntimeError: {e}")
-        trial.set_user_attr("failure_reason", f"RuntimeError: {str(e)[:100]}")
+        log(f"Trial {trial.number} failed with RuntimeError: {e!s}")
+        trial.set_user_attr("failure_reason", f"RuntimeError: {str(e)[:250]}")
         raise optuna.TrialPruned(f"RuntimeError: {e}")
     except Exception as e:
-        log(f"Trial {trial.number} failed with unexpected error: {e}")
-        trial.set_user_attr("failure_reason", f"{type(e).__name__}: {str(e)[:100]}")
+        log(f"Trial {trial.number} failed with unexpected error: {e!s}")
+        trial.set_user_attr("failure_reason", f"{type(e).__name__}: {str(e)[:250]}")
         raise optuna.TrialPruned(f"Unexpected error: {e}")
 
 

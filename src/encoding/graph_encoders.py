@@ -310,7 +310,7 @@ class HyperNet(AbstractGraphEncoder):
         self.hv_dim = config.hv_dim
 
         # Relate to decoding limits to prevent endless loops
-        self._directed_decoded_edge_limit: int = 66  # Default for zinc
+        self._directed_decoded_edge_limit: int = 128  # Default for zinc
         self._max_step_delta: float | None = None  # will be set after first run
 
         self._cfg_device = torch.device(getattr(config, "device", "cpu"))
