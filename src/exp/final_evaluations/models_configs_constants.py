@@ -7,13 +7,15 @@ from src.utils.utils import GLOBAL_BEST_MODEL_PATH, find_files
 GENERATOR_REGISTRY = {
     SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3: [
         # Spline Flow
-        "sf_hpo_QM9SmilesHRR256F64G1NG3_num6_num1024_lr0.000108339_wd2.51289e-7_bs128_dro0.2_num12_num6_an",
-        "sf_hpo_QM9SmilesHRR256F64G1NG3_num8_num768_lr0.000412321_wd1.5703e-5_bs256_dro0.3_num4_num2_an",
+        # "sf_hpo_QM9SmilesHRR256F64G1NG3_num6_num1024_lr0.000108339_wd2.51289e-7_bs128_dro0.2_num12_num6_an",
+        # "sf_hpo_QM9SmilesHRR256F64G1NG3_num8_num768_lr0.000412321_wd1.5703e-5_bs256_dro0.3_num4_num2_an",
         # Flow Matching Best sofar
         # "fm_comp_QM9SmilesHRR256F64G1NG3_s42_lr8.76102e-5_wd1e-6_bs128_hid1536_nhl8_np1_tim32_an",  # Best Edge Correction 63.4%
         # "fm_comp_QM9SmilesHRR256F64G1NG3_s42_lr0.00015242_wd1e-6_bs512_hid2048_nhl7_np1_tim32_an",  # Best MSE 0.3
         # NVP V3
-        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        #   One Trial
+        "nvp_comp_QM9SmilesHRR256F64G1NG3_f11_hid512_lr0.000655457_wd1.42677e-6_bs480_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.000183872_wd0.000202358_bs96_hid1792_nhl4_np1_smf6.5_smi2.2_smw16_an",

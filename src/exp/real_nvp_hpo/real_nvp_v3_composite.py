@@ -1,37 +1,3 @@
-"""
-Real NVP-V3 Training Script with Composite NLL-Quality Metric
-
-This script uses the NVP-V3 model with semantic masking (alternating transformation
-of edge_terms vs graph_terms) combined with CorrectionLevel.ZERO percentage as
-a quality metric.
-
-NVP-V3 Differences from NVP:
-- Semantic masking: Alternates between transforming edge_terms and graph_terms
-- Configurable MLP architecture: hidden_dim and num_hidden_layers instead of num_hidden_channels
-- ActNorm enabled by default (empirically superior)
-
-Composite Metric:
-    composite = α × NLL + (1-α) × (100 - zero_correction_pct)
-
-Where α=0.5 gives equal weight to distribution learning and decoder quality.
-
-Example Usage:
-==============
-# Default (BF16, compiled):
-python real_nvp_v3_composite.py
-
-# Full precision for validation:
-PRECISION=64 python real_nvp_v3_composite.py
-
-# Larger effective batch size:
-GRAD_ACCUM=4 python real_nvp_v3_composite.py
-
-# Maximum optimization:
-COMPILE_MODE=max-autotune GRAD_ACCUM=2 python real_nvp_v3_composite.py
-
-Expected Speedup: 2-4x faster training on A100/H100 GPUs
-"""
-
 import datetime
 import enum
 import json
@@ -761,8 +727,6 @@ def _finite_clean(x: np.ndarray, *, max_abs: float | None = None) -> np.ndarray:
 
 
 def run_experiment(cfg: FlowConfig):
-    local_dev = cfg.is_dev
-    local_dev = False
     pprint(cfg)
     # ----- setup dirs -----
     log("Parsing args done. Starting run_experiment …")
@@ -830,10 +794,6 @@ def run_experiment(cfg: FlowConfig):
 
     # pick worker counts per GPU; tune for your cluster
     num_workers = 14 if os.getenv("CLUSTER") != "local" else 8
-    if local_dev:
-        train_dataset = train_dataset[: cfg.batch_size]
-        validation_dataset = validation_dataset[: cfg.batch_size]
-        num_workers = 0
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -843,7 +803,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=True,
-        prefetch_factor=None if local_dev else 6,  # Increased from 6 for better GPU saturation
+        prefetch_factor=6,
     )
     validation_dataloader = DataLoader(
         validation_dataset,
@@ -853,7 +813,7 @@ def run_experiment(cfg: FlowConfig):
         pin_memory=torch.cuda.is_available(),
         persistent_workers=bool(num_workers > 0),
         drop_last=False,
-        prefetch_factor=None if local_dev else 4,  # Increased from 2 for better throughput
+        prefetch_factor=4,
     )
     log(f"Datasets ready. train={len(train_dataset)} valid={len(validation_dataset)}")
 
@@ -887,12 +847,6 @@ def run_experiment(cfg: FlowConfig):
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     time_logger = TimeLoggingCallback()
-    periodic_nll = PeriodicNLLEval(
-        val_loader=validation_dataloader,
-        artefacts_dir=artefacts_dir,
-        every_n_epochs=100 if not local_dev else 1,
-        max_batches=100 if not local_dev else 1,  # Reduced from 200 for faster training
-    )
 
     early_stopping = EarlyStopping(
         monitor="val_loss",
@@ -921,12 +875,12 @@ def run_experiment(cfg: FlowConfig):
     trainer = Trainer(
         max_epochs=cfg.epochs,
         logger=loggers,
-        callbacks=[checkpoint_callback, lr_monitor, time_logger, periodic_nll, early_stopping],
+        callbacks=[checkpoint_callback, lr_monitor, time_logger, early_stopping],
         default_root_dir=str(exp_dir),
         accelerator="auto",
         devices="auto",
         gradient_clip_val=1.0,
-        log_every_n_steps=500 if not local_dev else 1,
+        log_every_n_steps=1000,
         enable_progress_bar=True,
         deterministic=False,
         precision=precision,
@@ -935,6 +889,7 @@ def run_experiment(cfg: FlowConfig):
     )
 
     # ----- train -----
+    t_start_training = time.perf_counter()
     resume_path: Path | None = str(cfg.continue_from) if cfg.continue_from else None
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=validation_dataloader, ckpt_path=resume_path)
 
@@ -1065,53 +1020,9 @@ def run_experiment(cfg: FlowConfig):
 
     log(f"Decoding {n_decode} samples for {base_dataset} dataset...")
 
-    # Get decoder settings from models_configs_constants
-    DECODER_SETTINGS_ = {
-        "qm9": {
-            "iteration_budget": 1,
-            "max_graphs_per_iter": 512,
-            "top_k": 10,
-            "sim_eps": 0.0001,
-            "early_stopping": True,
-            "fallback_decoder_settings": {
-                "initial_limit": 2048,
-                "limit": 1024,
-                "beam_size": 1024,
-                "pruning_method": "cos_sim",
-                "use_size_aware_pruning": True,
-                "use_one_initial_population": False,
-                "use_g3_instead_of_h3": False,
-            },
-        },
-        "zinc": {
-            "iteration_budget": 1,
-            "max_graphs_per_iter": 512,
-            "top_k": 10,
-            "sim_eps": 0.0001,
-            "early_stopping": True,
-            "fallback_decoder_settings": {
-                "initial_limit": 1024,
-                "limit": 64,
-                "beam_size": 32,
-                "pruning_method": "cos_sim",
-                "use_size_aware_pruning": True,
-                "use_one_initial_population": False,
-                "use_g3_instead_of_h3": False,
-            },
-        },
-    }
-    decoder_settings = DECODER_SETTINGS_[base_dataset]
-
-    log(f"Using decoder settings: {decoder_settings}")
-
     # Prepare samples for decoding
     edge_decode = edge_s[:n_decode]
-    graph_decode = graph_s[:n_decode]
 
-    # Decode samples
-    nx_graphs = []
-    final_flags = []
-    sims = []
     correction_levels = []
 
     log("Getting Hypernet ready for decoding ...")
@@ -1125,7 +1036,8 @@ def run_experiment(cfg: FlowConfig):
         try:
             initial_decoded_edges = hypernet.decode_order_one_no_node_terms(edge_decode[i].as_subclass(HRRTensor))
 
-            if target_reached(initial_decoded_edges):
+            # Reject the trivial cases as well, where model just generates one edge tuple type
+            if target_reached(initial_decoded_edges) and len(set(initial_decoded_edges)) > 2:
                 correction_levels.append(CorrectionLevel.ZERO)
             else:
                 correction_levels.append(CorrectionLevel.FAIL)
@@ -1167,8 +1079,8 @@ def run_experiment(cfg: FlowConfig):
         "base_dataset": base_dataset,
         "decode_time_sec": float(decode_elapsed),
         "decode_time_per_sample_sec": float(decode_elapsed / n_decode),
-        "decoder_settings": decoder_settings,
         "correction_level_distribution": correction_level_dist,
+        "training_time": (time.perf_counter() - t_start_training) // 60,
     }
 
     metrics_file = evals_dir / "hpo_metrics.json"
@@ -1188,7 +1100,7 @@ def get_hidden_dim_dist(dataset: SupportedDataset):
     low, high, step = 512, 2048, 512
     # 256-dim datasets (total input: 512 = 256 edge + 256 graph)
     if dataset in [SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3, SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4]:
-        low, high, step = 512, 2048, 256
+        low, high, step = 256, 2048, 256
     elif dataset == SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4:
         low, high, step = 512, 2048, 512
     elif dataset == SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4:
