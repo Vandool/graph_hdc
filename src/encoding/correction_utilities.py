@@ -4,9 +4,9 @@ Graph decoding correction utilities.
 This module provides functions for correcting decoded edge sets that don't meet
 target criteria by adding or removing edges based on node counter discrepancies.
 """
-
 import math
 import random
+import time
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -20,6 +20,54 @@ class CorrectionResult:
     remove_sets: list[list[tuple[tuple, tuple]]] = field(default_factory=list)
     add_edit_count: int = 0
     remove_edit_count: int = 0
+
+
+def is_pairing_possible(node_ctr: Counter[tuple], valid_pairs: set[tuple[tuple, tuple]]) -> bool:
+    """
+    Performs a pre-search check to see if a valid pairing is even possible.
+
+    For each node, it checks if it has enough *potential* partners in the
+    entire stub pool to satisfy its required degree.
+
+    Parameters
+    ----------
+    node_ctr : Counter
+        Counter mapping nodes to required degree counts.
+    valid_pairs : set
+        A set of (u, v) tuples that are considered valid pairs.
+
+    Returns
+    -------
+    bool
+        True if a solution *might* exist, False if it is *impossible*.
+    """
+    print("Starting pre-search possibility check...")
+
+    for node, required_degree in node_ctr.items():
+        # Count all *other* stubs that can form a valid pair with this node
+        available_partners_count = 0
+        for potential_partner_node, count_in_list in node_ctr.items():
+            # Check if this pair (e.g., 'A', 'B') is in the valid set
+            if tuple(sorted((node, potential_partner_node))) in valid_pairs:
+                if node == potential_partner_node:
+                    # Self-loops: Can pair with other instances of itself.
+                    # A stub can't pair with *itself*.
+                    available_partners_count += count_in_list - 1
+                else:
+                    # Standard edge
+                    available_partners_count += count_in_list
+
+        if available_partners_count < required_degree:
+            # FAIL FAST: This node is impossible to satisfy.
+            print(
+                f"Pre-check FAILED: Node {node} requires {required_degree} partners, "
+                f"but only {available_partners_count} valid partners are "
+                "available in the entire pool. No solution is possible."
+            )
+            return False
+
+    print("Pre-search possibility check passed.")
+    return True
 
 
 def get_node_counter(edges: list[tuple[tuple, tuple]]) -> Counter[tuple]:
@@ -44,9 +92,19 @@ def _find_corrective_sets(ctr_to_solve: Counter[tuple], valid_pairs: set, max_so
     """Helper function to find N distinct corrective sets."""
     found_sets = []
     attempt = 0
+
+    if not is_pairing_possible(ctr_to_solve, valid_pairs):
+        return found_sets
+
     while len(found_sets) < max_solutions and attempt < max_attempts:
         attempt += 1
+        print(f"[{attempt}/{max_attempts}] Finding corrective sets for {ctr_to_solve.total()}")
         candidate = find_random_valid_sample_robust(deepcopy(ctr_to_solve), valid_pairs)
+        print(f"[{attempt}/{max_attempts}] Found corrective set: {candidate}")
+
+        if attempt > (max_attempts / 2) and len(found_sets) == 0:
+            print("No solution found! Early stopping")
+            return found_sets
 
         if candidate:
             candidate_ctr = Counter(candidate)
@@ -76,7 +134,7 @@ def get_corrected_sets(
     Returns
     -------
     list
-        List of corrected edge sets that meet the target criteria
+        list of corrected edge sets that meet the target criteria
     """
     # Corrections
     corrected_edge_sets_add = []
@@ -139,74 +197,84 @@ def get_corrected_sets(
     )
 
 
+class _SolverTimeout(Exception):
+    """Internal exception to signal the solver took too long."""
+
+
 def find_random_valid_sample_robust(
-    node_ctr: Counter[tuple], valid_pairs: set[tuple[tuple, tuple]]
+    node_ctr: Counter[tuple],
+    valid_pairs: set[tuple[tuple, tuple]],
+    max_attempts: int = 100,
+    timeout_sec: float = 2.0,
 ) -> list[tuple[tuple, tuple]] | None:
     """
     Finds a random, *valid* edge pairing from node counter requirements.
 
-    Uses a robust backtracking algorithm *pruned* by the
-    valid_pairs set.
-
-    Parameters
-    ----------
-    node_ctr : Counter
-        Counter mapping nodes to required degree counts.
-    valid_pairs : set
-        A set of (u, v) tuples that are considered valid pairs.
-        The solver will only create edges that exist in this set.
+    (Docstring unchanged)
     """
+    print(f"Starting robust sample search. {max_attempts=}, {timeout_sec=}. (Pre-checks are assumed to have passed)")
 
-    # 1. Create the flat list of all "stubs" to be paired
-    # e.g., {'A': 2, 'B': 2} -> ['A', 'A', 'B', 'B']
-    item_list = [k for k, v in node_ctr.items() for _ in range(v)]
+    # 1. Create the flat list of all "stubs"
+    item_list_base = [k for k, v in node_ctr.items() for _ in range(v)]
+    if not item_list_base:
+        return []
 
-    # 2. Randomize the list. This is a key source of randomness.
-    random.shuffle(item_list)
+    # --- CHANGED: Start time is now used by the inner function ---
+    start_time = time.monotonic()
 
-    def solve(items: list[tuple]) -> list[tuple[tuple, tuple]] | None:
-        """Recursive solver using the list of remaining items."""
-
-        # Base case: If no items are left, we succeeded.
-        if not items:
+    # 2. --- Inner solver function (NOW CHECKS TIMEOUT) ---
+    def solve_inplace(items: list[tuple], n_items: int) -> list[tuple[tuple, tuple]] | None:
+        # Base case
+        if n_items == 0:
             return []
 
-        # 1. Pick the first item to pair.
-        # (It's random because the whole list was shuffled)
-        item1 = items[0]
+        # --- NEW: Timeout check *inside* the recursion ---
+        # This check happens at every single step of the search.
+        if time.monotonic() - start_time > timeout_sec:
+            raise _SolverTimeout
 
-        # 2. Create a list of indices for potential partners (all *other* items)
-        partner_indices = list(range(1, len(items)))
-
-        # 3. Shuffle the partner list. This is the second source of
-        # randomness, ensuring we don't always try to pair with item[1].
+        item1 = items[n_items - 1]
+        partner_indices = list(range(n_items - 1))
         random.shuffle(partner_indices)
 
-        # 4. Try to find a valid partner
         for j in partner_indices:
             item2 = items[j]
-
-            # Create a canonical pair to check against the valid set.
-            # This assumes valid_pairs also uses canonical (sorted) tuples.
-            # If not, you must check both (item1, item2) and (item2, item1).
             canonical_pair = tuple(sorted((item1, item2)))
-            if canonical_pair not in valid_pairs:
-                continue  # This pair is invalid, try the next partner
 
-            remaining_items = items[1:j] + items[j + 1 :]
-            solution_for_rest = solve(remaining_items)
+            if canonical_pair not in valid_pairs:
+                continue
+
+            # In-place swap and recurse
+            items[j], items[n_items - 2] = items[n_items - 2], items[j]
+            solution_for_rest = solve_inplace(items, n_items - 2)
+            # Swap back (backtrack)
+            items[j], items[n_items - 2] = items[n_items - 2], items[j]
 
             if solution_for_rest is not None:
-                # We found a valid pairing!
-                # Return the canonical pair we just made.
-                return [tuple(sorted((item1, item2))), *solution_for_rest]
+                return [canonical_pair, *solution_for_rest]
 
-        # If we looped through all partners and none led to a solution,
-        # this path is a dead end. Backtrack.
         return None
 
-    # Start the solver
-    return solve(item_list)
+    # 3. --- Main retry loop (NOW CATCHES TIMEOUT) ---
+    for attempt in range(max_attempts):
+        print(f"Search attempt {attempt + 1}/{max_attempts} with new shuffle.")
+        items_to_solve = list(item_list_base)
+        random.shuffle(items_to_solve)
+
+        try:
+            solution = solve_inplace(items_to_solve, len(items_to_solve))
+
+            if solution:
+                print(f"Successfully found a valid pairing after {attempt + 1} attempts.")
+                return solution
+
+        except _SolverTimeout:
+            print(f"Search timed out *during* attempt {attempt + 1} ({time.monotonic() - start_time:.2f}s elapsed).")
+            # Break the *outer* loop
+            break
+
+    print(f"Failed to find solution after {max_attempts} attempts or timeout.")
+    return None
 
 
 def get_base_units(number: float, base_value: float) -> tuple[int, int]:

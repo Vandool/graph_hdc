@@ -25,7 +25,7 @@ NTASKS="${NTASKS:-1}"
 # QM9_SMILES_HRR_256_F64_G1NG3
 # ZINC_SMILES_HRR_256_F64_5G1NG4
 DATASET="${DATASET:-ZINC_SMILES_HRR_256_F64_5G1NG4}"
-N_TRIALS="${N_TRIALS:-1}"
+N_TRIALS="${N_TRIALS:-2}"
 NORM_PER="${NORM_PER:-term}" # "term" or "dim"
 IS_DEV="${IS_DEV:-False}"
 
@@ -62,7 +62,7 @@ case "$CLUSTER" in
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'debug|10:00:00|30G'
+    TUPLES=$'debug|24:00:00|30G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"

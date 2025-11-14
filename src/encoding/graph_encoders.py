@@ -1941,6 +1941,7 @@ class HyperNet(AbstractGraphEncoder):
         self.validate_ring_structure = decoder_settings.get("fallback_decoder_settings", {}).get(
             "validate_ring_structure", False
         )
+        only_correction_level_zero = decoder_settings.get("only_correction_level_zero", False)
 
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
@@ -1953,6 +1954,8 @@ class HyperNet(AbstractGraphEncoder):
         decoded_edges = [initial_decoded_edges]
 
         if not target_reached(initial_decoded_edges):
+            if only_correction_level_zero:
+                return DecodingResult()
             # Edges don't form valid graph → apply progressive correction strategies
             correction_results, correction_level = self._apply_edge_corrections(
                 edge_term=edge_term, initial_decoded_edges=initial_decoded_edges
