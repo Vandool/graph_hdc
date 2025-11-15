@@ -356,7 +356,7 @@ def try_find_isomorphic_graph(
             not ring_histogram or has_valid_ring_structure(G, ring_histogram, single_ring_atom_types)
         ):
             if not reported:
-                print(f"Found a graph at attempt #{i}")
+                # print(f"Found a graph at attempt #{i}")
                 reported = True
             valid_graphs_found.append(G)
 

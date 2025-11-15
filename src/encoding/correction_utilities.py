@@ -41,7 +41,7 @@ def is_pairing_possible(node_ctr: Counter[tuple], valid_pairs: set[tuple[tuple, 
     bool
         True if a solution *might* exist, False if it is *impossible*.
     """
-    print("Starting pre-search possibility check...")
+    # print("Starting pre-search possibility check...")
 
     for node, required_degree in node_ctr.items():
         # Count all *other* stubs that can form a valid pair with this node
@@ -59,14 +59,14 @@ def is_pairing_possible(node_ctr: Counter[tuple], valid_pairs: set[tuple[tuple, 
 
         if available_partners_count < required_degree:
             # FAIL FAST: This node is impossible to satisfy.
-            print(
-                f"Pre-check FAILED: Node {node} requires {required_degree} partners, "
-                f"but only {available_partners_count} valid partners are "
-                "available in the entire pool. No solution is possible."
-            )
+            # print(
+            #     f"Pre-check FAILED: Node {node} requires {required_degree} partners, "
+            #     f"but only {available_partners_count} valid partners are "
+            #     "available in the entire pool. No solution is possible."
+            # )
             return False
 
-    print("Pre-search possibility check passed.")
+    # print("Pre-search possibility check passed.")
     return True
 
 
@@ -98,12 +98,12 @@ def _find_corrective_sets(ctr_to_solve: Counter[tuple], valid_pairs: set, max_so
 
     while len(found_sets) < max_solutions and attempt < max_attempts:
         attempt += 1
-        print(f"[{attempt}/{max_attempts}] Finding corrective sets for {ctr_to_solve.total()}")
+        # print(f"[{attempt}/{max_attempts}] Finding corrective sets for {ctr_to_solve.total()}")
         candidate = find_random_valid_sample_robust(deepcopy(ctr_to_solve), valid_pairs)
-        print(f"[{attempt}/{max_attempts}] Found corrective set: {candidate}")
+        # print(f"[{attempt}/{max_attempts}] Found corrective set: {candidate}")
 
         if attempt > (max_attempts / 2) and len(found_sets) == 0:
-            print("No solution found! Early stopping")
+            # print("No solution found! Early stopping")
             return found_sets
 
         if candidate:
@@ -187,7 +187,7 @@ def get_corrected_sets(
                         new_edge_set.remove((b, a))
             if target_reached(new_edge_set):
                 corrected_edge_sets_remove.append(new_edge_set)
-    print(f"Applied correction. ADD: {len(corrected_edge_sets_add)}, REMOVE: {len(corrected_edge_sets_remove)}")
+    # print(f"Applied correction. ADD: {len(corrected_edge_sets_add)}, REMOVE: {len(corrected_edge_sets_remove)}")
 
     return CorrectionResult(
         add_sets=corrected_edge_sets_add,
@@ -212,7 +212,7 @@ def find_random_valid_sample_robust(
 
     (Docstring unchanged)
     """
-    print(f"Starting robust sample search. {max_attempts=}, {timeout_sec=}. (Pre-checks are assumed to have passed)")
+    # print(f"Starting robust sample search. {max_attempts=}, {timeout_sec=}. (Pre-checks are assumed to have passed)")
 
     # 1. Create the flat list of all "stubs"
     item_list_base = [k for k, v in node_ctr.items() for _ in range(v)]
@@ -257,7 +257,7 @@ def find_random_valid_sample_robust(
 
     # 3. --- Main retry loop (NOW CATCHES TIMEOUT) ---
     for attempt in range(max_attempts):
-        print(f"Search attempt {attempt + 1}/{max_attempts} with new shuffle.")
+        # print(f"Search attempt {attempt + 1}/{max_attempts} with new shuffle.")
         items_to_solve = list(item_list_base)
         random.shuffle(items_to_solve)
 
@@ -265,15 +265,15 @@ def find_random_valid_sample_robust(
             solution = solve_inplace(items_to_solve, len(items_to_solve))
 
             if solution:
-                print(f"Successfully found a valid pairing after {attempt + 1} attempts.")
+                # print(f"Successfully found a valid pairing after {attempt + 1} attempts.")
                 return solution
 
         except _SolverTimeout:
-            print(f"Search timed out *during* attempt {attempt + 1} ({time.monotonic() - start_time:.2f}s elapsed).")
+            # print(f"Search timed out *during* attempt {attempt + 1} ({time.monotonic() - start_time:.2f}s elapsed).")
             # Break the *outer* loop
             break
 
-    print(f"Failed to find solution after {max_attempts} attempts or timeout.")
+    # print(f"Failed to find solution after {max_attempts} attempts or timeout.")
     return None
 
 

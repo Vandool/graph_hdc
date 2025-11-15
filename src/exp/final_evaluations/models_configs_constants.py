@@ -14,7 +14,9 @@ GENERATOR_REGISTRY = {
         # "fm_comp_QM9SmilesHRR256F64G1NG3_s42_lr0.00015242_wd1e-6_bs512_hid2048_nhl7_np1_tim32_an",  # Best MSE 0.3
         # NVP V3
         #   One Trial
-        "nvp_comp_QM9SmilesHRR256F64G1NG3_f11_hid512_lr0.000655457_wd1.42677e-6_bs480_np1_smf6.5_smi2.2_smw16_an",
+        # 31%, -1899
+        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.000182766_wd0.000183556_bs160_hid1536_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_comp_QM9SmilesHRR256F64G1NG3_f11_hid512_lr0.000655457_wd1.42677e-6_bs480_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
@@ -28,12 +30,13 @@ GENERATOR_REGISTRY = {
     ],
     SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4: [
         # Spline Flows
-        "sf_hpo_ZincSmilesHRR256F645G1NG4_num8_num768_lr0.000412321_wd1.5703e-5_bs256_dro0.3_num4_num2_an",
+        # "sf_hpo_ZincSmilesHRR256F645G1NG4_num8_num768_lr0.000412321_wd1.5703e-5_bs256_dro0.3_num4_num2_an",
         # Flow Matching Best Sofar
         # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000586244_wd6.70521e-5_bs512_hid2048_nhl5_np1_tim32_an",  # Best Edge Correction 4.1%
         # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000607711_wd3.04221e-5_bs512_hid2048_nhl4_np1_tim32_an",  # Best MSE 0.32
         # NVP V3
-        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
+        # EdgeDecode 2.8%, NLL: -1190
+        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
         # # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000531954_wd0.000587484_bs192_hid1280_nhl2_np1_smf7_smi2.5_smw17_an",
         # # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
@@ -122,52 +125,6 @@ REGRESSOR_REGISTRY = {
         "qed": [],
         "sa_score": [],
         "max_ring_size": [],
-    },
-}
-
-
-DECODER_SETTINGS = {
-    "qm9": {
-        "iteration_budget": 3,
-        "max_graphs_per_iter": 1024,
-        "top_k": 10,
-        "sim_eps": 0.0001,
-        "early_stopping": True,
-        "prefer_smaller_corrective_edits": False,
-        "only_correction_level_zero": False,
-        "fallback_decoder_settings": {
-            "initial_limit": 2048,
-            "limit": 2048,
-            "beam_size": 2048,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": True,
-            "use_one_initial_population": False,
-            "use_g3_instead_of_h3": False,
-            "validate_ring_structure": False,
-            "use_modified_graph_embedding": False,
-            "random_sample_ratio": 0.0,
-        },
-    },
-    "zinc": {
-        "iteration_budget": 40,
-        "max_graphs_per_iter": 512,
-        "top_k": 10,
-        "sim_eps": 0.0001,
-        "early_stopping": True,
-        "prefer_smaller_corrective_edits": False,
-        "only_correction_level_zero": False,
-        "fallback_decoder_settings": {
-            "initial_limit": 2048,
-            "limit": 256,
-            "beam_size": 48,
-            "pruning_method": "cos_sim",
-            "use_size_aware_pruning": True,
-            "use_one_initial_population": False,
-            "use_g3_instead_of_h3": False,
-            "validate_ring_structure": False,
-            "use_modified_graph_embedding": False,
-            "random_sample_ratio": 0.0,
-        },
     },
 }
 

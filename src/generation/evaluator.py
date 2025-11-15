@@ -72,7 +72,7 @@ class GenerationEvaluator:
         self.sims: list[bool] | None = None
         self.correction_levels: list[CorrectionLevel]
 
-    def _to_mols_and_valid(self, samples: list[nx.Graph]) -> tuple[list[Chem.Mol | None], list[bool]]:
+    def to_mols_and_validate(self, samples: list[nx.Graph]) -> tuple[list[Chem.Mol | None], list[bool]]:
         mols: list[Chem.Mol | None] = []
         for g in samples:
             try:
@@ -112,7 +112,7 @@ class GenerationEvaluator:
         sims_eval.update(sim_stats(non_final_sims, "nonfinal"))
 
         # mols + validity (and store on self)
-        mols, valid_flags = self._to_mols_and_valid(samples)
+        mols, valid_flags = self.to_mols_and_validate(samples)
         self.mols = mols
         self.valid_flags = valid_flags
         self.sims = sims
@@ -235,7 +235,7 @@ class GenerationEvaluator:
         }
 
         # ---------- to mols & validity ----------
-        mols, valid = self._to_mols_and_valid(samples)
+        mols, valid = self.to_mols_and_validate(samples)
         self.mols = mols
         self.valid_flags = valid
         self.sims = [max(s) for s in sims]

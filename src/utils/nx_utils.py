@@ -262,11 +262,21 @@ def powerset(iterable):
 
 
 def _wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
-    """WL hash that respects `feat`."""
+    """WL hash that respects both `feat` and `type` node attributes."""
     H = G.copy()
     for n in H.nodes:
-        f = H.nodes[n]["feat"]
-        H.nodes[n]["__wl_label__"] = ",".join(map(str, f.to_tuple()))
+        # Handle both attribute formats (feat from greedy decoder, type from pattern matching)
+        if "feat" in H.nodes[n]:
+            # From greedy decoder - Feat object
+            f = H.nodes[n]["feat"]
+            label = ",".join(map(str, f.to_tuple()))
+        elif "type" in H.nodes[n]:
+            # From pattern matching decoder - already a tuple
+            label = ",".join(map(str, H.nodes[n]["type"]))
+        else:
+            # Fallback for nodes without recognized attributes
+            label = "unknown"
+        H.nodes[n]["__wl_label__"] = label
     return nx.weisfeiler_lehman_graph_hash(H, node_attr="__wl_label__", iterations=iters)
 
 

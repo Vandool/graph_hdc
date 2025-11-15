@@ -67,6 +67,9 @@ python-decouple  = ">=3.6"
 z3-solver          = "*"
 deepchem           = "*"
 
+[tool.pixi.dependencies]
+fcd = ">=1.2.2,<2"
+
 # CUDA ONLY for local-gpu env
 [tool.pixi.feature.gpu.dependencies]
 libcurand    = "!=10.4.0.35"

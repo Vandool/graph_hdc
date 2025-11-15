@@ -39,6 +39,7 @@ from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG,
     ZINC_SMILES_HRR_1024_F64_5G1NG4_CONFIG,
+    DecoderSettings,
     DSHDCConfig,
 )
 from src.encoding.graph_encoders import HyperNet
@@ -414,20 +415,18 @@ def run_single_experiment(
         # Phase 3: Full Graph Decoding
         start_time = time.time()
         with torch.no_grad():
+            decoder_settings = DecoderSettings.get_default_for(base_dataset=config.base_dataset)
             if decoder == "pattern_matching":
                 decoding_result = hypernet.decode_graph(
                     edge_term=edge_term,
                     graph_term=graph_term,
-                    decoder_settings=DECODER_SETTINGS.get(config.base_dataset),
+                    decoder_settings=decoder_settings,
                 )
             else:
-                decoding_result = hypernet._fallback_greedy(
+                decoding_result = hypernet.decode_graph_greedy(
                     edge_term=edge_term,
                     graph_term=graph_term,
-                    fallback_decoder_settings=DECODER_SETTINGS.get(config.base_dataset).get(
-                        "fallback_decoder_settings"
-                    ),
-                    top_k=1,
+                    decoder_settings=decoder_settings.fallback_decoder_settings,
                 )
 
         graph_decoding_time = time.time() - start_time

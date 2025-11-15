@@ -117,11 +117,10 @@ def eval_retrieval(ds: SupportedDataset, n_samples: int = 1):
                 is_hit = decoded_edge_counter == real_edge_counter
                 edge_hits.append(is_hit)
 
-                decoded_graph_results: DecodingResult = hypernet._fallback_greedy(
+                decoded_graph_results: DecodingResult = hypernet.decode_graph_greedy(
                     edge_term=edge_terms[0].clone(),
-                    fallback_decoder_settings=decoder_setting,
                     graph_term=graph_terms[0].clone(),
-                    top_k=1,
+                    decoder_settings=decoder_setting,
                 )
                 ts.append(time.perf_counter() - ts_start)
                 if decoded_graph_results.nx_graphs:

@@ -21,7 +21,9 @@ from tqdm import tqdm
 from src.datasets.utils import DatasetInfo, get_dataset_info
 from src.encoding.configs_and_constants import (
     BaseDataset,
+    DecoderSettings,
     DSHDCConfig,
+    FallbackDecoderSettings,
     Features,
     IndexRange,
 )
@@ -1201,7 +1203,7 @@ class HyperNet(AbstractGraphEncoder):
         edge_term: torch.Tensor,
         graph_term: torch.Tensor,
         node_counter: Counter | None = None,
-        decoder_settings: dict | None = None,
+        decoder_settings: FallbackDecoderSettings | None = None,
     ) -> DecodingResult:
         """
         Greedy beam search decoder for graph reconstruction.
@@ -1247,11 +1249,11 @@ class HyperNet(AbstractGraphEncoder):
         """
         # print("Using Greedy Decoder")
         if decoder_settings is None:
-            decoder_settings = {}
-        validate_ring_structure = decoder_settings.get("validate_ring_structure", False)
-        random_sample_ratio = decoder_settings.get("random_sample_ratio", 0.0)
-        use_modified_graph_embedding = decoder_settings.get("use_modified_graph_embedding", False)
-        graph_embedding_attr = decoder_settings.get("graph_embedding_attr", "graph_embedding")
+            decoder_settings = FallbackDecoderSettings()
+        validate_ring_structure = decoder_settings.validate_ring_structure
+        random_sample_ratio = decoder_settings.random_sample_ratio
+        use_modified_graph_embedding = decoder_settings.use_modified_graph_embedding
+        graph_embedding_attr = decoder_settings.graph_embedding_attr
 
         # Case 2D/3D vectors with G0 encoded
         if node_counter:
@@ -1295,7 +1297,7 @@ class HyperNet(AbstractGraphEncoder):
 
             first_pop.append((G, remaining_edges_counter))
 
-        pruning_fn = decoder_settings.get("pruning_fn", "cos_sim")
+        pruning_fn = decoder_settings.pruning_fn
 
         def get_similarities(a, b):
             if pruning_fn != "cos_sim":
@@ -1303,9 +1305,9 @@ class HyperNet(AbstractGraphEncoder):
                 return torch.sum(diff**2, dim=-1)
             return torchhd.cos(a, b)
 
-        initial_limit = decoder_settings.get("initial_limit", 1024)
-        use_size_aware_pruning = decoder_settings.get("use_size_aware_pruning", False)
-        if decoder_settings.get("use_one_initial_population", False):
+        initial_limit = decoder_settings.initial_limit
+        use_size_aware_pruning = decoder_settings.use_size_aware_pruning
+        if decoder_settings.use_one_initial_population:
             # Start with a child both anchors free
             selected = [(G, l) for G, l in first_pop if len(anchors(G)) == 2]
             first_pop = selected[:1] if len(selected) >= 1 else first_pop[:1]
@@ -1448,7 +1450,7 @@ class HyperNet(AbstractGraphEncoder):
             ## Collect the children with highest number of edges
             if not children:
                 # Extract top_k parameter from decoder_settings
-                top_k = decoder_settings.get("top_k", 10)
+                top_k = decoder_settings.top_k if decoder_settings.top_k is not None else 10
 
                 graphs, edges_left = zip(*population, strict=True)
                 # OPTIMIZATION: Use Counter.total() to check if empty
@@ -1458,7 +1460,7 @@ class HyperNet(AbstractGraphEncoder):
                 batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
                 enc_out = self.forward(batch)
                 g_terms = enc_out[graph_embedding_attr]
-                if decoder_settings.get("use_g3_instead_of_h3", False):
+                if decoder_settings.use_g3_instead_of_h3:
                     g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
 
                 # Compute similarities and sort
@@ -1486,8 +1488,8 @@ class HyperNet(AbstractGraphEncoder):
                 )
 
             if len(children) > initial_limit:
-                initial_limit = decoder_settings.get("limit", initial_limit)
-                beam_size = decoder_settings.get("beam_size")
+                initial_limit = decoder_settings.limit
+                beam_size = decoder_settings.beam_size
 
                 # Calculate split: top-k by similarity + random from rest
                 keep = int((1 - random_sample_ratio) * beam_size)
@@ -1506,7 +1508,7 @@ class HyperNet(AbstractGraphEncoder):
                         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in ch])
                         enc_out = self.forward(batch)
                         g_terms = enc_out[graph_embedding_attr]
-                        if decoder_settings.get("use_g3_instead_of_h3", False):
+                        if decoder_settings.use_g3_instead_of_h3:
                             g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
 
                         if use_modified_graph_embedding:
@@ -1560,7 +1562,7 @@ class HyperNet(AbstractGraphEncoder):
                     batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
                     enc_out = self.forward(batch)
                     g_terms = enc_out[graph_embedding_attr]
-                    if decoder_settings.get("use_g3_instead_of_h3", False):
+                    if decoder_settings.use_g3_instead_of_h3:
                         g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
 
                     if use_modified_graph_embedding:
@@ -1614,7 +1616,7 @@ class HyperNet(AbstractGraphEncoder):
             population = children
 
         # Extract top_k parameter from decoder_settings (consistent with main decode_graph)
-        top_k = decoder_settings.get("top_k", 10)
+        top_k = decoder_settings.top_k if decoder_settings.top_k is not None else 10
 
         # Sort the final population by cosine similarity to graph_term
         graphs, edges_left = zip(*population, strict=True)
@@ -1625,7 +1627,7 @@ class HyperNet(AbstractGraphEncoder):
         batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
         enc_out = self.forward(batch)
         g_terms = enc_out[graph_embedding_attr]
-        if decoder_settings.get("use_g3_instead_of_h3", False):
+        if decoder_settings.use_g3_instead_of_h3:
             g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
 
         # Compute similarities and sort
@@ -1764,6 +1766,7 @@ class HyperNet(AbstractGraphEncoder):
             List of (graph, similarity_score) tuples from all iterations.
         """
         top_k_graphs = []
+        seen_hashes = set()  # Track unique graphs for deduplication
         top_k_in_eps_range_found = 0
         for _ in range(iteration_budget):
             # Compute sampling structure from edge multiset
@@ -1798,15 +1801,22 @@ class HyperNet(AbstractGraphEncoder):
             top_k_sims, top_k_indices = torch.topk(sims, k=min(top_k, len(sims)))
             top_k_sims_cpu = top_k_sims.cpu().numpy()
 
-            # Extend results with (graph, similarity) pairs
-            top_k_graphs.extend([(decoded_graphs_iter[top_k_indices[i]], sim) for i, sim in enumerate(top_k_sims_cpu)])
+            # Add results with deduplication using permutation-invariant hash
+            for i, sim in enumerate(top_k_sims_cpu):
+                graph = decoded_graphs_iter[top_k_indices[i]]
+                graph_hash = _hash(graph)
+
+                # Only add if we haven't seen this graph structure before
+                if graph_hash not in seen_hashes:
+                    seen_hashes.add(graph_hash)
+                    top_k_graphs.append((graph, sim))
 
             # Early stopping: if we found the perfect match, or top_k number of near-perfect matches, stop iterating
             should_break = False
             if use_early_stopping:
                 for sim in top_k_sims_cpu:
                     if sim == 1.0:
-                        print("[EARLY STOPPING] One exact match found!!!")
+                        # print("[EARLY STOPPING] One exact match found!!!")
                         should_break = True
                     # if abs(sim - 1.0) <= sim_eps:
                     #     top_k_in_eps_range_found += 1
@@ -1841,7 +1851,7 @@ class HyperNet(AbstractGraphEncoder):
         return is_feasible
 
     def decode_graph(
-        self, edge_term: VSATensor, graph_term: VSATensor, decoder_settings: dict | None = None
+        self, edge_term: VSATensor, graph_term: VSATensor, decoder_settings: DecoderSettings | None = None
     ) -> DecodingResult:
         """
         Decode a graph from its hyperdimensional representation (edge_term and graph_term).
@@ -1871,22 +1881,9 @@ class HyperNet(AbstractGraphEncoder):
             Hypervector representing the edge structure (output from forward() at depth=1).
         graph_term : VSATensor
             Hypervector representing the full graph (output from forward() graph_embedding).
-        decoder_settings : dict, optional
-            Configuration parameters:
-            - iteration_budget: int (default: 1 for QM9, 10 for ZINC)
-              Number of pattern matching iterations per edge multiset.
-            - max_graphs_per_iter: int (default: 1024)
-              Maximum graph candidates to generate per iteration.
-            - top_k: int (default: 10)
-              Number of top-scoring graphs to return.
-            - sim_eps: float (default: 0.0001)
-              Early stopping threshold (if similarity >= 1.0 - sim_eps).
-            - early_stopping: bool (default: False)
-              Whether to stop when a near-perfect match is found.
-            - fallback_decoder_settings: dict, optional
-              Settings for the greedy decoder fallback. If not provided or if top_k
-              is not specified in fallback_decoder_settings, the main top_k value
-              will be inherited.
+        decoder_settings : DecoderSettings, optional
+            Configuration parameters for decoding. If None, uses dataset-specific defaults.
+            See DecoderSettings dataclass for available parameters.
 
         Returns
         -------
@@ -1911,7 +1908,7 @@ class HyperNet(AbstractGraphEncoder):
         >>> result = hypernet.decode_graph(
         ...     edge_term=edge_terms[0],
         ...     graph_term=graph_terms[0],
-        ...     decoder_settings={"top_k": 10, "early_stopping": True},
+        ...     decoder_settings=DecoderSettings(top_k=10, early_stopping=True),
         ... )
         >>> print(result.correction_level)  # CorrectionLevel.ONE
         >>> best_graph = result.nx_graphs[0]
@@ -1920,33 +1917,31 @@ class HyperNet(AbstractGraphEncoder):
         graph_term = self.ensure_vsa(graph_term)
 
         if decoder_settings is None:
-            decoder_settings = {}
+            decoder_settings = DecoderSettings.get_default_for(base_dataset=self.base_dataset)
 
         # Validate decoder_settings
-        if "top_k" in decoder_settings and decoder_settings["top_k"] < 1:
+        if decoder_settings.top_k < 1:
             raise ValueError("top_k must be >= 1")
-        if "iteration_budget" in decoder_settings and decoder_settings["iteration_budget"] < 1:
+        if decoder_settings.iteration_budget < 1:
             raise ValueError("iteration_budget must be >= 1")
-        if "max_graphs_per_iter" in decoder_settings and decoder_settings["max_graphs_per_iter"] < 1:
+        if decoder_settings.max_graphs_per_iter < 1:
             raise ValueError("max_graphs_per_iter must be >= 1")
 
-        # Extract settings with defaults
-        iteration_budget: int = decoder_settings.get("iteration_budget", 1 if self.base_dataset == "qm9" else 10)
-        max_graphs_per_iter: int = decoder_settings.get("max_graphs_per_iter", 1024)
-        top_k: int = decoder_settings.get("top_k", 10)
-        sim_eps: float = decoder_settings.get("sim_eps", 0.0001)
-        use_early_stopping: bool = decoder_settings.get("early_stopping", False)
-        fallback_decoder_settings = decoder_settings.get("fallback_decoder_settings")
-        prefer_smaller_corrective_edits = decoder_settings.get("prefer_smaller_corrective_edits", False)
-        self.validate_ring_structure = decoder_settings.get("fallback_decoder_settings", {}).get(
-            "validate_ring_structure", False
-        )
-        only_correction_level_zero = decoder_settings.get("only_correction_level_zero", False)
+        # Extract settings from dataclass
+        iteration_budget: int = decoder_settings.iteration_budget
+        max_graphs_per_iter: int = decoder_settings.max_graphs_per_iter
+        top_k: int = decoder_settings.top_k
+        sim_eps: float = decoder_settings.sim_eps
+        use_early_stopping: bool = decoder_settings.early_stopping
+        fallback_decoder_settings = decoder_settings.fallback_decoder_settings
+        prefer_smaller_corrective_edits = decoder_settings.prefer_smaller_corrective_edits
+        self.validate_ring_structure = decoder_settings.fallback_decoder_settings.validate_ring_structure
+        use_correction = decoder_settings.use_correction
 
         # Phase 1: Decode edge multiset from edge_term using greedy unbinding
         initial_decoded_edges = self.decode_order_one_no_node_terms(edge_term.clone())
         if len(initial_decoded_edges) > self.decoding_limit_for:
-            print(f"Too many edges to decode: {len(initial_decoded_edges)}")
+            # print(f"Too many edges to decode: {len(initial_decoded_edges)}")
             return DecodingResult()
 
         # Phase 2: Check if edges form a valid graph (node degrees match edge counts)
@@ -1954,7 +1949,8 @@ class HyperNet(AbstractGraphEncoder):
         decoded_edges = [initial_decoded_edges]
 
         if not target_reached(initial_decoded_edges):
-            if only_correction_level_zero:
+            if not use_correction:
+                # print("Requires Correction, returning empty...")
                 return DecodingResult()
             # Edges don't form valid graph → apply progressive correction strategies
             correction_results, correction_level = self._apply_edge_corrections(
@@ -1987,13 +1983,15 @@ class HyperNet(AbstractGraphEncoder):
 
             if len(decoded_edges) == 0:
                 # print("[WARNING] all the corrected edge multisets are infeasible")
-                return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
+                return self.decode_graph_greedy(
+                    edge_term=edge_term, graph_term=graph_term, decoder_settings=fallback_decoder_settings
+                )
 
             # print(f"Pruned {before_pruning - len(decoded_edges)}/{before_pruning} of the corrected edge multisets")
             iteration_budget = max(1, iteration_budget // len(decoded_edges))
-            print(
-                f"[{correction_level.value}] Corrected decoded edges length: {len(decoded_edges)}, Allocated iteration budget per set: {iteration_budget}"
-            )
+            # print(
+            #     f"[{correction_level.value}] Corrected decoded edges length: {len(decoded_edges)}, Allocated iteration budget per set: {iteration_budget}"
+            # )
 
             # For each valid edge multiset, sample and rank graph candidates
             for edge_multiset in decoded_edges:
@@ -2010,7 +2008,9 @@ class HyperNet(AbstractGraphEncoder):
 
             if len(top_k_graphs) == 0:
                 # print("[WARNING] even with correction no valid graphs was enumerated")
-                return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
+                return self.decode_graph_greedy(
+                    edge_term=edge_term, graph_term=graph_term, decoder_settings=fallback_decoder_settings
+                )
 
             # Sort all candidates by similarity (descending) and take top k
             top_k_graphs = sorted(top_k_graphs, key=lambda x: x[1], reverse=True)[:top_k]
@@ -2026,19 +2026,9 @@ class HyperNet(AbstractGraphEncoder):
                 correction_level=correction_level,
             )
 
-        return self._fallback_greedy(edge_term, fallback_decoder_settings, graph_term, top_k)
-
-    # Phase 4: Fallback to greedy decoder if all corrections failed
-    # Ensure top_k is passed to greedy decoder (use fallback_decoder_settings if provided,
-    # but inherit top_k from main settings if not specified in fallback settings)
-    def _fallback_greedy(
-        self, edge_term: VSATensor, fallback_decoder_settings: Any | None, graph_term: VSATensor, top_k: int
-    ) -> DecodingResult:
-        # print("Fall back greedy..")
-        greedy_settings = fallback_decoder_settings if fallback_decoder_settings is not None else {}
-        if "top_k" not in greedy_settings:
-            greedy_settings["top_k"] = top_k
-        return self.decode_graph_greedy(edge_term=edge_term, graph_term=graph_term, decoder_settings=greedy_settings)
+        return self.decode_graph_greedy(
+            edge_term=edge_term, graph_term=graph_term, decoder_settings=fallback_decoder_settings
+        )
 
     def decode_graph_z3(
         self,
@@ -2069,7 +2059,7 @@ class HyperNet(AbstractGraphEncoder):
                 nodes_multiset=list(node_counter.elements()), edges_multiset=decoded_edges, max_solutions=max_solutions
             )
         except ValueError as err:
-            print(f"[ERROR] While decoding graph: {err}")
+            # print(f"[ERROR] While decoding graph: {err}")
             return [nx.Graph()], [False]
 
         return DecodingResult(

@@ -20,7 +20,7 @@ import torch
 from optuna_integration import BoTorchSampler
 
 from src.encoding.configs_and_constants import SupportedDataset
-from src.exp.flow_matching.hpo.folder_name import make_run_folder_name
+from src.exp.spline_flow.hpo.folder_name import make_run_folder_name
 from src.exp.spline_flow.spline_flow import run_experiment
 from src.normalizing_flow.models import SFConfig
 
@@ -50,9 +50,12 @@ def log(msg: str) -> None:
 def get_spline_space(dataset: SupportedDataset) -> dict:
     """Defines the Optuna search space for SplineFlow."""
     input_dim = dataset.default_cfg.hv_dim * dataset.default_cfg.hv_count
-    hidden_low = input_dim
-    hidden_high = input_dim * 4
-    hidden_step = input_dim // 2
+    # hidden_low = input_dim // 2 # 256
+    # hidden_high = input_dim * 2 # 1024
+    # hidden_step = input_dim // 2 # 256
+    hidden_low = 256
+    hidden_high = 526
+    hidden_step = 256
 
     return {
         "batch_size": optuna.distributions.IntDistribution(128, 512, step=128),
@@ -62,7 +65,7 @@ def get_spline_space(dataset: SupportedDataset) -> dict:
         "num_hidden_channels": optuna.distributions.IntDistribution(hidden_low, hidden_high, step=hidden_step),
         "num_bins": optuna.distributions.IntDistribution(4, 16, step=4),
         "num_blocks": optuna.distributions.IntDistribution(2, 6, step=1),
-        "dropout_probability": optuna.distributions.FloatDistribution(0.0, 0.3, step=0.1),
+        "dropout_probability": optuna.distributions.FloatDistribution(0.0, 0.2, step=0.1),
     }
 
 
@@ -258,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default=SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3.value,
+        default=SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4.value,
         choices=[ds.value for ds in SupportedDataset],
     )
     parser.add_argument("--n_trials", type=int, default=1)
