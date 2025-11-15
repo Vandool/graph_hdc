@@ -327,10 +327,10 @@ class DecoderSettings:
             )
         # zinc default
         return cls(
-            iteration_budget=40,
+            iteration_budget=100,
             max_graphs_per_iter=512,
             fallback_decoder_settings=FallbackDecoderSettings(
                 limit=256,
-                beam_size=64,  # 48,64,96
+                beam_size=96,  # 48,64,96
             ),
         )

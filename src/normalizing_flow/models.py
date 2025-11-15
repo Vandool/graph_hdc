@@ -420,8 +420,7 @@ class SFConfig:
 
     exp_dir_name: str | None = None
     seed: int = 42
-    # epochs: int = 1200
-    epochs: int = 2
+    epochs: int = 1200
     batch_size: int = 256
     lr: float = 1e-4
     weight_decay: float = 1e-6
