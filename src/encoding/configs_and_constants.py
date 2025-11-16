@@ -227,7 +227,7 @@ class SupportedDataset(enum.Enum):
 class FallbackDecoderSettings:
     """Settings for the greedy fallback decoder."""
 
-    initial_limit: int = 2048
+    initial_limit: int = 4096
     limit: int = 2048
     beam_size: int = 2048
     pruning_method: str = "cos_sim"
@@ -260,7 +260,7 @@ class DecoderSettings:
 
     iteration_budget: int = 3  # QM9 default
     max_graphs_per_iter: int = 1024
-    _top_k: int = field(default=10, init=False, repr=False)
+    _top_k: int = field(default=3, init=False, repr=False)
     sim_eps: float = 0.0001
     early_stopping: bool = True
     prefer_smaller_corrective_edits: bool = False
@@ -327,10 +327,10 @@ class DecoderSettings:
             )
         # zinc default
         return cls(
-            iteration_budget=100,
-            max_graphs_per_iter=512,
+            iteration_budget=25,
+            max_graphs_per_iter=1024,
             fallback_decoder_settings=FallbackDecoderSettings(
                 limit=256,
-                beam_size=96,  # 48,64,96
+                beam_size=64,  # 48,64,96
             ),
         )

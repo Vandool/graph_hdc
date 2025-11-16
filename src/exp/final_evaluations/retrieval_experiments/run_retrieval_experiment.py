@@ -190,6 +190,7 @@ def run_single_experiment(
     output_dir: Path | None = None,
     early_stopping: bool = False,
     decoder: str = "pattern_matching",
+    beam_size: int | None = None,
 ) -> dict:
     """
     Run a single retrieval experiment.
@@ -281,49 +282,6 @@ def run_single_experiment(
     # Move to GPU if available
     device = pick_device()
     hypernet = hypernet.to(device)
-
-    DECODER_SETTINGS = {
-        "qm9": {
-            "iteration_budget": iteration_budget,
-            "max_graphs_per_iter": 1024,
-            "top_k": 10,
-            "sim_eps": 0.0001,
-            "early_stopping": True,
-            "prefer_smaller_corrective_edits": False,
-            "fallback_decoder_settings": {
-                "initial_limit": 2048,
-                "limit": 2048,
-                "beam_size": 2048,
-                "pruning_method": "cos_sim",
-                "use_size_aware_pruning": True,
-                "use_one_initial_population": False,
-                "use_g3_instead_of_h3": False,
-                "validate_ring_structure": False,
-                "use_modified_graph_embedding": False,
-                "random_sample_ratio": 0.0,
-            },
-        },
-        "zinc": {
-            "iteration_budget": iteration_budget,
-            "max_graphs_per_iter": 1024,
-            "top_k": 10,
-            "sim_eps": 0.0001,
-            "early_stopping": True,
-            "prefer_smaller_corrective_edits": False,
-            "fallback_decoder_settings": {
-                "initial_limit": 2048,
-                "limit": 256,
-                "beam_size": 96,  # choices 32, 64, 96
-                "pruning_method": "cos_sim",
-                "use_size_aware_pruning": True,
-                "use_one_initial_population": False,
-                "use_g3_instead_of_h3": False,
-                "validate_ring_structure": False,
-                "use_modified_graph_embedding": False,
-                "random_sample_ratio": 0.0,
-            },
-        },
-    }
 
     # Phase 1: Batch Encoding
     # Use DataLoader for efficient batch encoding
@@ -422,7 +380,14 @@ def run_single_experiment(
                     graph_term=graph_term,
                     decoder_settings=decoder_settings,
                 )
-            else:
+            else:  # greedy decoder
+                # Use provided beam_size or default from DecoderSettings
+                # beam_size is only applied to ZINC dataset (requirement)
+                if beam_size is not None and dataset_name == "zinc":
+                    decoder_settings.fallback_decoder_settings.beam_size = beam_size
+                # else: use the default from DecoderSettings.get_default_for()
+                #   QM9: 2048, ZINC: 96
+
                 decoding_result = hypernet.decode_graph_greedy(
                     edge_term=edge_term,
                     graph_term=graph_term,
@@ -468,6 +433,17 @@ def run_single_experiment(
     correction_counter = Counter(correction_levels)
     correction_percentages = {k: v / len(correction_levels) * 100 for k, v in correction_counter.items()}
 
+    # Determine actual beam_size used (for results storage)
+    if decoder == "greedy":
+        # Get the decoder settings to extract the actual beam_size used
+        temp_decoder_settings = DecoderSettings.get_default_for(base_dataset=config.base_dataset)
+        if beam_size is not None and dataset_name == "zinc":
+            actual_beam_size = beam_size
+        else:
+            actual_beam_size = temp_decoder_settings.fallback_decoder_settings.beam_size
+    else:
+        actual_beam_size = None
+
     results = {
         "vsa_model": vsa_model,
         "hv_dim": hv_dim,
@@ -477,6 +453,7 @@ def run_single_experiment(
         "early_stopping": early_stopping,
         "n_samples": len(sample_indices),
         "decoder": decoder,
+        "beam_size": actual_beam_size,
         # Accuracies
         "edge_accuracy_mean": np.mean(edge_accuracies),
         "edge_accuracy_std": np.std(edge_accuracies),
@@ -509,8 +486,14 @@ def run_single_experiment(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save summary (include decoder type in filename)
-        filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder}.json"
+        # Build filename with beam_size suffix for greedy decoder
+        if decoder == "greedy":
+            decoder_suffix = f"{decoder}_bs{actual_beam_size}"
+        else:
+            decoder_suffix = decoder
+
+        # Save summary (include decoder type and beam_size in filename)
+        filename = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder_suffix}.json"
         with (output_dir / filename).open(mode="w") as f:
             json.dump(results, f, indent=2)
 
@@ -531,12 +514,12 @@ def run_single_experiment(
             }
         )
         detailed_filename = (
-            f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder}_detailed.csv"
+            f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder_suffix}_detailed.csv"
         )
         detailed_results.to_csv(output_dir / detailed_filename, index=False)
 
-        # Generate hit rate by node size plot (include decoder type in filename)
-        filename_base = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder}"
+        # Generate hit rate by node size plot (include decoder type and beam_size in filename)
+        filename_base = f"{vsa_model}_{dataset_name}_dim{hv_dim}_depth{depth}_iter{iteration_budget}_{decoder_suffix}"
         plot_hit_rate_by_node_size(detailed_results, output_dir, filename_base)
 
     # Print summary
@@ -583,6 +566,12 @@ def main():
         action="store_true",
         help="Enable early stopping in pattern matching (default: False)",
     )
+    parser.add_argument(
+        "--beam_size",
+        type=int,
+        default=None,
+        help="Beam size for greedy decoder (default: 96 for ZINC, 2048 for QM9, ignored for pattern_matching)",
+    )
 
     args = parser.parse_args()
 
@@ -600,6 +589,7 @@ def main():
         output_dir=output_dir,
         early_stopping=args.early_stopping,
         decoder=args.decoder,
+        beam_size=args.beam_size,
     )
 
     # Append to summary CSV

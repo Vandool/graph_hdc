@@ -6,10 +6,12 @@
 #
 # Usage:
 #   bash submit_hrr_zinc.sh
+#   BEAM_SIZE=128 bash submit_hrr_zinc.sh  # Custom beam size
 #
 # Environment variables:
 #   N_SAMPLES: Number of samples per experiment (default: 1000)
 #   CLUSTER: Cluster name (uc3|hk|haic|local) (default: uc3)
+#   BEAM_SIZE: Beam size for greedy decoder (default: 64)
 #   DRY_RUN: Set to 1 to see commands without submitting (default: 0)
 
 set -euo pipefail
@@ -19,6 +21,7 @@ export N_SAMPLES="${N_SAMPLES:-1000}"
 export CLUSTER="${CLUSTER:-uc3}"
 export DRY_RUN="${DRY_RUN:-0}"
 export CPUS_PER_TASK=1
+export BEAM_SIZE="${BEAM_SIZE:-32}"  # Default: 64, can be overridden via environment variable
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -28,6 +31,7 @@ echo "=========================================="
 echo "N_SAMPLES       : $N_SAMPLES"
 echo "CLUSTER         : $CLUSTER"
 echo "CPUs per task   : $CPUS_PER_TASK"
+echo "BEAM_SIZE       : $BEAM_SIZE"
 echo "DRY_RUN         : $DRY_RUN"
 echo "=========================================="
 
@@ -35,7 +39,7 @@ echo "=========================================="
 VSA="HRR"
 DATASET="zinc"
 #HV_DIMS=(256 512 1024)
-HV_DIMS=(512 1024)
+HV_DIMS=(256 512 1024)
 DEPTHS=(2 3 4 5)
 #ITER_BUDGETS=(1 10)
 ITER_BUDGETS=(50)
@@ -49,19 +53,19 @@ echo ""
 
 for dim in "${HV_DIMS[@]}"; do
     for depth in "${DEPTHS[@]}"; do
-        # Pattern matching decoder: iterate over all iter_budgets
-        for iter_budget in "${ITER_BUDGETS[@]}"; do
-            echo ">>> Submitting HRR ZINC - dim=$dim, depth=$depth, iter_budget=$iter_budget, decoder=pattern_matching"
-            TIME_LIMIT="10:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$iter_budget" "pattern_matching"
-            TOTAL_JOBS=$((TOTAL_JOBS + 1))
-            sleep 0.2
-        done
+#        # Pattern matching decoder: iterate over all iter_budgets
+#        for iter_budget in "${ITER_BUDGETS[@]}"; do
+#            echo ">>> Submitting HRR ZINC - dim=$dim, depth=$depth, iter_budget=$iter_budget, decoder=pattern_matching"
+#            TIME_LIMIT="10:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "$iter_budget" "pattern_matching"
+#            TOTAL_JOBS=$((TOTAL_JOBS + 1))
+#            sleep 0.2
+#        done
 
-#        # Greedy decoder: only run once (iter_budget is irrelevant)
-#        echo ">>> Submitting HRR ZINC - dim=$dim, depth=$depth, iter_budget=1 (unused), decoder=greedy"
-#        TIME_LIMIT="10:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "1" "greedy"
-#        TOTAL_JOBS=$((TOTAL_JOBS + 1))
-#        sleep 0.2
+        # Greedy decoder: only run once (iter_budget is irrelevant)
+        echo ">>> Submitting HRR ZINC - dim=$dim, depth=$depth, iter_budget=1 (unused), decoder=greedy, beam_size=$BEAM_SIZE"
+        TIME_LIMIT="04:00:00" bash "$SCRIPT_DIR/submit_single_job.sh" "$VSA" "$dim" "$depth" "$DATASET" "1" "greedy" "$BEAM_SIZE"
+        TOTAL_JOBS=$((TOTAL_JOBS + 1))
+        sleep 0.2
     done
 done
 

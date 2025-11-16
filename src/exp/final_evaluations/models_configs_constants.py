@@ -9,13 +9,16 @@ GENERATOR_REGISTRY = {
         # NVP V3
         #   One Trial
         # 31%, -1899
-        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.000182766_wd0.000183556_bs160_hid1536_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.000182766_wd0.000183556_bs160_hid1536_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # 26%, -2013 -> WINNER
+        "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f16_lr0.000190993_wd0.0003491_bs96_hid1792_nhl3_np1_smf6.5_smi2.2_smw16_an"
         # "nvp_comp_QM9SmilesHRR256F64G1NG3_f11_hid512_lr0.000655457_wd1.42677e-6_bs480_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.000183872_wd0.000202358_bs96_hid1792_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # Spline Flow
+        # NLL: -1852
         # "sf_hpo_QM9SmilesHRR256F64G1NG3_num6_num1024_lr0.000108339_wd2.51289e-7_bs128_dro0.2_num12_num6_an",
         # "sf_hpo_QM9SmilesHRR256F64G1NG3_num8_num768_lr0.000412321_wd1.5703e-5_bs256_dro0.3_num4_num2_an",
         # Flow Matching Best sofar
@@ -29,28 +32,31 @@ GENERATOR_REGISTRY = {
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
     ],
     SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4: [
-        # Spline Flows
+        # Spline Flow
+        # # NLL: -916
         # "sf_hpo_ZincSmilesHRR256F645G1NG4_num8_num768_lr0.000412321_wd1.5703e-5_bs256_dro0.3_num4_num2_an",
+        # # NLL: -637
+        # "sf_hpo_ZincSmilesHRR256F645G1NG4_nf4_nh256_nb16_b6_lr8.90686e-5_wd6.12782e-7_bs256_dp0.2_an",
         # Flow Matching Best Sofar
         # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000586244_wd6.70521e-5_bs512_hid2048_nhl5_np1_tim32_an",  # Best Edge Correction 4.1%
         # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000607711_wd3.04221e-5_bs512_hid2048_nhl4_np1_tim32_an",  # Best MSE 0.32
         # NVP V3
-        # EdgeDecode 2.8%, NLL: -1190
+        # # EdgeDecode 2.8%, NLL: -1190
         "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
-        # ED: 2.7%, NLL: -1200
-        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
-        # ED: 1.9%, NLL: -1220
-        "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
+        # # ED: 2.7%, NLL: -1200
+        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
+        # # ED: 1.9%, NLL: -1220
+        # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
         # # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000531954_wd0.000587484_bs192_hid1280_nhl2_np1_smf7_smi2.5_smw17_an",
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
-        # NLL: -7608
-        "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000343816_wd3e-6_bs160_smf7_smi2.5_smw17_an",
-        # NLL: -7180
-        "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
-        # NLL: -7100
-        "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000640292_wd3e-6_bs192_smf7_smi2.5_smw17_an",
+        # # NLL: -7608
+        # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000343816_wd3e-6_bs160_smf7_smi2.5_smw17_an",
+        # # NLL: -7180
+        # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
+        # # NLL: -7100
+        # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000640292_wd3e-6_bs192_smf7_smi2.5_smw17_an",
     ],
     SupportedDataset.ZINC_SMILES_HRR_2048_F64_5G1NG4: [
         # NLL: -17207

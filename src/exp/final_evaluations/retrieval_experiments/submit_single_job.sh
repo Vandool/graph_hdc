@@ -2,6 +2,7 @@
 #!/usr/bin/env bash
 # Cluster-aware submission script for a single retrieval experiment
 # Usage: bash submit_single_job.sh HRR 1024 3 qm9 1 pattern_matching
+#        bash submit_single_job.sh HRR 1024 3 zinc 1 greedy 96  # With beam_size
 # CLUSTER: uc3 | hk | haic | local
 
 set -euo pipefail
@@ -21,6 +22,7 @@ DEPTH="${3:-3}"
 DATASET="${4:-qm9}"
 ITER_BUDGET="${5:-1}"
 DECODER="${6:-greedy}"  # pattern_matching or greedy
+BEAM_SIZE="${7:-}"      # Optional beam_size for greedy decoder
 
 # -----------------------------
 # User-configurable parameters
@@ -51,8 +53,9 @@ echo "DEPTH   : ${DEPTH}"
 echo "DATASET : ${DATASET}"
 echo "ITER_BDG: ${ITER_BUDGET}"
 echo "DECODER : ${DECODER}"
+echo "BEAM_SZ : ${BEAM_SIZE:-default}"
 
-EXP_NAME="Retrieval_${VSA}_${DATASET}_d${HV_DIM}_D${DEPTH}_i${ITER_BUDGET}_${DECODER}"
+EXP_NAME="Retrieval_${VSA}_${DATASET}_d${HV_DIM}_D${DEPTH}_i${ITER_BUDGET}_${DECODER}_${BEAM_SIZE}"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
@@ -67,6 +70,11 @@ PY_ARGS=(
   --n_samples "$N_SAMPLES"
   --decoder "$DECODER"
 )
+
+# Add beam_size if provided
+if [[ -n "$BEAM_SIZE" ]]; then
+  PY_ARGS+=(--beam_size "$BEAM_SIZE")
+fi
 
 # Add extra args if provided (e.g., --early_stopping)
 if [[ -n "${EXTRA_ARGS:-}" ]]; then
@@ -157,6 +165,7 @@ echo 'DEPTH   : ${DEPTH}'
 echo 'DATASET : ${DATASET}'
 echo 'ITER_BDG: ${ITER_BUDGET}'
 echo 'DECODER : ${DECODER}'
+echo 'BEAM_SZ : ${BEAM_SIZE:-default}'
 echo 'N_SAMP  : ${N_SAMPLES}'
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
