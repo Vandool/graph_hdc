@@ -1286,16 +1286,16 @@ def main():
                         decoder_settings=decoder_settings,
                         seed=seed,
                         dataset_props=dataset_props,
-                        draw_molecules=args.draw and seed == seeds[0],  # Only draw for first seed
+                        draw_molecules=args.draw,  # Draw for each seed independently
                         moses_mode=args.moses,
                     )
                 )
 
                 model_results.append(results)
 
-                # Create plots for first seed only
-                if not args.no_plot and seed == seeds[0]:
-                    model_dir = base_dir / f"{gen_hint}_seed{seed}_idx{gen_idx}_s{seeds}"
+                # Create plots and save data for each seed independently
+                if not args.no_plot:
+                    model_dir = base_dir / f"{gen_hint}_seed{seed}"
                     model_dir.mkdir(parents=True, exist_ok=True)
 
                     create_comprehensive_plots(dataset.value, dataset_props, generated_props, model_dir)
@@ -1346,17 +1346,57 @@ def main():
 
             all_results.append(aggregated)
 
-            # Save individual model results
+            # Save individual seed results (for parallel execution)
+            for seed_result in model_results:
+                seed = seed_result["seed"]
+                seed_result_path = base_dir / f"{gen_hint}_seed{seed}.json"
+                # Use atomic write to prevent partial file writes
+                temp_path = Path(str(seed_result_path) + f".tmp_{seed}")
+                with open(temp_path, "w") as f:
+                    json.dump(seed_result, f, indent=2)
+                temp_path.rename(seed_result_path)
+
+            # Also save aggregated results across all seeds
             model_results_path = base_dir / f"{gen_hint}_all_seeds.json"
-            with open(model_results_path, "w") as f:
+            temp_path = Path(str(model_results_path) + ".tmp")
+            with open(temp_path, "w") as f:
                 json.dump(model_results, f, indent=2)
+            temp_path.rename(model_results_path)
 
     # Save aggregated results
     if all_results:
-        # JSON format
+        # Save seed-specific summaries (for parallel execution tracking)
+        # Group results by seed across all models
+        seed_summaries = defaultdict(list)
+        for gen_idx, gen_hint in enumerate(generators):
+            # Read individual seed files for this model
+            for seed in seeds:
+                seed_file = base_dir / f"{gen_hint}_seed{seed}.json"
+                if seed_file.exists():
+                    with seed_file.open("r") as f:
+                        seed_data = json.load(f)
+                        seed_summaries[seed].append(seed_data)
+
+        # Save per-seed summary files
+        for seed, seed_data_list in seed_summaries.items():
+            if seed_data_list:
+                seed_summary_path = base_dir / f"summary_{dataset.value}_seed{seed}.json"
+                temp_path = Path(str(seed_summary_path) + f".tmp_{seed}")
+                with temp_path.open("w") as f:
+                    json.dump(seed_data_list, f, indent=2)
+                temp_path.rename(seed_summary_path)
+
+                # CSV format
+                seed_df = pd.DataFrame(seed_data_list)
+                seed_csv_path = base_dir / f"summary_{dataset.value}_seed{seed}.csv"
+                seed_df.to_csv(seed_csv_path, index=False)
+
+        # Save overall aggregated summary (across all seeds)
         summary_path = base_dir / f"summary_{dataset.value}.json"
-        with open(summary_path, "w") as f:
+        temp_path = Path(str(summary_path) + ".tmp")
+        with temp_path.open("w") as f:
             json.dump(all_results, f, indent=2)
+        temp_path.rename(summary_path)
 
         # CSV format for easy analysis
         df = pd.DataFrame(all_results)

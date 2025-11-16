@@ -10,7 +10,7 @@ GENERATOR_REGISTRY = {
         #   One Trial
         # 31%, -1899
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.000182766_wd0.000183556_bs160_hid1536_nhl4_np1_smf6.5_smi2.2_smw16_an",
-        # 26%, -2013 -> WINNER
+        # 26%, -2013 -> --> WINNER on 1000 sample comparison unconditional
         "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f16_lr0.000190993_wd0.0003491_bs96_hid1792_nhl3_np1_smf6.5_smi2.2_smw16_an"
         # "nvp_comp_QM9SmilesHRR256F64G1NG3_f11_hid512_lr0.000655457_wd1.42677e-6_bs480_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.00018206_wd0.000158329_bs192_hid1280_nhl4_np1_smf6.5_smi2.2_smw16_an",
@@ -41,7 +41,7 @@ GENERATOR_REGISTRY = {
         # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000586244_wd6.70521e-5_bs512_hid2048_nhl5_np1_tim32_an",  # Best Edge Correction 4.1%
         # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000607711_wd3.04221e-5_bs512_hid2048_nhl4_np1_tim32_an",  # Best MSE 0.32
         # NVP V3
-        # # EdgeDecode 2.8%, NLL: -1190
+        # # EdgeDecode 2.8%, NLL: -1190 --> WINNER on 1000 sample comparison unconditional
         "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
         # # ED: 2.7%, NLL: -1200
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
