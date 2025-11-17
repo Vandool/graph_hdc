@@ -34,8 +34,7 @@ from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
-from src.datasets.qm9_smiles_generation import QM9Smiles
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import (
     QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG,
     ZINC_SMILES_HRR_1024_F64_5G1NG4_CONFIG,
@@ -229,7 +228,7 @@ def run_single_experiment(
     config = create_dynamic_config(dataset_name, vsa_model, hv_dim, depth)
 
     # Load dataset
-    dataset = QM9Smiles(split="test") if dataset_name == "qm9" else ZincSmiles(split="train")
+    dataset = get_split(base_dataset=config.base_dataset, split="train")
 
     # Initialize HyperNet
     hypernet = HyperNet(

@@ -228,7 +228,7 @@ class FallbackDecoderSettings:
     """Settings for the greedy fallback decoder."""
 
     initial_limit: int = 4096
-    limit: int = 2048
+    limit: int = 4096
     beam_size: int = 2048
     pruning_method: str = "cos_sim"
     use_size_aware_pruning: bool = True
@@ -330,7 +330,7 @@ class DecoderSettings:
             iteration_budget=25,
             max_graphs_per_iter=1024,
             fallback_decoder_settings=FallbackDecoderSettings(
-                limit=256,
+                limit=1024,
                 beam_size=64,  # 48,64,96
             ),
         )

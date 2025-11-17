@@ -38,8 +38,10 @@ GENERATOR_REGISTRY = {
         # # NLL: -637
         # "sf_hpo_ZincSmilesHRR256F645G1NG4_nf4_nh256_nb16_b6_lr8.90686e-5_wd6.12782e-7_bs256_dp0.2_an",
         # Flow Matching Best Sofar
-        # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000586244_wd6.70521e-5_bs512_hid2048_nhl5_np1_tim32_an",  # Best Edge Correction 4.1%
-        # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000607711_wd3.04221e-5_bs512_hid2048_nhl4_np1_tim32_an",  # Best MSE 0.32
+        # Best Edge Correction 4.1%
+        # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000586244_wd6.70521e-5_bs512_hid2048_nhl5_np1_tim32_an",
+        # Best MSE 0.32
+        # "fm_comp_ZincSmilesHRR256F645G1NG4_s42_lr0.000607711_wd3.04221e-5_bs512_hid2048_nhl4_np1_tim32_an",
         # NVP V3
         # # EdgeDecode 2.8%, NLL: -1190 --> WINNER on 1000 sample comparison unconditional
         "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
@@ -49,6 +51,9 @@ GENERATOR_REGISTRY = {
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
         # # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000531954_wd0.000587484_bs192_hid1280_nhl2_np1_smf7_smi2.5_smw17_an",
+        # NVP V2
+        # ED: 3.0%, NLL: -1160
+        # "nvp_comp_ZincSmilesHRR256F645G1NG4_f9_hid1024_lr0.000854811_wd5.72439e-5_bs224_np1_smf7_smi2.5_smw17_an"
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
         # # NLL: -7608

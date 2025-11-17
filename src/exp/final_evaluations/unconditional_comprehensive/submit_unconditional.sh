@@ -62,6 +62,7 @@ PY_ARGS=(
   --n_samples "$N_SAMPLES"
   --n_seeds "$N_SEEDS"
   --seed 42
+  --moses
 )
 
 # Add extra args if provided (e.g., --draw)
