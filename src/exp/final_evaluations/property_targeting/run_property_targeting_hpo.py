@@ -921,7 +921,7 @@ def run_hpo(
                 mad = results.all_valid_mad
 
                 # Minimum viable sample threshold
-                MIN_VALID = 10
+                MIN_VALID = n_samples // 10
                 if n_valid < MIN_VALID:
                     return -1000.0 + n_valid
 
