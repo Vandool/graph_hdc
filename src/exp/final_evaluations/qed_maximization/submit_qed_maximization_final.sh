@@ -6,7 +6,7 @@
 # Default values
 DATASET=${1:-ZINC_SMILES_HRR_256_F64_5G1NG4}
 MODEL_IDX=${2:-0}
-HPO_DIR=${3:-hpo_results}
+HPO_DIR=${3:-${HPO_DIR:-hpo_results}}
 N_SAMPLES=${N_SAMPLES:-10000}
 OUTPUT_DIR=${OUTPUT_DIR:-final_results}
 SELECTION_CRITERION=${SELECTION_CRITERION:-mean_qed}
