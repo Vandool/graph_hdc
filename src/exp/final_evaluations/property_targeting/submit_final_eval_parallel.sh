@@ -106,8 +106,8 @@ case "$CLUSTER" in
   uc3)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
-    TUPLES=$'gpu_h100|96:00:00|64G\ngpu_a100_il|96:00:00|64G\ngpu_h100_il|96:00:00|64G'
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
+    TUPLES=$'cpu|24:00:00|64G'
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
