@@ -10,7 +10,7 @@ from rdkit.Contrib.SA_Score import sascorer
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.graph_encoders import CorrectionLevel
-from src.utils.chem import canonical_key, is_valid_molecule, reconstruct_for_eval
+from src.utils.chem import canonical_key, is_valid_molecule, reconstruct_for_eval_v2
 from src.utils.utils import pick_device
 
 
@@ -76,8 +76,7 @@ class GenerationEvaluator:
         mols: list[Chem.Mol | None] = []
         for g in samples:
             try:
-                mols.append(reconstruct_for_eval(g, dataset=self.base_dataset))
-                # mols.append(reconstruct_for_eval_v2(g, dataset=self.base_dataset))
+                mols.append(reconstruct_for_eval_v2(g, dataset=self.base_dataset))
             except Exception as e:
                 print(f"nx_to_mol error: {e}")
                 mols.append(None)

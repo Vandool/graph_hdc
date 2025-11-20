@@ -62,12 +62,13 @@ from src.exp.final_evaluations.models_configs_constants import (
     get_pr_path,
 )
 from src.exp.final_evaluations.property_targeting.run_property_targeting_hpo import (
+    PROPERTY_FUNCTIONS,
     PropertyTargetingConfig,
     PropertyTargetingOptimizer,
     get_adaptive_epsilon,
 )
 from src.generation.generation import HDCGenerator
-from src.utils.chem import draw_mol
+from src.utils.chem import draw_mol, is_valid_molecule, reconstruct_for_eval_v2
 from src.utils.registery import retrieve_model
 from src.utils.utils import pick_device
 
@@ -320,10 +321,6 @@ def run_final_evaluation_for_target(
     # ===== EVALUATION SET 3: Top-k Property =====
     print(f"Evaluating Set 3: Top-{top_k_property} by property distance...")
 
-    # Import needed for property computation
-    from src.exp.final_evaluations.property_targeting.run_property_targeting_hpo import PROPERTY_FUNCTIONS
-    from src.utils.chem import reconstruct_for_eval
-
     # Get valid molecules with properties from Set 1 (All Valid)
     # Need to get the original nx graphs for the evaluator
     all_valid_nx_graphs = []
@@ -337,8 +334,8 @@ def run_final_evaluation_for_target(
         if mol is None:
             continue
         try:
-            rdkit_mol = reconstruct_for_eval(mol, dataset=optimizer.base_dataset)
-            if rdkit_mol is not None:
+            rdkit_mol = reconstruct_for_eval_v2(mol, dataset=optimizer.base_dataset)
+            if rdkit_mol and is_valid_molecule(rdkit_mol):
                 smi = Chem.MolToSmiles(rdkit_mol)
                 if smi in valid_smiles_set:
                     all_valid_nx_graphs.append(mol)
@@ -409,8 +406,8 @@ def run_final_evaluation_for_target(
         for i, mol in enumerate(opt_results["molecules"]):
             if mol is not None:
                 try:
-                    rdkit_mol = reconstruct_for_eval(mol, dataset=optimizer.base_dataset)
-                    if rdkit_mol is not None:
+                    rdkit_mol = reconstruct_for_eval_v2(mol, dataset=optimizer.base_dataset)
+                    if rdkit_mol and is_valid_molecule(rdkit_mol):
                         if valid_count < candidate_pool_size:
                             all_original_indices.append(i)
                         valid_count += 1
@@ -458,8 +455,8 @@ def run_final_evaluation_for_target(
             if graph is None:
                 continue
             try:
-                mol = reconstruct_for_eval(graph, dataset=optimizer.base_dataset)
-                if mol is None:
+                mol = reconstruct_for_eval_v2(graph, dataset=optimizer.base_dataset)
+                if not mol or not is_valid_molecule(mol):
                     continue
 
                 prop_val = prop_fn(mol)
@@ -516,9 +513,7 @@ def run_final_evaluation_for_target(
                 "metadata": expanded_metadata,
                 "rdkit_mols": expanded_rdkit_mols,
             }
-            print(
-                f"  ✓ Set 4: N={len(expanded_rdkit_mols)}/{target_graph_count}, MAD={expanded_mad:.4f}"
-            )
+            print(f"  ✓ Set 4: N={len(expanded_rdkit_mols)}/{target_graph_count}, MAD={expanded_mad:.4f}")
         else:
             top_n_all_decoder_results = {"n_requested": target_graph_count, "n_actual": 0, "mad": None}
             print("  ✗ Set 4: No valid molecules")
@@ -1186,7 +1181,9 @@ def run_final_evaluation(
     if target_value is not None:
         targets_to_process = [t for t in targets_to_process if abs(t["value"] - target_value) < 1e-6]
         if not targets_to_process:
-            raise ValueError(f"Target value {target_value} not found in HPO results. Available targets: {[t['value'] for t in experiment_info['targets']]}")
+            raise ValueError(
+                f"Target value {target_value} not found in HPO results. Available targets: {[t['value'] for t in experiment_info['targets']]}"
+            )
         print(f"\n[4/5] Running final evaluation for specific target: {target_value}")
     else:
         print(f"\n[4/5] Running final evaluation for {len(targets_to_process)} targets...")

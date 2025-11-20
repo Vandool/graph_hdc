@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 import networkx as nx
 import torch
-from IPython.display import display
 from rdkit import Chem
 from rdkit.Chem import QED, SanitizeFlags
 from rdkit.Chem.Draw import rdMolDraw2D
@@ -69,9 +68,6 @@ def draw_mol(
     elif save_path:
         with open(save_path, "wb") as f:
             f.write(data)
-    else:
-        # inline display for PNG in notebooks
-        display(Image(data=data))
 
 
 def mol_to_data(mol: Chem.Mol) -> Data:
@@ -335,7 +331,7 @@ def eval_key_from_data(data: Data, dataset: BaseDataset) -> str:
 
 
 def eval_key_from_nx(nx_g: nx.Graph, dataset: BaseDataset) -> str:
-    mol = reconstruct_for_eval(nx_g, dataset=dataset)  # infer_bonds=True, sanitize=True, kekulize=False
+    mol = reconstruct_for_eval_v2(nx_g, dataset=dataset)  # infer_bonds=True, sanitize=True, kekulize=False
     assert is_valid_molecule(mol), f"mol is invalid: {mol}"
     return canonical_key(mol)  # RemoveHs + canonical, isomeric, aromatic
 

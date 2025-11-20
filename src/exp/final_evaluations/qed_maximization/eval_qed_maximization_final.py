@@ -24,11 +24,10 @@ import matplotlib.pyplot as plt
 import normflows as nf
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import torch
 from lightning_fabric import seed_everything
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Crippen
+from rdkit.Chem import Crippen, Descriptors
 from scipy import stats
 from torch import nn
 from tqdm.auto import tqdm
@@ -45,6 +44,7 @@ from src.exp.final_evaluations.models_configs_constants import (
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_qed
 from src.generation.generation import HDCGenerator
+from src.utils.chem import is_valid_molecule, reconstruct_for_eval_v2
 from src.utils.registery import retrieve_model
 from src.utils.utils import DataTransformer, pick_device
 
@@ -212,7 +212,7 @@ def apply_medicinal_chemistry_filters(mol: Chem.Mol) -> dict:
     hbd = Descriptors.NumHDonors(mol)
     hba = Descriptors.NumHAcceptors(mol)
 
-    ro5_pass = (mw <= 500 and logp <= 5 and hbd <= 5 and hba <= 10)
+    ro5_pass = mw <= 500 and logp <= 5 and hbd <= 5 and hba <= 10
 
     # Additional quality checks
     rotatable_bonds = Descriptors.NumRotatableBonds(mol)
@@ -263,10 +263,7 @@ def load_best_trial_from_csv(csv_path: pathlib.Path, selection_criterion: str = 
         best_idx = df["qed_max"].idxmax()
         criterion_col = "qed_max"
     else:
-        raise ValueError(
-            f"Invalid selection_criterion: {selection_criterion}. "
-            f"Must be 'mean_qed' or 'max_qed'"
-        )
+        raise ValueError(f"Invalid selection_criterion: {selection_criterion}. Must be 'mean_qed' or 'max_qed'")
 
     best_trial = df.loc[best_idx]
 
@@ -394,25 +391,22 @@ class QEDMaximizationOptimizer:
         if not molecules:
             return self._empty_results(), [], []
 
-        # Convert nx graphs to PyG batch for re-encoding
-        pyg_graphs = []
-        valid_indices = []
+        # Filter for chemically valid molecules
+        valid_molecules = []
+        valid_similarities = []
+        valid_correction_levels = []
+        valid_final_flags = []
+
         for i, g in enumerate(molecules):
-            try:
-                pyg_g = DataTransformer.nx_to_pyg(g)
-                pyg_graphs.append(pyg_g)
-                valid_indices.append(i)
-            except Exception:
-                continue
+            mol = reconstruct_for_eval_v2(g, dataset=self.evaluator.base_dataset)
+            if mol and is_valid_molecule(mol):
+                valid_molecules.append(g)
+                valid_similarities.append(similarities[i])
+                valid_correction_levels.append(correction_levels[i])
+                valid_final_flags.append(final_flags[i])
 
-        if not pyg_graphs:
+        if not valid_molecules:
             return self._empty_results(), [], []
-
-        # Filter to only the structurally valid/re-encodable molecules
-        valid_molecules = [molecules[i] for i in valid_indices]
-        valid_similarities = [similarities[i] for i in valid_indices]
-        valid_correction_levels = [correction_levels[i] for i in valid_indices]
-        valid_final_flags = [final_flags[i] for i in valid_indices]
 
         # Evaluate this final set
         eval_results_dict, qed_list = self._evaluate_sample_set(
@@ -741,9 +735,7 @@ def plot_guacamol_components(guacamol_metrics: dict, save_dir: pathlib.Path):
     plt.close()
 
 
-def save_top_molecules(
-    valid_molecules: list, qed_list: list[float], save_path: pathlib.Path, n_top: int = 100
-):
+def save_top_molecules(valid_molecules: list, qed_list: list[float], save_path: pathlib.Path, n_top: int = 100):
     """Save top N molecules to CSV with properties."""
     if not qed_list:
         return
@@ -965,21 +957,21 @@ def run_final_evaluation(
     print(f"Novelty: {results.novelty:.2f}%")
     print(f"Diversity (p=1): {results.diversity_p1:.2f}%")
     print(f"Diversity (p=2): {results.diversity_p2:.2f}%")
-    print(f"\nQED Statistics:")
+    print("\nQED Statistics:")
     print(f"  Mean: {results.qed_mean:.4f} ± {results.qed_std:.4f}")
     print(f"  Min: {results.qed_min:.4f}")
     print(f"  Max: {results.qed_max:.6f}")
-    print(f"\nGuacaMol Metrics:")
+    print("\nGuacaMol Metrics:")
     print(f"  GuacaMol Score: {results.guacamol_score:.6f}")
     print(f"  Top-1 QED: {results.top1_qed:.6f}")
     print(f"  Top-10 Mean QED: {results.top10_mean_qed:.6f}")
     print(f"  Top-100 Mean QED: {results.top100_mean_qed:.6f}")
-    print(f"\nTop 100 Analysis:")
+    print("\nTop 100 Analysis:")
     print(f"  Novelty: {results.top100_novelty:.2f}%")
     print(f"  Diversity (p=1): {results.top100_diversity_p1:.2f}%")
     print(f"  Diversity (p=2): {results.top100_diversity_p2:.2f}%")
     print(f"  Compound Quality (Ro5 pass): {results.top100_compound_quality_pass_rate:.2f}%")
-    print(f"\nTiming:")
+    print("\nTiming:")
     print(f"  Optimization: {results.optimization_time:.2f}s")
     print(f"  Decoding: {results.decoding_time:.2f}s")
     print(f"  Total: {results.total_time:.2f}s")

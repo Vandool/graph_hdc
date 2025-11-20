@@ -74,7 +74,7 @@ from src.exp.final_evaluations.models_configs_constants import (
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_logp, rdkit_max_ring_size, rdkit_qed, rdkit_sa_score
 from src.generation.generation import HDCGenerator
-from src.utils.chem import reconstruct_for_eval
+from src.utils.chem import is_valid_molecule, reconstruct_for_eval_v2
 from src.utils.registery import retrieve_model
 from src.utils.utils import pick_device
 
@@ -406,8 +406,8 @@ class PropertyTargetingOptimizer:
 
             try:
                 # Convert to RDKit mol
-                mol = reconstruct_for_eval(g, dataset=self.base_dataset)
-                if mol is None:
+                mol = reconstruct_for_eval_v2(g, dataset=self.base_dataset)
+                if not mol or not is_valid_molecule(mol):
                     continue
 
                 # Compute property
