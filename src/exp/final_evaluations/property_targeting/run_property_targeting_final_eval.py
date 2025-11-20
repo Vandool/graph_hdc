@@ -878,6 +878,9 @@ def plot_multi_property_panel(
         target_value: Target value to mark with dotted line
         output_dir: Directory to save plot
     """
+    # Minimum samples required for KDE (avoid singular covariance matrix)
+    MIN_SAMPLES_FOR_KDE = 5
+
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     properties = ["logp", "qed", "sa_score", "max_ring_size"]
 
@@ -894,40 +897,52 @@ def plot_multi_property_panel(
         x_range = np.linspace(min_val, max_val, 300)
 
         # Plot dataset distribution
-        if len(dataset_vals) > 1:
-            dataset_kde = gaussian_kde(dataset_vals)
-            ax.plot(
-                x_range,
-                dataset_kde(x_range),
-                label="Dataset",
-                color="blue",
-                alpha=0.6,
-                linewidth=2,
-            )
+        if len(dataset_vals) >= MIN_SAMPLES_FOR_KDE:
+            try:
+                dataset_kde = gaussian_kde(dataset_vals)
+                ax.plot(
+                    x_range,
+                    dataset_kde(x_range),
+                    label="Dataset",
+                    color="blue",
+                    alpha=0.6,
+                    linewidth=2,
+                )
+            except np.linalg.LinAlgError:
+                # KDE failed due to singular covariance - skip this distribution
+                print(f"  ⚠ Skipping Dataset KDE for {prop} (singular covariance)")
 
         # Plot All Valid distribution
-        if len(all_valid_vals) > 1:
-            all_valid_kde = gaussian_kde(all_valid_vals)
-            ax.plot(
-                x_range,
-                all_valid_kde(x_range),
-                label="All Valid",
-                color="red",
-                alpha=0.6,
-                linewidth=2,
-            )
+        if len(all_valid_vals) >= MIN_SAMPLES_FOR_KDE:
+            try:
+                all_valid_kde = gaussian_kde(all_valid_vals)
+                ax.plot(
+                    x_range,
+                    all_valid_kde(x_range),
+                    label="All Valid",
+                    color="red",
+                    alpha=0.6,
+                    linewidth=2,
+                )
+            except np.linalg.LinAlgError:
+                # KDE failed due to singular covariance - skip this distribution
+                print(f"  ⚠ Skipping All Valid KDE for {prop} (singular covariance)")
 
         # Plot Filter 2 distribution
-        if len(filter2_vals) > 1:
-            filter2_kde = gaussian_kde(filter2_vals)
-            ax.plot(
-                x_range,
-                filter2_kde(x_range),
-                label="Filter 2",
-                color="purple",
-                alpha=0.6,
-                linewidth=2,
-            )
+        if len(filter2_vals) >= MIN_SAMPLES_FOR_KDE:
+            try:
+                filter2_kde = gaussian_kde(filter2_vals)
+                ax.plot(
+                    x_range,
+                    filter2_kde(x_range),
+                    label="Filter 2",
+                    color="purple",
+                    alpha=0.6,
+                    linewidth=2,
+                )
+            except np.linalg.LinAlgError:
+                # KDE failed due to singular covariance - skip this distribution
+                print(f"  ⚠ Skipping Filter 2 KDE for {prop} (singular covariance)")
 
         # Highlight targeted property with target line
         if prop == target_property:
@@ -1103,6 +1118,7 @@ def run_final_evaluation(
     top_k_property: int = 100,
     top_n_best: int = 10,
     decoder_k: int = 10,
+    target_value: float = None,
 ):
     """
     Run final evaluation for all targets.
@@ -1165,11 +1181,18 @@ def run_final_evaluation(
     dataset_props = load_dataset_properties(dataset)
     print(f"  ✓ Loaded {len(dataset_props['logp'])} samples from training dataset")
 
-    # Run evaluation for each target
-    print(f"\n[4/5] Running final evaluation for {len(experiment_info['targets'])} targets...")
+    # Filter targets if specific target requested
+    targets_to_process = experiment_info["targets"]
+    if target_value is not None:
+        targets_to_process = [t for t in targets_to_process if abs(t["value"] - target_value) < 1e-6]
+        if not targets_to_process:
+            raise ValueError(f"Target value {target_value} not found in HPO results. Available targets: {[t['value'] for t in experiment_info['targets']]}")
+        print(f"\n[4/5] Running final evaluation for specific target: {target_value}")
+    else:
+        print(f"\n[4/5] Running final evaluation for {len(targets_to_process)} targets...")
 
     all_results = []
-    for target_info in experiment_info["targets"]:
+    for target_info in targets_to_process:
         result = run_final_evaluation_for_target(
             target_info=target_info,
             experiment_metadata=metadata,
@@ -1244,6 +1267,12 @@ def main():
         help="Maximum number of molecules to draw per target (default: 100)",
     )
     parser.add_argument(
+        "--target",
+        type=float,
+        default=None,
+        help="Specific target value to process (if not provided, processes all targets)",
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default=None,
@@ -1285,6 +1314,7 @@ def main():
         top_k_property=args.top_k_property,
         top_n_best=args.top_n_best,
         decoder_k=args.decoder_k,
+        target_value=args.target,
     )
 
 

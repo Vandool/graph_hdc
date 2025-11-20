@@ -154,13 +154,13 @@ elif [[ "$MODE" == "final" ]]; then
   echo "====================================="
   echo "HPO Directory: $HPO_DIR"
   echo "Targets Found: ${TARGETS[*]}"
-  echo "N Samples: $N_SAMPLES"
+  echo "N Samples per target: $N_SAMPLES"
   echo "Draw Molecules: $DRAW"
   if [[ "$DRAW" == "1" ]]; then
     echo "Max Draw: $MAX_DRAW"
   fi
   echo "Output Directory: $OUTPUT_DIR"
-  echo "Num Jobs to Submit: ${#TARGETS[@]}"
+  echo "Num Jobs to Submit: ${#TARGETS[@]} (one per target)"
   echo "====================================="
 fi
 
@@ -251,44 +251,88 @@ submit_one_target() {
   local time="$3"
   local mem="$4"
 
-  # Build job name with target value
-  if [[ "$MODE" == "hpo" ]]; then
-    local job_name="PropTarget-${PROPERTY}-${target}"
-    local exp_name="PropTarget HPO ${PROPERTY}=${target} ${DATASET}"
-  else
-    local job_name="PropTargetFinal-${target}"
-    local exp_name="PropTarget Final target=${target}"
+  # Build job name with target value (HPO mode only)
+  local job_name="PropTarget-${PROPERTY}-${target}"
+  local exp_name="PropTarget HPO ${PROPERTY}=${target} ${DATASET}"
+
+  # Build Python args for this specific target (HPO mode only)
+  local py_args=(
+    "$SCRIPT_PATH"
+    --dataset "$DATASET"
+    --property "$PROPERTY"
+    --model_idx "$MODEL_IDX"
+    --n_samples "$N_SAMPLES"
+    --n_trials "$N_TRIALS"
+    --targets "$target"
+    --output_dir "$OUTPUT_DIR"
+  )
+
+  local quoted_args
+  quoted_args="$(printf '%q ' "${py_args[@]}")"
+
+  local cmd=( sbatch
+    --job-name="$job_name"
+    --partition="$partition"
+    --time="$time"
+    --gres="gpu:1"
+    --nodes=1
+    --ntasks=1
+    --cpus-per-task="$CPUS_PER_TASK"
+    --mem="$mem"
+    --wrap="$(
+      cat <<WRAP
+set -euo pipefail
+$MODULE_LOAD
+echo 'Experiment: ${exp_name}'
+echo 'Node:' \$(hostname)
+echo 'CUDA visible devices:'; nvidia-smi || true
+echo 'Running: ${SCRIPT}'
+echo 'Target: ${target}'
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export PYTORCH_NUM_THREADS=1
+cd '${EXPERIMENTS_PATH}'
+pixi run --frozen -e '${PIXI_ENV}' python ${quoted_args}
+WRAP
+    )"
+  )
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '[DRY-RUN] Target=%s ' "$target"
+    printf '%q ' "${cmd[@]}"
+    printf '\n'
+    return 0
   fi
 
-  # Build Python args for this specific target
-  if [[ "$MODE" == "hpo" ]]; then
-    local py_args=(
-      "$SCRIPT_PATH"
-      --dataset "$DATASET"
-      --property "$PROPERTY"
-      --model_idx "$MODEL_IDX"
-      --n_samples "$N_SAMPLES"
-      --n_trials "$N_TRIALS"
-      --targets "$target"
-      --output_dir "$OUTPUT_DIR"
-    )
-  else
-    # For final mode, construct the HPO subdirectory path for this target
-    local target_hpo_dir="${HPO_DIR}/target_${target}"
+  echo "  Submitting target=$target to $partition..."
+  "${cmd[@]}"
+}
 
-    local py_args=(
-      "$SCRIPT_PATH"
-      --hpo_dir "$target_hpo_dir"
-      --n_samples "$N_SAMPLES"
-    )
+submit_final_eval() {
+  local target="$1"
+  local partition="$2"
+  local time="$3"
+  local mem="$4"
 
-    if [[ "$DRAW" == "1" ]]; then
-      py_args+=(--draw --max_draw "$MAX_DRAW")
-    fi
+  # Extract property and dataset from HPO directory name
+  local hpo_dirname=$(basename "$HPO_DIR")
+  local job_name="PropTargetFinal-${target}"
+  local exp_name="PropTarget Final Eval: ${hpo_dirname} target=${target}"
 
-    if [[ -n "$OUTPUT_DIR" ]]; then
-      py_args+=(--output_dir "$OUTPUT_DIR")
-    fi
+  # Build Python args for final evaluation
+  local py_args=(
+    "$SCRIPT_PATH"
+    --hpo_dir "$HPO_DIR"
+    --target "$target"
+    --n_samples "$N_SAMPLES"
+  )
+
+  if [[ "$DRAW" == "1" ]]; then
+    py_args+=(--draw --max_draw "$MAX_DRAW")
+  fi
+
+  if [[ -n "$OUTPUT_DIR" ]]; then
+    py_args+=(--output_dir "$OUTPUT_DIR")
   fi
 
   local quoted_args
@@ -311,6 +355,7 @@ echo 'Experiment: ${exp_name}'
 echo 'Node:' \$(hostname)
 echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
+echo 'HPO Dir: ${HPO_DIR}'
 echo 'Target: ${target}'
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -362,12 +407,17 @@ IFS='|' read -r PARTITION TIME MEM <<< "$PARTITION_CONFIG"
 
 echo "Using partition configuration: partition=$PARTITION time=$TIME mem=$MEM cpus=$CPUS_PER_TASK"
 echo ""
+
 echo "Submitting ${#TARGETS[@]} jobs (one per target)..."
 echo ""
 
 # Submit one job per target
 for target in "${TARGETS[@]}"; do
-  submit_one_target "$target" "$PARTITION" "$TIME" "$MEM"
+  if [[ "$MODE" == "hpo" ]]; then
+    submit_one_target "$target" "$PARTITION" "$TIME" "$MEM"
+  else
+    submit_final_eval "$target" "$PARTITION" "$TIME" "$MEM"
+  fi
 done
 
 echo ""
