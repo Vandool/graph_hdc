@@ -57,8 +57,8 @@ done
 
 # Configuration from environment variables
 N_SAMPLES=${N_SAMPLES:-10000}
-DRAW=${DRAW:-0}
-MAX_DRAW=${MAX_DRAW:-200}
+DRAW=${DRAW:-1}
+MAX_DRAW=${MAX_DRAW:-1000}
 OUTPUT_DIR=${OUTPUT_DIR:-final_results}
 DRY_RUN=${DRY_RUN:-0}
 
@@ -104,10 +104,15 @@ case "$CLUSTER" in
     TUPLES=$'debug|48:00:00|16G'
     ;;
   uc3)
-    MODULE_LOAD=""  # No CUDA module needed for CPU nodes
+    MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'cpu_il|36:00:00|128G\ncpu|36:00:00|128G'
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    # Increase time for final evaluation (10k samples takes longer)
+    if [[ "$MODE" == "final" ]]; then
+      TUPLES=$'gpu_h100|96:00:00|64G\ngpu_a100_il|96:00:00|64G\ngpu_h100_il|96:00:00|64G'
+    else
+      TUPLES=$'gpu_h100|72:00:00|64G\ngpu_a100_il|72:00:00|64G\ngpu_h100_il|72:00:00|64G'
+    fi
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
@@ -172,6 +177,7 @@ submit_target() {
     --job-name="$job_name"
     --partition="$partition"
     --time="$time"
+    --gres="gpu:1"
     --nodes=1
     --ntasks=1
     --cpus-per-task="$CPUS_PER_TASK"
@@ -183,12 +189,13 @@ set -euo pipefail
 $MODULE_LOAD
 echo 'Experiment: ${exp_name}'
 echo 'Node:' \$(hostname)
+echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
 echo 'HPO Dir: ${HPO_DIR}'
 echo 'Target: ${target}'
-export OMP_NUM_THREADS=$CPUS_PER_TASK
-export MKL_NUM_THREADS=$CPUS_PER_TASK
-export PYTORCH_NUM_THREADS=$CPUS_PER_TASK
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export PYTORCH_NUM_THREADS=1
 cd '${EXPERIMENTS_PATH}'
 pixi run --frozen -e '${PIXI_ENV}' python ${quoted_args}
 WRAP

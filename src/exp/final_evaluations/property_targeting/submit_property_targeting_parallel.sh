@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Parallel Property Targeting Submission Script (MG-DIFF Protocol)
+ # Parallel Property Targeting Submission Script (MG-DIFF Protocol)
 # ==================================================================
 #
 # This script submits individual SLURM jobs for each property target value,
