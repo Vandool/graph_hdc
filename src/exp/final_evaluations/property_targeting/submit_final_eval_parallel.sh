@@ -104,10 +104,10 @@ case "$CLUSTER" in
     TUPLES=$'debug|48:00:00|16G'
     ;;
   uc3)
-    MODULE_LOAD="module load devel/cuda"
+    MODULE_LOAD=""  # No CUDA module needed for CPU nodes
     PIXI_ENV="cluster"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$'cpu|24:00:00|64G'
+    TUPLES=$'cpu_il|36:00:00|128G\ncpu|36:00:00|128G'
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
@@ -175,6 +175,7 @@ submit_target() {
     --nodes=1
     --ntasks=1
     --cpus-per-task="$CPUS_PER_TASK"
+    --cpu-bind=cores
     --mem="$mem"
     --wrap="$(
       cat <<WRAP
@@ -185,9 +186,9 @@ echo 'Node:' \$(hostname)
 echo 'Running: ${SCRIPT}'
 echo 'HPO Dir: ${HPO_DIR}'
 echo 'Target: ${target}'
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export PYTORCH_NUM_THREADS=1
+export OMP_NUM_THREADS=$CPUS_PER_TASK
+export MKL_NUM_THREADS=$CPUS_PER_TASK
+export PYTORCH_NUM_THREADS=$CPUS_PER_TASK
 cd '${EXPERIMENTS_PATH}'
 pixi run --frozen -e '${PIXI_ENV}' python ${quoted_args}
 WRAP
