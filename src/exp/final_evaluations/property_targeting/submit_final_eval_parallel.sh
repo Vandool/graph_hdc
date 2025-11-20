@@ -25,7 +25,7 @@
 # -----------------------------
 # Parameters
 # -----------------------------
-HPO_DIR=${1}
+HPO_DIR=/home/akaveh/Projects/kit/graph_hdc/src/exp/final_evaluations/property_targeting/hpo_results_bw3/logp_QM9_SMILES_HRR_256_F64_G1NG3_20251117_133407
 
 if [[ -z "$HPO_DIR" ]]; then
   echo "ERROR: HPO directory required." >&2
