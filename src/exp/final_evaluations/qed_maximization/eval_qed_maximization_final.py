@@ -9,6 +9,79 @@ Following the exact protocol:
 3. Filter invalid molecules and remove duplicates
 4. Select top 100 by QED score
 5. Report GuacaMol score, novelty, diversity, and compound quality metrics
+6. Draw top 100 molecules with comprehensive metadata (enabled by default)
+
+Usage Examples:
+--------------
+
+1. Standard evaluation with mean_qed criterion (default):
+   python eval_qed_maximization_final.py \\
+       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
+       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
+       --n_samples 10000 \\
+       --selection_criterion mean_qed
+
+2. Evaluation with max_qed criterion:
+   python eval_qed_maximization_final.py \\
+       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
+       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
+       --n_samples 10000 \\
+       --selection_criterion max_qed
+
+3. With custom drawing options (top 50 molecules in PNG format):
+   python eval_qed_maximization_final.py \\
+       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
+       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
+       --n_samples 10000 \\
+       --selection_criterion mean_qed \\
+       --max_draw 50 \\
+       --draw_format png
+
+4. Disable molecule drawing:
+   python eval_qed_maximization_final.py \\
+       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
+       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
+       --n_samples 10000 \\
+       --selection_criterion mean_qed \\
+       --no_draw
+
+5. QM9 dataset with mean_qed criterion:
+   python eval_qed_maximization_final.py \\
+       --hpo_dir hpo_results/QM9_SMILES_HRR_1600_F64_G1NG3_qed_maximization_20251115_120000 \\
+       --dataset QM9_SMILES_HRR_1600_F64_G1NG3 \\
+       --n_samples 10000 \\
+       --selection_criterion mean_qed
+
+6. QM9 dataset with max_qed criterion:
+   python eval_qed_maximization_final.py \\
+       --hpo_dir hpo_results/QM9_SMILES_HRR_1600_F64_G1NG3_qed_maximization_20251115_120000 \\
+       --dataset QM9_SMILES_HRR_1600_F64_G1NG3 \\
+       --n_samples 10000 \\
+       --selection_criterion max_qed
+
+Selection Criteria:
+------------------
+- mean_qed: Selects HPO trial with highest average QED across generated molecules
+            (more stable, recommended for production)
+- max_qed:  Selects HPO trial with highest peak QED value
+            (more aggressive, may sacrifice average quality for top performers)
+
+Output Structure:
+----------------
+experiment_dir/
+├── config.json                        # Experiment configuration
+├── metrics.json                       # Comprehensive metrics (validity, novelty, diversity, etc.)
+├── guacamol_scores.json              # GuacaMol benchmark scores
+├── top100_molecules.csv              # Top 100 molecules with properties
+├── qed_values.npy                    # All QED values
+├── plots/
+│   ├── optimization_history.pdf      # Loss curves during optimization
+│   ├── qed_distribution.pdf          # QED distribution vs dataset
+│   └── guacamol_components.pdf       # GuacaMol component breakdown
+└── molecules/                        # Molecule drawings (if --draw enabled)
+    ├── mol_001_qed0.9482_novel_ro5pass_L0.svg
+    ├── mol_002_qed0.9475_known_ro5pass_L1.svg
+    └── ... (up to 100 molecules with rank, QED, novelty, Ro5, correction level)
 """
 
 import argparse
@@ -44,7 +117,7 @@ from src.exp.final_evaluations.models_configs_constants import (
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_qed
 from src.generation.generation import HDCGenerator
-from src.utils.chem import is_valid_molecule, reconstruct_for_eval_v2
+from src.utils.chem import draw_mol, is_valid_molecule, reconstruct_for_eval_v2
 from src.utils.registery import retrieve_model
 from src.utils.utils import DataTransformer, pick_device
 
@@ -779,6 +852,84 @@ def save_top_molecules(valid_molecules: list, qed_list: list[float], save_path: 
     print(f"Saved top {len(df)} molecules to {save_path}")
 
 
+def draw_molecules_with_metadata(
+    valid_molecules: list,
+    qed_list: list[float],
+    correction_levels: list[CorrectionLevel],
+    training_smiles: set[str],
+    save_dir: pathlib.Path,
+    max_draw: int = 100,
+    fmt: str = "svg",
+):
+    """
+    Draw molecules with QED values and metadata in filenames.
+
+    Args:
+        valid_molecules: List of NetworkX graphs
+        qed_list: List of QED values (same length as valid_molecules)
+        correction_levels: List of correction levels (same length as valid_molecules)
+        training_smiles: Set of SMILES from training set for novelty check
+        save_dir: Directory to save molecule images
+        max_draw: Maximum number of molecules to draw
+        fmt: Image format (svg or png)
+    """
+    if not valid_molecules:
+        print("No valid molecules to draw")
+        return
+
+    # Create molecules subdirectory
+    mol_dir = save_dir / "molecules"
+    mol_dir.mkdir(exist_ok=True)
+
+    # Sort by QED descending to get top molecules
+    sorted_indices = np.argsort(qed_list)[::-1]
+    n_draw = min(max_draw, len(sorted_indices))
+    top_indices = sorted_indices[:n_draw]
+
+    print(f"\nDrawing top {n_draw} molecules to {mol_dir}/")
+
+    drawn_count = 0
+    for rank, idx in enumerate(tqdm(top_indices, desc="Drawing molecules"), start=1):
+        g = valid_molecules[idx]
+        qed = qed_list[idx]
+        correction_level = correction_levels[idx]
+
+        try:
+            # Convert graph to mol
+            mol, _ = DataTransformer.nx_to_mol(g)
+            if mol is None:
+                continue
+
+            # Get SMILES for novelty check
+            smiles = Chem.MolToSmiles(mol)
+            is_novel = smiles not in training_smiles
+            novelty = "novel" if is_novel else "known"
+
+            # Apply medicinal chemistry filters
+            med_chem = apply_medicinal_chemistry_filters(mol)
+            ro5 = "ro5pass" if med_chem["ro5_pass"] else "ro5fail"
+
+            # Format correction level
+            if correction_level == CorrectionLevel.FAIL:
+                corr_str = "FAIL"
+            else:
+                corr_str = f"L{correction_level.value}"
+
+            # Create filename with 4 decimal places for QED
+            filename = f"mol_{rank:03d}_qed{qed:.4f}_{novelty}_{ro5}_{corr_str}.{fmt}"
+            save_path = mol_dir / filename
+
+            # Draw molecule using src.utils.chem.draw_mol
+            draw_mol(mol, save_path=str(save_path), fmt=fmt)
+            drawn_count += 1
+
+        except Exception as e:
+            print(f"\nWarning: Failed to draw molecule {rank} (idx {idx}): {e}")
+            continue
+
+    print(f"Successfully drew {drawn_count}/{n_draw} molecules")
+
+
 # ===== Main Execution =====
 def run_final_evaluation(
     hpo_dir: pathlib.Path,
@@ -787,6 +938,9 @@ def run_final_evaluation(
     n_samples: int,
     output_dir: pathlib.Path,
     selection_criterion: str = "mean_qed",
+    draw: bool = True,
+    max_draw: int = 100,
+    draw_format: str = "svg",
 ):
     """Run final evaluation with best HPO configuration."""
     device = pick_device()
@@ -941,6 +1095,21 @@ def run_final_evaluation(
     # Save top 100 molecules
     save_top_molecules(valid_molecules, qed_list, experiment_dir / "top100_molecules.csv", n_top=100)
 
+    # Draw molecules with metadata
+    if draw:
+        print(f"\n{'='*60}")
+        print("Drawing molecules with metadata...")
+        print(f"{'='*60}")
+        draw_molecules_with_metadata(
+            valid_molecules=valid_molecules,
+            qed_list=qed_list,
+            correction_levels=optimizer_obj.evaluator.correction_levels,
+            training_smiles=optimizer_obj.evaluator.T,
+            save_dir=experiment_dir,
+            max_draw=max_draw,
+            fmt=draw_format,
+        )
+
     # Generate plots
     print("\nGenerating plots...")
     plot_optimization_history(opt_results["optimization_losses"], plots_dir)
@@ -999,6 +1168,10 @@ def main():
         choices=["mean_qed", "max_qed"],
         help="Criterion for selecting best HPO trial: 'mean_qed' (highest average QED) or 'max_qed' (highest peak QED)",
     )
+    parser.add_argument("--draw", action="store_true", default=True, help="Draw molecules (enabled by default)")
+    parser.add_argument("--no_draw", action="store_false", dest="draw", help="Disable molecule drawing")
+    parser.add_argument("--max_draw", type=int, default=100, help="Maximum number of molecules to draw")
+    parser.add_argument("--draw_format", type=str, default="svg", choices=["svg", "png"], help="Format for molecule drawings")
 
     args = parser.parse_args()
     dataset = SupportedDataset(args.dataset)
@@ -1012,6 +1185,9 @@ def main():
         n_samples=args.n_samples,
         output_dir=output_dir,
         selection_criterion=args.selection_criterion,
+        draw=args.draw,
+        max_draw=args.max_draw,
+        draw_format=args.draw_format,
     )
 
 

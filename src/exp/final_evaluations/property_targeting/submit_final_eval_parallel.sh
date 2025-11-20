@@ -146,7 +146,7 @@ submit_target() {
 
   # Build job name
   local hpo_dirname=$(basename "$HPO_DIR")
-  local job_name="PropTargetFinal-${target}"
+  local job_name="PropTargetFinal-${target} ${HPO_DIR}"
   local exp_name="PropTarget Final: ${hpo_dirname} target=${target}"
 
   # Build Python args
@@ -172,7 +172,6 @@ submit_target() {
     --job-name="$job_name"
     --partition="$partition"
     --time="$time"
-    --gres="gpu:1"
     --nodes=1
     --ntasks=1
     --cpus-per-task="$CPUS_PER_TASK"
@@ -183,7 +182,6 @@ set -euo pipefail
 $MODULE_LOAD
 echo 'Experiment: ${exp_name}'
 echo 'Node:' \$(hostname)
-echo 'CUDA visible devices:'; nvidia-smi || true
 echo 'Running: ${SCRIPT}'
 echo 'HPO Dir: ${HPO_DIR}'
 echo 'Target: ${target}'
