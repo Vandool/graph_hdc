@@ -29,6 +29,8 @@ sys.modules["__main__"].FlowConfig = FlowConfig
 
 
 def get_model_path(hint: str) -> Path | None:
+    print(f"Target Generator: {hint}")
+    print("Available Generators:")
     for p in find_files(
         # start_dir=GLOBAL_MODEL_PATH,
         start_dir=GLOBAL_BEST_MODEL_PATH,

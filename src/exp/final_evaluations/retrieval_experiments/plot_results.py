@@ -501,7 +501,7 @@ def plot_hit_rate_by_node_size_comparison(results_dir: Path, output_dir: Path, d
 
 def main():
     parser = argparse.ArgumentParser(description="Plot retrieval experiment results")
-    parser.add_argument("--results_dir", type=str, default="./results", help="Results directory")
+    parser.add_argument("--results_dir", type=str, default="./to_report", help="Results directory")
     parser.add_argument("--output_dir", type=str, default="./plots", help="Output directory for plots")
 
     args = parser.parse_args()

@@ -547,12 +547,12 @@ def main():
     parser = argparse.ArgumentParser(description="Run retrieval experiment")
     parser.add_argument("--vsa", type=str, default="HRR", choices=["HRR"], help="VSA model (default: HRR)")
     parser.add_argument("--hv_dim", type=int, default=256, help="Hypervector dimension (default: 1600 for QM9)")
-    parser.add_argument("--depth", type=int, default=3, help="Message passing depth (default: 3)")
+    parser.add_argument("--depth", type=int, default=5, help="Message passing depth (default: 3)")
     parser.add_argument(
-        "--dataset", type=str, default="qm9", choices=["qm9", "zinc"], help="Dataset name (default: qm9)"
+        "--dataset", type=str, default="zinc", choices=["qm9", "zinc"], help="Dataset name (default: qm9)"
     )
-    parser.add_argument("--iter_budget", type=int, default=1, help="Iteration budget for decoding (default: 1)")
-    parser.add_argument("--n_samples", type=int, default=10, help="Number of samples to evaluate (default: 10)")
+    parser.add_argument("--iter_budget", type=int, default=50, help="Iteration budget for decoding (default: 1)")
+    parser.add_argument("--n_samples", type=int, default=1000, help="Number of samples to evaluate (default: 10)")
     parser.add_argument(
         "--decoder",
         type=str,
