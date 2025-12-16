@@ -72,7 +72,7 @@ from src.exp.final_evaluations.models_configs_constants import (
     REGRESSOR_REGISTRY,
     get_pr_path,
 )
-from src.generation.evaluator import GenerationEvaluator, rdkit_logp, rdkit_max_ring_size, rdkit_qed, rdkit_sa_score
+from src.generation.evaluator import GenerationEvaluator, rdkit_logp, rdkit_qed
 from src.generation.generation import HDCGenerator
 from src.utils.chem import is_valid_molecule, reconstruct_for_eval_v2
 from src.utils.registery import retrieve_model
@@ -88,16 +88,14 @@ seed_everything(seed)
 
 # ===== MG-DIFF Target Values =====
 MGDIFF_TARGETS = {
-    "zinc": {"logp": [2.0, 4.0, 6.0], "qed": [0.6, 0.75, 0.9], "sa_score": [2.0, 3.0, 4.0], "tpsa": [30.0, 60.0, 90.0]},
-    "qm9": {"logp": [-1, 0.5, 2.0], "qed": [0.3, 0.45, 0.6], "sa_score": [3.0, 4.5, 6.0], "tpsa": [30.0, 60.0, 90.0]},
+    "zinc": {"logp": [2.0, 4.0, 6.0], "qed": [0.6, 0.75, 0.9]},
+    "qm9": {"logp": [-1, 0.5, 2.0], "qed": [0.3, 0.45, 0.6]},
 }
 
 # ===== Property Functions =====
 PROPERTY_FUNCTIONS = {
     "logp": rdkit_logp,
     "qed": rdkit_qed,
-    "sa_score": rdkit_sa_score,
-    "max_ring_size": rdkit_max_ring_size,
 }
 
 

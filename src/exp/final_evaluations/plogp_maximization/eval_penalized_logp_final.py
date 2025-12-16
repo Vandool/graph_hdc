@@ -1,13 +1,6 @@
 #!/usr/bin/env python
 """
 Penalized LogP Maximization Final Evaluation with Dual Reporting.
-
-This script addresses the protocol ambiguity and length-constraint artifact by reporting:
-1. UNCONSTRAINED: Raw top-k pLogP scores (compare with modern models like GP-MoLFormer: 19.59)
-2. CONSTRAINED: Top-k pLogP scores for molecules with ≤38 heavy atoms (compare with GCPN: 7.98)
-
-Following recommendations from scientific rigor analysis, this ensures fair comparison
-with all prior work by explicitly addressing the length constraint artifact.
 """
 
 import argparse
@@ -29,7 +22,7 @@ from rdkit import Chem
 from torch import nn
 from tqdm.auto import tqdm
 
-from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.utils import get_split
 from src.encoding.configs_and_constants import DecoderSettings, SupportedDataset
 from src.encoding.graph_encoders import CorrectionLevel
 from src.exp.final_evaluations.models_configs_constants import (
@@ -45,7 +38,7 @@ from src.generation.evaluator import (
     rdkit_sa_score,
 )
 from src.generation.generation import HDCGenerator
-from src.utils.chem import is_valid_molecule, reconstruct_for_eval_v2
+from src.utils.chem import draw_mol
 from src.utils.registery import retrieve_model
 from src.utils.utils import pick_device
 
@@ -194,30 +187,28 @@ class PenalizedLogPFinalResults:
 
 
 # ===== Utility Functions =====
-def filter_by_heavy_atom_count(molecules: list, plogp_list: list[float], max_atoms: int = 38) -> tuple:
+def filter_by_heavy_atom_count(rdkit_mols: list, plogp_list: list[float], max_atoms: int = 38) -> tuple:
     """
-    Filter molecules by heavy atom count.
+    Filter molecules by heavy atom count using existing RDKit objects.
 
     Returns:
         (filtered_molecules, filtered_plogp, heavy_atom_counts, pass_indices)
     """
-    from src.utils.chem import nx_to_mol
-
     filtered_molecules = []
     filtered_plogp = []
     heavy_atom_counts = []
     pass_indices = []
 
-    for i, (g, plogp) in enumerate(zip(molecules, plogp_list, strict=False)):
+    for i, (mol, plogp) in enumerate(zip(rdkit_mols, plogp_list, strict=False)):
+        if mol is None:
+            continue
         try:
-            mol = nx_to_mol(g)
-            if mol is not None:
-                n_heavy = count_heavy_atoms(mol)
-                heavy_atom_counts.append(n_heavy)
-                if n_heavy <= max_atoms:
-                    filtered_molecules.append(g)
-                    filtered_plogp.append(plogp)
-                    pass_indices.append(i)
+            n_heavy = count_heavy_atoms(mol)
+            heavy_atom_counts.append(n_heavy)
+            if n_heavy <= max_atoms:
+                filtered_molecules.append(mol)
+                filtered_plogp.append(plogp)
+                pass_indices.append(i)
         except Exception:
             continue
 
@@ -259,15 +250,15 @@ def load_best_trial_from_csv(csv_path: pathlib.Path) -> dict:
     best_trial = df.loc[best_idx]
 
     return {
-        "lr": best_trial["lr"],
-        "steps": int(best_trial["steps"]),
-        "scheduler": best_trial["scheduler"],
-        "lambda_lo": best_trial["lambda_lo"],
-        "lambda_hi": best_trial["lambda_hi"],
-        "lambda_diversity": best_trial.get("lambda_diversity", 0.1),
-        "optimizer": best_trial.get("optimizer", "adam"),
-        "grad_clip": best_trial["grad_clip"],
-        "trial_number": int(best_trial["number"]),
+        "lr": best_trial["params_lr"],
+        "steps": int(best_trial["params_steps"]),
+        "scheduler": best_trial["params_scheduler"],
+        "lambda_lo": best_trial["params_lambda_lo"],
+        "lambda_hi": best_trial["params_lambda_hi"],
+        "lambda_diversity": best_trial.get("params_lambda_diversity", 0.1),
+        "optimizer": best_trial.get("params_optimizer", "adam"),
+        "grad_clip": best_trial["params_grad_clip"],
+        "trial_number": int(best_idx),
         "objective_value": best_trial["value"],
         "plogp_mean": best_trial.get("plogp_mean", 0),
         "plogp_max": best_trial.get("plogp_max", 0),
@@ -399,48 +390,32 @@ class PenalizedLogPOptimizer:
         similarities: list,
         correction_levels: list,
         final_flags: list,
-    ) -> tuple[PenalizedLogPFinalResults, list[float], list]:
+    ) -> tuple[PenalizedLogPFinalResults, list[float], list, list[float], list[float], list[float]]:
         """
         Perform final evaluation with dual reporting.
 
         Returns:
-            (PenalizedLogPFinalResults, plogp_list, valid_molecules)
+            (PenalizedLogPFinalResults, plogp_list, valid_rdkit_mols, logp_list, sa_list, ring_list)
         """
         if not molecules:
-            return self._empty_results(), [], []
+            return self._empty_results(), [], [], [], [], []
 
-        # Filter for chemically valid molecules
-        valid_molecules = []
-        valid_similarities = []
-        valid_correction_levels = []
-        valid_final_flags = []
-
-        for i, g in enumerate(molecules):
-            mol = reconstruct_for_eval_v2(g, dataset=self.evaluator.base_dataset)
-            if mol and is_valid_molecule(mol):
-                valid_molecules.append(g)
-                valid_similarities.append(similarities[i])
-                valid_correction_levels.append(correction_levels[i])
-                valid_final_flags.append(final_flags[i])
-
-        if not valid_molecules:
-            return self._empty_results(), [], []
-
-        # Evaluate
+        # Evaluate - evaluator handles reconstruction and validation internally
         eval_results = self.evaluator.evaluate(
-            n_samples=len(valid_molecules),
-            samples=valid_molecules,
-            final_flags=valid_final_flags,
-            sims=valid_similarities,
-            correction_levels=valid_correction_levels,
+            n_samples=len(molecules),
+            samples=molecules,
+            final_flags=final_flags,
+            sims=similarities,
+            correction_levels=correction_levels,
         )
 
-        # Calculate pLogP for all valid molecules
-        from src.utils.chem import nx_to_mol
+        # Get reconstructed molecules directly from evaluator to avoid re-conversion
+        mols, valid_flags, _, valid_correction_levels = self.evaluator.get_mols_valid_flags_sims_and_correction_levels()
 
-        mols, valid_flags, _, _ = self.evaluator.get_mols_valid_flags_sims_and_correction_levels()
+        # Filter for valid RDKit molecules only
         valid_rdkit_mols = [m for m, f in zip(mols, valid_flags, strict=False) if f]
 
+        # Calculate properties using existing RDKit objects
         plogp_list = [calculate_penalized_logp_rdkit(m) for m in valid_rdkit_mols]
         logp_list = [rdkit_logp(m) for m in valid_rdkit_mols]
         sa_list = [rdkit_sa_score(m) for m in valid_rdkit_mols]
@@ -450,18 +425,11 @@ class PenalizedLogPOptimizer:
         unconstrained_metrics = calculate_top_k_metrics(plogp_list)
 
         # Get heavy atom counts for all molecules
-        heavy_atom_counts = []
-        for g in valid_molecules:
-            try:
-                mol = nx_to_mol(g)
-                if mol is not None:
-                    heavy_atom_counts.append(count_heavy_atoms(mol))
-            except Exception:
-                continue
+        heavy_atom_counts = [count_heavy_atoms(m) for m in valid_rdkit_mols]
 
-        # Constrained metrics (≤38 heavy atoms)
+        # Constrained metrics (≤38 heavy atoms) using RDKit objects directly
         _, constrained_plogp, all_heavy_atoms, _ = filter_by_heavy_atom_count(
-            valid_molecules, plogp_list, self.config.max_heavy_atoms
+            valid_rdkit_mols, plogp_list, self.config.max_heavy_atoms
         )
         constrained_metrics = calculate_top_k_metrics(constrained_plogp)
 
@@ -507,7 +475,7 @@ class PenalizedLogPOptimizer:
             total_time=0,
         )
 
-        return results, plogp_list, valid_molecules
+        return results, plogp_list, valid_rdkit_mols, logp_list, sa_list, ring_list
 
     def _analyze_correction_levels(self, correction_levels: list[CorrectionLevel]) -> dict[str, float]:
         if not correction_levels:
@@ -673,15 +641,13 @@ def plot_optimization_history(losses: list[float], save_dir: pathlib.Path):
 
 
 def save_top_molecules(
-    valid_molecules: list,
+    valid_rdkit_mols: list,
     plogp_list: list[float],
     save_path: pathlib.Path,
     n_top: int = 100,
     max_heavy_atoms: int = None,
 ):
     """Save top N molecules to CSV with properties."""
-    from src.utils.chem import nx_to_mol
-
     if not plogp_list:
         return
 
@@ -692,11 +658,10 @@ def save_top_molecules(
 
     rows = []
     for rank, idx in enumerate(top_indices, 1):
-        g = valid_molecules[idx]
+        mol = valid_rdkit_mols[idx]
         plogp = plogp_list[idx]
 
         try:
-            mol = nx_to_mol(g)
             if mol is not None:
                 smiles = Chem.MolToSmiles(mol)
                 logp = rdkit_logp(mol)
@@ -730,6 +695,114 @@ def save_top_molecules(
     print(f"Saved top {len(df)} molecules to {save_path}")
 
 
+def draw_molecules_with_metadata(
+    valid_rdkit_mols: list,
+    plogp_list: list[float],
+    logp_list: list[float],
+    sa_list: list[float],
+    ring_list: list[float],
+    training_smiles: set[str],
+    save_dir: pathlib.Path,
+    max_draw: int = 100,
+    fmt: str = "svg",
+):
+    """
+    Draw molecules with pLogP values and metadata in filenames.
+    """
+    if not valid_rdkit_mols:
+        print("No valid molecules to draw")
+        return
+
+    # Create molecules subdirectory
+    mol_dir = save_dir / "molecules"
+    mol_dir.mkdir(exist_ok=True)
+
+    # Sort by pLogP descending to get top molecules
+    sorted_indices = np.argsort(plogp_list)[::-1]
+    n_draw = min(max_draw, len(sorted_indices))
+    top_indices = sorted_indices[:n_draw]
+
+    print(f"\nDrawing top {n_draw} molecules to {mol_dir}/")
+
+    drawn_count = 0
+    for rank, idx in enumerate(tqdm(top_indices, desc="Drawing molecules"), start=1):
+        mol = valid_rdkit_mols[idx]
+        if mol is None:
+            continue
+
+        try:
+            plogp = plogp_list[idx]
+            logp = logp_list[idx]
+            sa = sa_list[idx]
+            ring = int(ring_list[idx])
+
+            # Get SMILES for novelty check
+            smiles = Chem.MolToSmiles(mol)
+            is_novel = smiles not in training_smiles
+            novelty = "novel" if is_novel else "known"
+
+            # Get heavy atom count
+            heavy_atoms = count_heavy_atoms(mol)
+
+            # Create filename with 4 decimal places for pLogP
+            filename = (
+                f"mol_{rank:03d}_plogp{plogp:.4f}_logp{logp:.2f}_sa{sa:.2f}_ring{ring}_ha{heavy_atoms}_{novelty}.{fmt}"
+            )
+            save_path = mol_dir / filename
+
+            # Draw molecule using src.utils.chem.draw_mol
+            draw_mol(mol, save_path=str(save_path), fmt=fmt)
+            drawn_count += 1
+
+        except Exception as e:
+            print(f"\nWarning: Failed to draw molecule {rank} (idx {idx}): {e}")
+            continue
+
+    print(f"Successfully drew {drawn_count}/{n_draw} molecules")
+
+
+def save_all_valid_molecules(
+    valid_rdkit_mols: list,
+    plogp_list: list[float],
+    logp_list: list[float],
+    sa_list: list[float],
+    ring_list: list[float],
+    save_path: pathlib.Path,
+):
+    """Save ALL valid molecules with properties to CSV."""
+    if not valid_rdkit_mols:
+        print("No valid molecules to save")
+        return
+
+    rows = []
+    for idx, mol in enumerate(valid_rdkit_mols):
+        if mol is None:
+            continue
+
+        try:
+            smiles = Chem.MolToSmiles(mol)
+            heavy_atoms = count_heavy_atoms(mol)
+
+            rows.append(
+                {
+                    "idx": idx + 1,
+                    "penalized_logp": plogp_list[idx],
+                    "logp": logp_list[idx],
+                    "sa_score": sa_list[idx],
+                    "ring_size": int(ring_list[idx]),
+                    "heavy_atoms": heavy_atoms,
+                    "smiles": smiles,
+                }
+            )
+        except Exception as e:
+            print(f"Error processing molecule {idx}: {e}")
+            continue
+
+    df = pd.DataFrame(rows)
+    df.to_csv(save_path, index=False)
+    print(f"Saved {len(df)} molecules to {save_path}")
+
+
 # ===== Main Execution =====
 def run_final_evaluation(
     hpo_dir: pathlib.Path,
@@ -738,6 +811,9 @@ def run_final_evaluation(
     n_samples: int,
     max_heavy_atoms: int,
     output_dir: pathlib.Path,
+    draw: bool = True,
+    max_draw: int = 100,
+    draw_format: str = "svg",
 ):
     """Run final evaluation with best HPO configuration and dual reporting."""
     device = pick_device()
@@ -783,9 +859,10 @@ def run_final_evaluation(
         regressors[prop] = retrieve_model(name="PR").load_from_checkpoint(pr_path).to(device).eval()
 
     base_dataset = dataset.default_cfg.base_dataset
-    ds = ZincSmiles()
+    ds = get_split(split="train", base_dataset=base_dataset)
+    # ds_props = get_dataset_props(base_dataset=base_dataset)
 
-    print(f"Dataset pLogP stats: mean={ds.penalized_logp.mean():.4f}, std={ds.penalized_logp.std():.4f}\n")
+    print(f"Dataset pLogP stats: mean={ds.pen_logp.mean():.4f}, std={ds.pen_logp.std():.4f}\n")
 
     # Create output directory
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -838,7 +915,7 @@ def run_final_evaluation(
     optimization_time = time.time() - start_time
 
     decode_start = time.time()
-    results, plogp_list, valid_molecules = optimizer_obj.evaluate_and_get_results(
+    results, plogp_list, valid_rdkit_mols, logp_list, sa_list, ring_list = optimizer_obj.evaluate_and_get_results(
         molecules=opt_results["molecules"],
         similarities=opt_results["similarities"],
         correction_levels=opt_results["correction_levels"],
@@ -850,8 +927,8 @@ def run_final_evaluation(
     results.decoding_time = decoding_time
     results.total_time = optimization_time + decoding_time
 
-    # Get constrained pLogP values for plotting
-    _, constrained_plogp, heavy_atoms, _ = filter_by_heavy_atom_count(valid_molecules, plogp_list, max_heavy_atoms)
+    # Get constrained pLogP values for plotting (using RDKit molecules)
+    _, constrained_plogp, heavy_atoms, _ = filter_by_heavy_atom_count(valid_rdkit_mols, plogp_list, max_heavy_atoms)
 
     # Save metrics
     metrics_dict = {
@@ -916,14 +993,42 @@ def run_final_evaluation(
     np.save(experiment_dir / "plogp_values.npy", np.array(plogp_list))
 
     # Save top molecules (both unconstrained and constrained)
-    save_top_molecules(valid_molecules, plogp_list, experiment_dir / "top100_unconstrained_molecules.csv", n_top=100)
+    save_top_molecules(valid_rdkit_mols, plogp_list, experiment_dir / "top100_unconstrained_molecules.csv", n_top=100)
     save_top_molecules(
-        valid_molecules,
+        valid_rdkit_mols,
         plogp_list,
         experiment_dir / "top100_constrained_molecules.csv",
         n_top=100,
         max_heavy_atoms=max_heavy_atoms,
     )
+
+    # Save ALL valid molecules with properties
+    print("\nSaving all valid molecules...")
+    save_all_valid_molecules(
+        valid_rdkit_mols=valid_rdkit_mols,
+        plogp_list=plogp_list,
+        logp_list=logp_list,
+        sa_list=sa_list,
+        ring_list=ring_list,
+        save_path=experiment_dir / "all_valid_molecules.csv",
+    )
+
+    # Draw molecules with metadata
+    if draw:
+        print(f"\n{'=' * 80}")
+        print("Drawing molecules with metadata...")
+        print(f"{'=' * 80}")
+        draw_molecules_with_metadata(
+            valid_rdkit_mols=valid_rdkit_mols,
+            plogp_list=plogp_list,
+            logp_list=logp_list,
+            sa_list=sa_list,
+            ring_list=ring_list,
+            training_smiles=optimizer_obj.evaluator.T,
+            save_dir=experiment_dir,
+            max_draw=max_draw,
+            fmt=draw_format,
+        )
 
     # Generate plots
     print("\nGenerating plots...")
@@ -976,7 +1081,12 @@ def run_final_evaluation(
 
 def main():
     parser = argparse.ArgumentParser(description="Final evaluation for penalized logP maximization with dual reporting")
-    parser.add_argument("--hpo_dir", type=pathlib.Path, required=True, help="HPO results directory")
+    parser.add_argument(
+        "--hpo_dir",
+        type=pathlib.Path,
+        default="/home/akaveh/Projects/kit/graph_hdc/src/exp/final_evaluations/plogp_maximization/hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_plogp_maximization_20251117_160645",
+        help="HPO results directory",
+    )
     parser.add_argument(
         "--dataset",
         type=str,
@@ -985,7 +1095,7 @@ def main():
         help="Dataset to use",
     )
     parser.add_argument("--model_idx", type=int, default=0, help="Index of generator model in registry")
-    parser.add_argument("--n_samples", type=int, default=10000, help="Number of samples to generate")
+    parser.add_argument("--n_samples", type=int, default=2, help="Number of samples to generate")
     parser.add_argument(
         "--max_heavy_atoms",
         type=int,
@@ -993,6 +1103,12 @@ def main():
         help="Maximum heavy atom count for constrained evaluation (ZINC250k max = 38)",
     )
     parser.add_argument("--output_dir", type=str, default="final_results", help="Output directory")
+    parser.add_argument("--draw", action="store_true", default=True, help="Draw molecules (enabled by default)")
+    parser.add_argument("--no_draw", action="store_false", dest="draw", help="Disable molecule drawing")
+    parser.add_argument("--max_draw", type=int, default=100, help="Maximum number of molecules to draw")
+    parser.add_argument(
+        "--draw_format", type=str, default="svg", choices=["svg", "png"], help="Format for molecule drawings"
+    )
 
     args = parser.parse_args()
     dataset = SupportedDataset(args.dataset)
@@ -1006,6 +1122,9 @@ def main():
         n_samples=args.n_samples,
         max_heavy_atoms=args.max_heavy_atoms,
         output_dir=output_dir,
+        draw=args.draw,
+        max_draw=args.max_draw,
+        draw_format=args.draw_format,
     )
 
 

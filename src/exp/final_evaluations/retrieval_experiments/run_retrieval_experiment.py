@@ -284,7 +284,7 @@ def run_single_experiment(
 
     # Phase 1: Batch Encoding
     # Use DataLoader for efficient batch encoding
-    batch_size = 1024  # Adjust based on GPU memory
+    batch_size = 256  # Adjust based on GPU memory
     dataloader = DataLoader(sampled_dataset, batch_size=batch_size, shuffle=False)
 
     print(f"Encoding {len(sampled_dataset)} samples in batches of {batch_size}...")
@@ -546,8 +546,8 @@ def run_single_experiment(
 def main():
     parser = argparse.ArgumentParser(description="Run retrieval experiment")
     parser.add_argument("--vsa", type=str, default="HRR", choices=["HRR"], help="VSA model (default: HRR)")
-    parser.add_argument("--hv_dim", type=int, default=256, help="Hypervector dimension (default: 1600 for QM9)")
-    parser.add_argument("--depth", type=int, default=5, help="Message passing depth (default: 3)")
+    parser.add_argument("--hv_dim", type=int, default=1024, help="Hypervector dimension (default: 1600 for QM9)")
+    parser.add_argument("--depth", type=int, default=2, help="Message passing depth (default: 3)")
     parser.add_argument(
         "--dataset", type=str, default="zinc", choices=["qm9", "zinc"], help="Dataset name (default: qm9)"
     )
@@ -556,7 +556,7 @@ def main():
     parser.add_argument(
         "--decoder",
         type=str,
-        default="pattern_matching",
+        default="greedy",
         choices=["pattern_matching", "greedy"],
         help="Decoder type (default: pattern_matching)",
     )
@@ -568,7 +568,7 @@ def main():
     parser.add_argument(
         "--beam_size",
         type=int,
-        default=None,
+        default=64,
         help="Beam size for greedy decoder (default: 96 for ZINC, 2048 for QM9, ignored for pattern_matching)",
     )
 

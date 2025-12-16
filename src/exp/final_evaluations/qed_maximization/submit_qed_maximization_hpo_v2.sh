@@ -1,57 +1,32 @@
 #!/bin/bash
-#!/usr/bin/env bash
-# Cluster-aware submission script for unconditional generation evaluation
-# Usage: bash submit_unconditional.sh QM9_SMILES_HRR_1600_F64_G1NG3
-# CLUSTER: uc3 | hk | haic | local
 
-set -euo pipefail
+# QED Maximization HPO Submission Script
+# Usage: sbatch submit_qed_maximization_hpo.sh <dataset> <model_idx>
 
-# --- DRY-RUN normalization ---
-DRY_RUN_RAW="${DRY_RUN:-0}"
-DRY_RUN="$(printf '%s' "$DRY_RUN_RAW" | tr -d '\r[:space:]')"
-DRY_RUN="${DRY_RUN:-0}"
-echo "DryRun  : ${DRY_RUN}"
+# Default values
+DATASET=${1:-ZINC_SMILES_HRR_256_F64_5G1NG4}
+MODEL_IDX=${2:-0}
+N_TRIALS=${N_TRIALS:-100}
+N_SAMPLES=${N_SAMPLES:-100}
+OUTPUT_DIR=${OUTPUT_DIR:-hpo_results}
 
-# -----------------------------
-# Parse experiment parameters
-# -----------------------------
-# QM9_SMILES_HRR_256_F64_G1NG3
-# QM9_SMILES_HRR_1600_F64_G1NG3
-# ZINC_SMILES_HRR_256_F64_5G1NG4
-# ZINC_SMILES_HRR_1024_F64_5G1NG4
-# ZINC_SMILES_HRR_2048_F64_5G1NG4
-# ZINC_SMILES_HRR_5120_F64_G1G3
-DATASET="${1:-QM9_SMILES_HRR_256_F64_G1NG3}"
-
-# -----------------------------
-# User-configurable parameters
-# -----------------------------
-CLUSTER="${CLUSTER:-uc3}"
-
-GPUS="${GPUS:-1}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-}"   # set per-cluster if empty
-NODES="${NODES:-1}"
-NTASKS="${NTASKS:-1}"
-
-N_SAMPLES="${N_SAMPLES:-100}"
-N_SEEDS="${N_SEEDS:-4}"
-TIME_LIMIT="${TIME_LIMIT:-}"  # Override time limit if set
-
-MODULE_LOAD_DEFAULT=''
-ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
+# Run HPO
+echo "Starting QED Maximization HPO"
+echo "Dataset: $DATASET"
+echo "Model Index: $MODEL_IDX"
+echo "N Trials: $N_TRIALS"
+echo "N Samples: $N_SAMPLES"
+echo "Output Directory: $OUTPUT_DIR"
+echo "================================"
 
 # Paths
 PROJECT_DIR="${PROJECT_DIR:-${GHDC_HOME:-$PWD}}"
-EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/final_evaluations/unconditional_comprehensive}"
-SCRIPT_NAME="${SCRIPT_NAME:-eval_unconditional_comprehensive.py}"
+EXPERIMENTS_PATH="${EXPERIMENTS_PATH:-${PROJECT_DIR}/src/exp/final_evaluations/qed_maximization}"
+SCRIPT_NAME="${SCRIPT_NAME:-eval_qed_maximization_hpo_v2.py}"
 SCRIPT="${EXPERIMENTS_PATH}/${SCRIPT_NAME}"
-
 echo "Script  : ${SCRIPT}"
-echo "Dataset : ${DATASET}"
-echo "N_Samples: ${N_SAMPLES}"
-echo "N_Seeds : ${N_SEEDS}"
 
-EXP_NAME="Eval_cond_${DATASET}_S${N_SAMPLES}"
+EXP_NAME="QED Max HPO ${DATASET}"
 
 # -----------------------------
 # Build python args (array) + safely quoted string
@@ -59,59 +34,41 @@ EXP_NAME="Eval_cond_${DATASET}_S${N_SAMPLES}"
 PY_ARGS=(
   "$SCRIPT"
   --dataset "$DATASET"
+  --model_idx "$MODEL_IDX"
   --n_samples "$N_SAMPLES"
-  --n_seeds "$N_SEEDS"
-  --seed 42
-  --moses
+  --n_trials "$N_TRIALS"
+  --output_dir "$OUTPUT_DIR"
 )
-
-# Add extra args if provided (e.g., --draw)
-if [[ -n "${EXTRA_ARGS:-}" ]]; then
-  PY_ARGS+=($EXTRA_ARGS)
-fi
 
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
 
 # -----------------------------
 # Partitions + Pixi env per cluster
 # -----------------------------
-# Set defaults if TIME_LIMIT not provided
-if [[ -z "$TIME_LIMIT" ]]; then
-    if [[ "$N_SAMPLES" -le 100 ]]; then
-        DEFAULT_TIME="04:00:00"
-    elif [[ "$N_SAMPLES" -le 1000 ]]; then
-        DEFAULT_TIME="12:00:00"
-    else
-        DEFAULT_TIME="48:00:00"
-    fi
-else
-    DEFAULT_TIME="$TIME_LIMIT"
-fi
-
 case "$CLUSTER" in
   local)
     MODULE_LOAD="$MODULE_LOAD_DEFAULT"
     PIXI_ENV="local"
     [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES="debug|${DEFAULT_TIME}|12G"
+    TUPLES=$'debug|72:00:00|16G'
     ;;
   uc3)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES="gpu_h100|${DEFAULT_TIME}|32G"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    TUPLES=$'gpu_h100|72:00:00|64G\ngpu_a100_il|72:00:00|64G\ngpu_h100_il|72:00:00|64G'
     ;;
   hk)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES=$"accelerated|${DEFAULT_TIME}|64G\naccelerated-h100|${DEFAULT_TIME}|64G"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    TUPLES=$'accelerated|48:00:00|64G\naccelerated-h100|48:00:00|64G'
     ;;
   haic|*)
     MODULE_LOAD="module load devel/cuda"
     PIXI_ENV="cluster"
-    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=4
-    TUPLES="normal|${DEFAULT_TIME}|64G"
+    [[ -z "${CPUS_PER_TASK:-}" ]] && CPUS_PER_TASK=16
+    TUPLES=$'normal|72:00:00|64G'
     ;;
 esac
 
@@ -137,28 +94,23 @@ submit_one() {
     --job-name="$EXP_NAME"
     --partition="$partition"
     --time="$time"
-    --gres="gpu:${GPUS}"
-    --nodes="$NODES"
-    --ntasks="$NTASKS"
+    --gres="gpu:1"
+    --nodes=1
+    --ntasks=1
     --cpus-per-task="$CPUS_PER_TASK"
     --mem="$mem"
     --wrap="$(
       cat <<WRAP
 set -euo pipefail
 $MODULE_LOAD
-echo 'Job ID  : \$SLURM_JOB_ID'
-echo 'Node    : '\$(hostname)
+echo 'Node:' \$(hostname)
 echo 'CUDA visible devices:'; nvidia-smi || true
-echo 'Running : ${SCRIPT}'
-echo 'Dataset : ${DATASET}'
-echo 'N_Samples: ${N_SAMPLES}'
-echo 'N_Seeds : ${N_SEEDS}'
+echo 'Running: ${SCRIPT}'
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
-cd '${PROJECT_DIR}'
+cd '${EXPERIMENTS_PATH}'
 pixi run --frozen -e '${PIXI_ENV}' python ${QUOTED_ARGS}
-echo 'Job completed successfully!'
 WRAP
     )"
   )

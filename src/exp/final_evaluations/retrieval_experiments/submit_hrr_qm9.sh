@@ -34,9 +34,9 @@ echo "=========================================="
 # Experiment parameters
 VSA="HRR"
 DATASET="qm9"
-ITER_BUDGET=1
-HV_DIMS=(256 512 1024)
-DEPTHS=(2 3 4 5)
+ITER_BUDGET=10
+HV_DIMS=(196)
+DEPTHS=(3)
 DECODERS=("pattern_matching" "greedy")
 
 # Counter for submitted jobs

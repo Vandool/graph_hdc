@@ -13,6 +13,7 @@ from torch_geometric.data import Data, InMemoryDataset
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
 from src.datasets.zinc_smiles_generation import ZincSmiles
+from src.datasets.zinc_smiles_ring_count import ZincSmilesRingCount
 from src.encoding.configs_and_constants import BaseDataset, DSHDCConfig
 
 
@@ -69,6 +70,8 @@ def get_split(
             )
 
         return ds
+    if base_dataset == "zinc_ring_count":
+        return ZincSmilesRingCount(split=split, enc_suffix=enc_suffix)
     return ZincSmiles(split=split, enc_suffix=enc_suffix)
 
 
@@ -101,6 +104,8 @@ def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
         dataset_cls = QM9Smiles
     elif base_dataset == "zinc":
         dataset_cls = ZincSmiles
+    elif base_dataset == "zinc_ring_count":
+        dataset_cls = ZincSmilesRingCount
     else:
         raise ValueError(f"Unknown base_dataset: {base_dataset}")
 
@@ -152,7 +157,7 @@ def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
                 edge_tuple = tuple(sorted((feat_u, feat_v)))
                 edge_features.add(edge_tuple)
 
-            # 3c. Get Ring Information (ZINC only)
+            # 3c. Get Ring Information (ZINC and ZINC_RING_COUNT)
             if base_dataset == "qm9":
                 continue
 
@@ -194,7 +199,7 @@ def get_dataset_info(base_dataset: BaseDataset) -> DatasetInfo:
     final_ring_histogram: dict[tuple, dict[int, int]] | None = None
     single_ring_features: set[tuple] | None = None
 
-    if base_dataset == "zinc":
+    if base_dataset in ("zinc", "zinc_ring_count"):
         single_ring_features = set()
         for atom_tuple, total_count in atom_tuple_total_counts.items():
             if never_multiple_rings_counter[atom_tuple] == total_count:
@@ -274,8 +279,7 @@ def calculate_molecular_properties(mol) -> dict[str, float | int]:
 
     if mol is None:
         raise ValueError("Cannot calculate properties for None molecule")
-
-    props = {
+    return {
         "mw": Descriptors.MolWt(mol),
         "tpsa": Descriptors.TPSA(mol),
         "num_atoms": mol.GetNumAtoms(),
@@ -289,12 +293,11 @@ def calculate_molecular_properties(mol) -> dict[str, float | int]:
         "max_ring_size_calc": rdkit_max_ring_size(mol),
         "bertz_ct": Descriptors.BertzCT(mol),
     }
-    return props
 
 
 def get_dataset_props(base_dataset: BaseDataset, splits: list[str] | None = None) -> DatasetProps:
     """
-    Analyzes a dataset ('qm9' or 'zinc') to extract lists of all
+    Analyzes a dataset ('qm9', 'zinc', or 'zinc_ring_count') to extract lists of all
     molecular properties, preserving the dataset order.
 
     Results are cached as a raw dictionary mapping:
@@ -308,6 +311,8 @@ def get_dataset_props(base_dataset: BaseDataset, splits: list[str] | None = None
         dataset_cls = QM9Smiles
     elif base_dataset == "zinc":
         dataset_cls = ZincSmiles
+    elif base_dataset == "zinc_ring_count":
+        dataset_cls = ZincSmilesRingCount
     else:
         raise ValueError(f"Unknown base_dataset: {base_dataset}")
 

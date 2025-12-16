@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import networkx as nx
 import torch
 from rdkit import Chem
-from rdkit.Chem import QED, SanitizeFlags
+from rdkit.Chem import QED, SanitizeFlags, rdDepictor
 from rdkit.Chem.Draw import rdMolDraw2D
 from torch_geometric.data import Data
 
@@ -23,51 +23,68 @@ def draw_mol(
     save_path: str | None = None,
     size: tuple[int, int] = (300, 300),
     fmt: str = "svg",
+    # --- Tweaked defaults for "Pretty but Colorful" ---
+    bond_width: float = 2.0,  # Thicker lines (standard is ~1.0)
+    bw_palette: bool = False,  # KEPT FALSE to keep colors!
+    font_size: int = 14,  # Readable font size
+    transparent: bool = True,  # Transparent background
 ) -> None:
     """
-    Draw an RDKit molecule with appealing style (like Jupyter's display).
-
-    Parameters
-    ----------
-    mol : Chem.Mol
-        Molecule to render.
-    save_path : str | None
-        If provided, saves the drawing to this path.
-        - Use '.svg' for vector output
-        - Use '.png' for raster output
-    size : tuple[int, int]
-        Width, height in pixels.
-    fmt : str
-        "svg" (vector, pretty) or "png" (bitmap).
+    Draw an RDKit molecule with publication-quality styling (Thick lines, High Res).
+    Keeps standard element colors (O=Red, N=Blue) by default.
     """
+    if mol is None:
+        return
+
+    # 1. Layout: Ensure molecule isn't "squashed"
+    try:
+        if mol.GetNumConformers() == 0:
+            rdDepictor.Compute2DCoords(mol)
+        Chem.NormalizeDepiction(mol)
+    except Exception:
+        pass
+
+    # 2. Init Drawer
     if fmt == "svg":
         drawer = rdMolDraw2D.MolDraw2DSVG(size[0], size[1])
     elif fmt == "png":
         drawer = rdMolDraw2D.MolDraw2DCairo(size[0], size[1])
     else:
-        raise ValueError(f"Unsupported fmt {fmt}, choose 'svg' or 'png'.")
+        raise ValueError(f"Unsupported fmt {fmt}")
 
-    # Prepare molecule for drawing
+    # 3. Apply "Paper" Aesthetics (Thicker, Cleaner, but COLORFUL)
+    opts = drawer.drawOptions()
+
+    opts.bondLineWidth = bond_width  # Critical for visibility in papers
+    opts.minFontSize = font_size  # Ensure text is readable
+    opts.padding = 0.05  # prevent clipping
+    opts.multipleBondOffset = 0.15  # distinct double bonds
+
+    # Use RDKit standard colors (Oxygen=Red, Nitrogen=Blue),
+    # but make the font look sharper.
+    if bw_palette:
+        opts.useBWAtomPalette()
+
+    if transparent:
+        opts.clearBackground = False
+        opts.setBackgroundColour((1, 1, 1, 0))
+
+    # 4. Draw
     try:
         mol.UpdatePropertyCache(strict=False)
         Chem.GetSymmSSSR(mol)
+
         drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        data = drawer.GetDrawingText()
+
+        if save_path:
+            mode = "w" if fmt == "svg" else "wb"
+            with open(save_path, mode) as f:
+                f.write(data)
+
     except Exception as e:
         print(f"Error drawing molecule: {e}")
-        # Draw an empty box or error message if fails
-        drawer.ClearDrawing()
-        drawer.DrawString("Drawing Error", 0, 0)
-
-    drawer.FinishDrawing()
-    data = drawer.GetDrawingText()
-
-    if fmt == "svg":
-        if save_path:
-            with open(save_path, "w") as f:
-                f.write(data)
-    elif save_path:
-        with open(save_path, "wb") as f:
-            f.write(data)
 
 
 def mol_to_data(mol: Chem.Mol) -> Data:

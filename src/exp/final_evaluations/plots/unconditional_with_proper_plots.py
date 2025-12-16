@@ -82,19 +82,36 @@ from src.generation.generation import HDCGenerator
 from src.utils.chem import draw_mol
 from src.utils.utils import pick_device
 
-# --- Matplotlib/Seaborn styling ---
-plt.style.use("seaborn-v0_8-paper")
+# ===== KIT Color Palette =====
+KIT_COLORS = {
+    "teal": (0 / 255, 155 / 255, 127 / 255),  # kitteal - dataset
+    "orange": (217 / 255, 102 / 255, 31 / 255),  # kitorange - generated 1
+    "blue": (41 / 255, 94 / 255, 138 / 255),  # kitblue - generated 2
+    "red": (180 / 255, 40 / 255, 40 / 255),  # kitred - target lines
+}
+
+# ===== Matplotlib Configuration (Source Sans Pro) =====
 plt.rcParams.update(
     {
-        "font.size": 12,
+        "font.family": "Source Sans Pro",
+        "mathtext.fontset": "dejavusans",
+        "font.size": 11,
+        "axes.labelsize": 12,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
         "figure.dpi": 150,
         "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.1,
         "axes.spines.top": False,
         "axes.spines.right": False,
         "axes.grid": True,
         "grid.alpha": 0.3,
     }
 )
+
 
 # --- Thread configuration ---
 num = max(1, min(8, os.cpu_count() or 1))
@@ -109,7 +126,7 @@ device = pick_device()
 # device = torch.device('cpu')
 
 # Default sample size (set to 10 for quick testing, use 30000 for MOSES benchmark)
-DEFAULT_SAMPLE_SIZE = 100
+DEFAULT_SAMPLE_SIZE = 50
 
 EVALUATOR: dict[BaseDataset, GenerationEvaluator | None] = {"qm9": None, "zinc": None}
 
@@ -200,8 +217,8 @@ def calculate_moses_properties(mol) -> dict[str, float]:
 
 
 def calculate_moses_kl_divergence(
-    dataset_props: dict[str, list[float]],
-    generated_props: dict[str, list[float]],
+        dataset_props: dict[str, list[float]],
+        generated_props: dict[str, list[float]],
 ) -> dict[str, float]:
     """
     Calculate KL divergence for the 9 MOSES properties.
@@ -263,8 +280,8 @@ def calculate_moses_kl_divergence(
 
 
 def calculate_fcd_metric(
-    generated_smiles: list[str],
-    dataset_smiles: list[str],
+        generated_smiles: list[str],
+        dataset_smiles: list[str],
 ) -> dict[str, float]:
     """
     Calculate Fréchet ChemNet Distance (FCD) metric.
@@ -410,8 +427,8 @@ def calculate_scaffold_metrics(generated_mols: list, dataset_mols: list) -> dict
 
 
 def calculate_distribution_metrics(
-    dataset_props: dict[str, list[float]],
-    generated_props: dict[str, list[float]],
+        dataset_props: dict[str, list[float]],
+        generated_props: dict[str, list[float]],
 ) -> dict[str, Any]:
     """
     Calculate distribution similarity metrics between dataset and generated molecules.
@@ -499,20 +516,35 @@ def calculate_distribution_metrics(
 
 
 def create_comprehensive_plots(
-    dataset_name: str,
-    dataset_props: dict[str, list[float]],
-    generated_props: dict[str, list[float]],
-    save_dir: Path,
+        dataset_name: str,
+        dataset_props: dict[str, list[float]],
+        generated_props: dict[str, list[float]],
+        save_dir: Path,
+        base_dataset: str = "qm9",
+        n_generated: int | None = None,
 ):
     """
     Create comprehensive visualization of property distributions.
 
+    Publication-ready plots with:
+    - KIT color palette
+    - Sans-serif academic fonts
+    - KDE overlay for both continuous and discrete distributions
+    - Integer x-axis for discrete properties
+
     Args:
-        dataset_name: Name of the dataset
+        dataset_name: Name of the dataset (for title)
         dataset_props: Properties from training dataset
         generated_props: Properties from generated molecules
         save_dir: Directory to save plots
+        base_dataset: Base dataset name ("qm9" or "zinc") for legend labels
+        n_generated: Number of generated samples for legend label
     """
+    # Create legend labels
+    ds_label = f"{base_dataset.upper()} (training set)"
+    n_gen = n_generated if n_generated else len(next(iter(generated_props.values())))
+    gen_label = f"Generated ({n_gen} samples)"
+
     # Create subplots for all properties
     fig, axes = plt.subplots(4, 3, figsize=(18, 16))
     axes = axes.flatten()
@@ -549,78 +581,213 @@ def create_comprehensive_plots(
             # KDE plots for continuous variables
             lo = min(ds_vals.min(), gen_vals.min())
             hi = max(ds_vals.max(), gen_vals.max())
-            x = np.linspace(lo, hi, 200)
+            x_range = hi - lo
+            x = np.linspace(lo - 0.1 * x_range, hi + 0.1 * x_range, 200)
 
-            kde_ds = gaussian_kde(ds_vals)
-            kde_gen = gaussian_kde(gen_vals)
+            kde_ds = gaussian_kde(ds_vals, bw_method="scott")
+            kde_gen = gaussian_kde(gen_vals, bw_method="scott")
 
-            ax.plot(x, kde_ds(x), label="Dataset", linewidth=2, color="blue")
-            ax.plot(x, kde_gen(x), label="Generated", linewidth=2, linestyle="--", color="orange")
+            # Fill under dataset curve
+            ax.fill_between(x, kde_ds(x), alpha=0.3, color=KIT_COLORS["teal"])
+            ax.plot(x, kde_ds(x), label=ds_label, linewidth=2, color=KIT_COLORS["teal"])
+            ax.plot(x, kde_gen(x), label=gen_label, linewidth=2, linestyle="-", color=KIT_COLORS["orange"])
         else:
-            # Bar plots for discrete variables
-            unique_vals = np.unique(np.concatenate([ds_vals, gen_vals]))
+            # Combined histogram + KDE for discrete variables
+            unique_vals = np.unique(np.concatenate([ds_vals, gen_vals])).astype(int)
             ds_counts = np.array([np.sum(ds_vals == v) for v in unique_vals]) / len(ds_vals)
             gen_counts = np.array([np.sum(gen_vals == v) for v in unique_vals]) / len(gen_vals)
 
-            x = np.arange(len(unique_vals))
+            x_pos = np.arange(len(unique_vals))
             width = 0.35
 
-            ax.bar(x - width / 2, ds_counts, width, label="Dataset", color="blue", alpha=0.7)
-            ax.bar(x + width / 2, gen_counts, width, label="Generated", color="orange", alpha=0.7)
-            ax.set_xticks(x)
-            ax.set_xticklabels(unique_vals)
+            # Bar plots
+            ax.bar(x_pos - width / 2, ds_counts, width, label=ds_label, color=KIT_COLORS["teal"], alpha=0.7, edgecolor="black", linewidth=0.5)
+            ax.bar(x_pos + width / 2, gen_counts, width, label=gen_label, color=KIT_COLORS["orange"], alpha=0.7, edgecolor="black", linewidth=0.5)
+
+            # KDE overlay for smoother visualization
+            if len(ds_vals) > 5 and len(gen_vals) > 5:
+                # Add small jitter for KDE estimation on discrete data
+                ds_jittered = ds_vals + np.random.normal(0, 0.1, len(ds_vals))
+                gen_jittered = gen_vals + np.random.normal(0, 0.1, len(gen_vals))
+
+                kde_x = np.linspace(unique_vals.min() - 0.5, unique_vals.max() + 0.5, 200)
+                try:
+                    kde_ds = gaussian_kde(ds_jittered, bw_method=0.3)
+                    kde_gen = gaussian_kde(gen_jittered, bw_method=0.3)
+
+                    # Scale KDE to match histogram height
+                    kde_ds_scaled = kde_ds(kde_x) * (unique_vals.max() - unique_vals.min() + 1) / len(unique_vals)
+                    kde_gen_scaled = kde_gen(kde_x) * (unique_vals.max() - unique_vals.min() + 1) / len(unique_vals)
+
+                    # Map kde_x to x_pos space for proper alignment
+                    kde_x_mapped = np.interp(kde_x, unique_vals, x_pos)
+                    ax.plot(kde_x_mapped, kde_ds_scaled, color=KIT_COLORS["teal"], linewidth=2, linestyle="--", alpha=0.8)
+                    ax.plot(kde_x_mapped, kde_gen_scaled, color=KIT_COLORS["orange"], linewidth=2, linestyle="--", alpha=0.8)
+                except Exception:
+                    pass  # Skip KDE if it fails
+
+            # Set integer x-tick labels
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels([str(int(v)) for v in unique_vals])
 
         ax.set_xlabel(prop_label)
         ax.set_ylabel("Density" if prop_type == "continuous" else "Frequency")
         ax.set_title(f"{prop_label}")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper right", framealpha=0.9)
+        ax.grid(True, alpha=0.3, axis="y")
 
     # Hide unused subplots
     for idx in range(len(properties), len(axes)):
         axes[idx].set_visible(False)
 
-    plt.suptitle(f"{dataset_name} - Property Distribution Comparison", fontsize=16, y=1.02)
+    plt.suptitle(f"{dataset_name} - Property Distribution Comparison", fontsize=14, fontweight="bold", y=1.02)
     plt.tight_layout()
     plt.savefig(save_dir / "comprehensive_property_distributions.pdf", bbox_inches="tight", dpi=300)
+    plt.savefig(save_dir / "comprehensive_property_distributions.png", bbox_inches="tight", dpi=300)
     plt.close()
 
     # Create individual high-quality plots for key properties
-    key_properties = ["logp", "qed", "sa_score", "max_ring_size"]
+    _create_individual_property_plots(dataset_name, dataset_props, generated_props, save_dir, base_dataset, n_gen)
 
-    for prop_key in key_properties:
+
+def _create_individual_property_plots(
+        dataset_name: str,
+        dataset_props: dict[str, list[float]],
+        generated_props: dict[str, list[float]],
+        save_dir: Path,
+        base_dataset: str = "qm9",
+        n_generated: int | None = None,
+):
+    """Create individual high-quality plots for key properties."""
+
+    # Create legend labels
+    ds_label = f"{base_dataset.upper()} (training set)"
+    n_gen = n_generated if n_generated else len(next(iter(generated_props.values())))
+    gen_label = f"Generated ({n_gen} samples)"
+
+    # Define properties with their type
+    key_properties = [
+        ("logp", "LogP", "continuous"),
+        ("qed", "QED", "continuous"),
+        ("sa_score", "SA Score", "continuous"),
+        ("max_ring_size", "Max Ring Size", "discrete"),
+        ("num_atoms", "Number of Atoms", "discrete"),
+        ("num_bonds", "Number of Bonds", "discrete"),
+        ("num_rings", "Number of Rings", "discrete"),
+    ]
+
+    for prop_key, prop_label, prop_type in key_properties:
         if prop_key not in dataset_props or prop_key not in generated_props:
             continue
-
-        plt.figure(figsize=(8, 6))
 
         ds_vals = np.array(dataset_props[prop_key])
         gen_vals = np.array(generated_props[prop_key])
 
-        # Create violin plot
+        # Skip if not enough data
+        if len(ds_vals) < 2 or len(gen_vals) < 2:
+            continue
+
+        # Create KDE/histogram overlay plot
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        if prop_type == "continuous":
+            # KDE for continuous properties
+            lo = min(ds_vals.min(), gen_vals.min())
+            hi = max(ds_vals.max(), gen_vals.max())
+            x_range = hi - lo
+            x = np.linspace(lo - 0.1 * x_range, hi + 0.1 * x_range, 300)
+
+            kde_ds = gaussian_kde(ds_vals, bw_method="scott")
+            kde_gen = gaussian_kde(gen_vals, bw_method="scott")
+
+            ax.fill_between(x, kde_ds(x), alpha=0.3, color=KIT_COLORS["teal"], label=ds_label)
+            ax.plot(x, kde_ds(x), color=KIT_COLORS["teal"], linewidth=2)
+            ax.plot(x, kde_gen(x), color=KIT_COLORS["orange"], linewidth=2, label=gen_label)
+
+            ax.set_ylabel("Density")
+        else:
+            # Histogram + KDE for discrete properties
+            unique_vals = np.unique(np.concatenate([ds_vals, gen_vals])).astype(int)
+            ds_counts = np.array([np.sum(ds_vals == v) for v in unique_vals]) / len(ds_vals)
+            gen_counts = np.array([np.sum(gen_vals == v) for v in unique_vals]) / len(gen_vals)
+
+            x_pos = np.arange(len(unique_vals))
+            width = 0.35
+
+            ax.bar(x_pos - width / 2, ds_counts, width, label=ds_label, color=KIT_COLORS["teal"], alpha=0.7, edgecolor="black", linewidth=0.5)
+            ax.bar(x_pos + width / 2, gen_counts, width, label=gen_label, color=KIT_COLORS["orange"], alpha=0.7, edgecolor="black", linewidth=0.5)
+
+            # KDE overlay
+            if len(unique_vals) > 2:
+                ds_jittered = ds_vals + np.random.normal(0, 0.15, len(ds_vals))
+                gen_jittered = gen_vals + np.random.normal(0, 0.15, len(gen_vals))
+
+                kde_x = np.linspace(unique_vals.min() - 0.5, unique_vals.max() + 0.5, 200)
+                try:
+                    kde_ds = gaussian_kde(ds_jittered, bw_method=0.4)
+                    kde_gen = gaussian_kde(gen_jittered, bw_method=0.4)
+
+                    # Scale KDE
+                    scale_factor = max(ds_counts.max(), gen_counts.max()) / max(kde_ds(kde_x).max(), 1e-10)
+                    kde_x_mapped = np.interp(kde_x, unique_vals, x_pos)
+
+                    ax.plot(kde_x_mapped, kde_ds(kde_x) * scale_factor, color=KIT_COLORS["teal"], linewidth=2, linestyle="--", alpha=0.8)
+                    ax.plot(kde_x_mapped, kde_gen(kde_x) * scale_factor, color=KIT_COLORS["orange"], linewidth=2, linestyle="--", alpha=0.8)
+                except Exception:
+                    pass
+
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels([str(int(v)) for v in unique_vals])
+            ax.set_ylabel("Frequency")
+
+        ax.set_xlabel(prop_label)
+        ax.set_title(f"{prop_label} Distribution")
+        ax.legend(loc="upper right", framealpha=0.9)
+        ax.grid(True, alpha=0.3, axis="y")
+
+        plt.tight_layout()
+        plt.savefig(save_dir / f"distribution_{prop_key}.pdf", bbox_inches="tight", dpi=300)
+        plt.savefig(save_dir / f"distribution_{prop_key}.png", bbox_inches="tight", dpi=300)
+        plt.close()
+
+        # Also create violin plot for comparison
+        fig, ax = plt.subplots(figsize=(6, 5))
+
         data_df = pd.DataFrame(
             {
                 "Value": np.concatenate([ds_vals, gen_vals]),
-                "Source": ["Dataset"] * len(ds_vals) + ["Generated"] * len(gen_vals),
+                "Source": [ds_label] * len(ds_vals) + [gen_label] * len(gen_vals),
             }
         )
 
-        sns.violinplot(data=data_df, x="Source", y="Value", inner="box")
-        plt.title(f"{dataset_name} - {prop_key.upper()} Distribution")
-        plt.ylabel(prop_key.upper())
+        sns.violinplot(
+            data=data_df,
+            x="Source",
+            y="Value",
+            hue="Source",
+            inner="box",
+            palette={ds_label: KIT_COLORS["teal"], gen_label: KIT_COLORS["orange"]},
+            legend=False,
+            ax=ax,
+        )
+        ax.set_title(f"{prop_label}")
+        ax.set_ylabel(prop_label)
+        ax.set_xlabel("")
+
         plt.tight_layout()
         plt.savefig(save_dir / f"violin_{prop_key}.pdf", bbox_inches="tight", dpi=300)
+        plt.savefig(save_dir / f"violin_{prop_key}.png", bbox_inches="tight", dpi=300)
         plt.close()
 
 
 def draw_molecules_with_metadata(
-    mols: list,
-    valid_flags: list[bool],
-    correction_levels: list,
-    similarities: list[float],
-    properties_list: list[dict],
-    save_dir: Path,
-    max_molecules: int | None = None,
+        mols: list,
+        valid_flags: list[bool],
+        correction_levels: list,
+        similarities: list[float],
+        properties_list: list[dict],
+        save_dir: Path,
+        max_molecules: int = 100,
 ):
     """
     Draw molecules with filenames encoding metadata.
@@ -632,21 +799,18 @@ def draw_molecules_with_metadata(
         similarities: Cosine similarities for each molecule
         properties_list: List of property dictionaries for each molecule
         save_dir: Directory to save molecule images
-        max_molecules: Maximum number of molecules to draw (None = all molecules)
+        max_molecules: Maximum number of molecules to draw (default: 100)
     """
     molecules_dir = save_dir / "molecules"
     molecules_dir.mkdir(parents=True, exist_ok=True)
 
-    if max_molecules is None:
-        print(f"\nDrawing all valid molecules to {molecules_dir}...")
-    else:
-        print(f"\nDrawing up to {max_molecules} molecules to {molecules_dir}...")
+    print(f"\nDrawing up to {max_molecules} molecules to {molecules_dir}...")
 
     n_drawn = 0
     for idx, (mol, valid, corr_level, sim, props) in enumerate(
-        zip(mols, valid_flags, correction_levels, similarities, properties_list, strict=False)
+            zip(mols, valid_flags, correction_levels, similarities, properties_list, strict=False)
     ):
-        if max_molecules is not None and n_drawn >= max_molecules:
+        if n_drawn >= max_molecules:
             break
 
         if not valid or mol is None:
@@ -686,7 +850,7 @@ def draw_molecules_with_metadata(
     # Create a summary CSV with all metadata
     summary_data = []
     for idx, (mol, valid, corr_level, sim, props) in enumerate(
-        zip(mols, valid_flags, correction_levels, similarities, properties_list, strict=False)
+            zip(mols, valid_flags, correction_levels, similarities, properties_list, strict=False)
     ):
         if not valid or mol is None:
             continue
@@ -710,9 +874,9 @@ def draw_molecules_with_metadata(
 
 
 def plot_correction_level_distribution(
-    dataset_name: str,
-    correction_levels: list,
-    save_dir: Path,
+        dataset_name: str,
+        correction_levels: list,
+        save_dir: Path,
 ):
     """
     Create bar plot showing distribution of correction levels.
@@ -744,7 +908,14 @@ def plot_correction_level_distribution(
 
     labels = list(percentages.keys())
     values = list(percentages.values())
-    colors = ["#2ecc71", "#3498db", "#f39c12", "#e74c3c", "#95a5a6"]  # Green, blue, orange, red, gray
+    # Use KIT colors + additional colors for 5 levels
+    colors = [
+        KIT_COLORS["teal"],      # Level 0 - No correction (good)
+        KIT_COLORS["blue"],      # Level 1 - Edge add/remove
+        KIT_COLORS["orange"],    # Level 2 - Re-decode
+        KIT_COLORS["red"],       # Level 3 - L2 + corrections
+        (0.6, 0.6, 0.6),         # FAIL - Greedy fallback (gray)
+    ]
 
     bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor="black", linewidth=1.5)
 
@@ -759,7 +930,7 @@ def plot_correction_level_distribution(
             va="bottom",
             fontsize=11,
             fontweight="bold",
-        )
+            )
 
     ax.set_ylabel("Percentage of Samples (%)", fontsize=12)
     ax.set_title(f"{dataset_name} - Correction Level Distribution\n(n={total} samples)", fontsize=14, fontweight="bold")
@@ -791,7 +962,7 @@ def plot_correction_level_distribution(
                 fontsize=12,
                 fontweight="bold",
                 color="white",
-            )
+                )
 
     ax.set_ylabel("Number of Samples", fontsize=12)
     ax.set_title(f"{dataset_name} - Correction Level Counts", fontsize=14, fontweight="bold")
@@ -804,10 +975,10 @@ def plot_correction_level_distribution(
 
 
 def generate_moses_compliant(
-    generator: HDCGenerator,
-    evaluator: GenerationEvaluator,
-    n_samples: int,
-    max_attempts_multiplier: int = 5,
+        generator: HDCGenerator,
+        evaluator: GenerationEvaluator,
+        n_samples: int,
+        max_attempts_multiplier: int = 5,
 ) -> dict[str, Any]:
     """
     Generate molecules following MOSES methodology:
@@ -905,14 +1076,14 @@ def generate_moses_compliant(
 
 
 def evaluate_single_model(
-    dataset: SupportedDataset,
-    gen_model_hint: str,
-    n_samples: int,
-    decoder_settings: DecoderSettings,
-    seed: int = 42,
-    dataset_props=None,
-    draw_molecules: bool = False,
-    moses_mode: bool = False,
+        dataset: SupportedDataset,
+        gen_model_hint: str,
+        n_samples: int,
+        decoder_settings: DecoderSettings,
+        seed: int = 42,
+        dataset_props=None,
+        draw_molecules: bool = False,
+        moses_mode: bool = False,
 ) -> dict[str, Any]:
     """
     Evaluate a single generative model following MOSES protocol.
@@ -1124,19 +1295,19 @@ def evaluate_single_model(
     if correction_levels:
         total = len(correction_levels)
         correction_level_counts["correction_level_0_pct"] = (
-            sum(1 for cl in correction_levels if cl == CorrectionLevel.ZERO) / total * 100
+                sum(1 for cl in correction_levels if cl == CorrectionLevel.ZERO) / total * 100
         )
         correction_level_counts["correction_level_1_pct"] = (
-            sum(1 for cl in correction_levels if cl == CorrectionLevel.ONE) / total * 100
+                sum(1 for cl in correction_levels if cl == CorrectionLevel.ONE) / total * 100
         )
         correction_level_counts["correction_level_2_pct"] = (
-            sum(1 for cl in correction_levels if cl == CorrectionLevel.TWO) / total * 100
+                sum(1 for cl in correction_levels if cl == CorrectionLevel.TWO) / total * 100
         )
         correction_level_counts["correction_level_3_pct"] = (
-            sum(1 for cl in correction_levels if cl == CorrectionLevel.THREE) / total * 100
+                sum(1 for cl in correction_levels if cl == CorrectionLevel.THREE) / total * 100
         )
         correction_level_counts["correction_level_fail_pct"] = (
-            sum(1 for cl in correction_levels if cl == CorrectionLevel.FAIL) / total * 100
+                sum(1 for cl in correction_levels if cl == CorrectionLevel.FAIL) / total * 100
         )
 
     # Compile results
@@ -1218,13 +1389,7 @@ def main():
     parser.add_argument(
         "--draw",
         action="store_true",
-        default=True,
-        help="Draw individual molecules (default: True)",
-    )
-    parser.add_argument(
-        "--no-draw",
-        action="store_true",
-        help="Disable drawing individual molecules",
+        help="Draw individual molecules",
     )
     parser.add_argument(
         "--no-corrections",
@@ -1248,8 +1413,6 @@ def main():
     )
 
     args = parser.parse_args()
-    # --no-draw overrides --draw
-    draw_molecules = args.draw and not args.no_draw
     dataset = SupportedDataset(args.dataset)
 
     # Determine seeds
@@ -1268,14 +1431,14 @@ def main():
     # Setup output directory
     dt = "f32" if torch.float32 == DTYPE else "f64"
     decoder_settings = DecoderSettings.get_default_for(base_dataset=dataset.default_cfg.base_dataset)
-    if args.no_corrections:
-        decoder_settings.use_correction = False
-    if args.use_ring_structure:
-        decoder_settings.validate_ring_structure = True
+    # if args.no_corrections:
+    #     decoder_settings.use_correction = False
+    # if args.use_ring_structure:
+    #     decoder_settings.validate_ring_structure = True
 
     base_dir = (
-        Path(__file__).resolve().parent
-        / f"{dataset.value}_{dt}_{args.n_samples}_rs{int(decoder_settings.validate_ring_structure)}_correction{int(decoder_settings.use_correction)}"
+            Path(__file__).resolve().parent
+            / f"{dataset.value}_{dt}_{args.n_samples}_rs{int(decoder_settings.validate_ring_structure)}_correction{int(decoder_settings.use_correction)}"
     )
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1310,11 +1473,18 @@ def main():
                     model_dir = base_dir / f"{gen_hint}_seed{seed}"
                     model_dir.mkdir(parents=True, exist_ok=True)
 
-                    create_comprehensive_plots(dataset.value, dataset_props, generated_props, model_dir)
+                    create_comprehensive_plots(
+                        dataset.value,
+                        dataset_props,
+                        generated_props,
+                        model_dir,
+                        base_dataset=dataset.default_cfg.base_dataset,
+                        n_generated=args.n_samples,
+                    )
                     plot_correction_level_distribution(dataset.value, correction_levels, model_dir)
 
-                    # Draw molecules (default: True, unless --no-draw is specified)
-                    if draw_molecules:
+                    # Draw molecules if requested
+                    if args.draw:
                         draw_molecules_with_metadata(
                             mols=mols,
                             valid_flags=valid_flags,
@@ -1322,7 +1492,7 @@ def main():
                             similarities=sims,
                             properties_list=all_properties,
                             save_dir=model_dir,
-                            max_molecules=None,  # Draw all molecules
+                            max_molecules=100,  # Draw up to 100 molecules
                         )
 
                     # Save raw data
@@ -1347,7 +1517,7 @@ def main():
                 k
                 for k in model_results[0]
                 if k
-                not in ["model", "dataset", "seed", "decoder_settings", "n_samples_generated", "n_samples_requested"]
+                   not in ["model", "dataset", "seed", "decoder_settings", "n_samples_generated", "n_samples_requested"]
             ]
 
             for key in metric_keys:

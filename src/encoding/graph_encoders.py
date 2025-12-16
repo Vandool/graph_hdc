@@ -1505,8 +1505,18 @@ class HyperNet(AbstractGraphEncoder):
                     res = []
                     for ch in [v for _, v in repo.items()]:
                         # Encode and compute similaity
-                        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in ch])
-                        enc_out = self.forward(batch)
+                        data_list = [DataTransformer.nx_to_pyg(c) for c, _ in ch]
+                        BATCH_SIZE = 64
+                        loader = DataLoader(data_list, batch_size=BATCH_SIZE, shuffle=False)
+                        outputs = []
+                        # 4. Iterate and process
+                        for mini_batch in loader:
+                            out = self.forward(mini_batch.to(self.device))
+                            outputs.append(out)
+                        keys = outputs[0].keys()
+
+                        enc_out = {key: torch.cat([batch_out[key] for batch_out in outputs], dim=0) for key in keys}
+
                         g_terms = enc_out[graph_embedding_attr]
                         if decoder_settings.use_g3_instead_of_h3:
                             g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
@@ -1786,15 +1796,23 @@ class HyperNet(AbstractGraphEncoder):
             )
 
             if not decoded_graphs_iter:
-                # print("NO isomorphic Graph found")
                 continue
 
             # Batch encode candidate graphs back to HDC
             pyg_graphs = [DataTransformer.nx_to_pyg_with_type_attr(g) for g in decoded_graphs_iter]
-            batch = Batch.from_data_list(pyg_graphs)
-            graph_hdcs_batch = self.forward(batch)["graph_embedding"]
+            BATCH_SIZE = 128
+            loader = DataLoader(pyg_graphs, batch_size=BATCH_SIZE, shuffle=False)
 
-            # Compute similarities to target graph_term
+            embedding_list = []
+
+            for mini_batch in loader:
+                # Forward pass
+                out = self.forward(mini_batch.to(self.device))
+                embedding_list.append(out["graph_embedding"].detach())
+
+            graph_hdcs_batch = torch.cat(embedding_list, dim=0)
+
+            # Compute similarities
             sims = torchhd.cos(graph_term, graph_hdcs_batch)
 
             # Get top k from this iteration

@@ -1,87 +1,6 @@
 #!/usr/bin/env python
 """
 QED Maximization Final Evaluation.
-
-This script takes the HPO directory and re-runs the best configuration to get final metrics.
-Following the exact protocol:
-1. Load best model and hyperparameters from HPO
-2. Generate 10,000 candidates via gradient-based optimization
-3. Filter invalid molecules and remove duplicates
-4. Select top 100 by QED score
-5. Report GuacaMol score, novelty, diversity, and compound quality metrics
-6. Draw top 100 molecules with comprehensive metadata (enabled by default)
-
-Usage Examples:
---------------
-
-1. Standard evaluation with mean_qed criterion (default):
-   python eval_qed_maximization_final.py \\
-       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
-       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
-       --n_samples 10000 \\
-       --selection_criterion mean_qed
-
-2. Evaluation with max_qed criterion:
-   python eval_qed_maximization_final.py \\
-       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
-       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
-       --n_samples 10000 \\
-       --selection_criterion max_qed
-
-3. With custom drawing options (top 50 molecules in PNG format):
-   python eval_qed_maximization_final.py \\
-       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
-       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
-       --n_samples 10000 \\
-       --selection_criterion mean_qed \\
-       --max_draw 50 \\
-       --draw_format png
-
-4. Disable molecule drawing:
-   python eval_qed_maximization_final.py \\
-       --hpo_dir hpo_results/ZINC_SMILES_HRR_256_F64_5G1NG4_qed_maximization_20251117_144852 \\
-       --dataset ZINC_SMILES_HRR_256_F64_5G1NG4 \\
-       --n_samples 10000 \\
-       --selection_criterion mean_qed \\
-       --no_draw
-
-5. QM9 dataset with mean_qed criterion:
-   python eval_qed_maximization_final.py \\
-       --hpo_dir hpo_results/QM9_SMILES_HRR_1600_F64_G1NG3_qed_maximization_20251115_120000 \\
-       --dataset QM9_SMILES_HRR_1600_F64_G1NG3 \\
-       --n_samples 10000 \\
-       --selection_criterion mean_qed
-
-6. QM9 dataset with max_qed criterion:
-   python eval_qed_maximization_final.py \\
-       --hpo_dir hpo_results/QM9_SMILES_HRR_1600_F64_G1NG3_qed_maximization_20251115_120000 \\
-       --dataset QM9_SMILES_HRR_1600_F64_G1NG3 \\
-       --n_samples 10000 \\
-       --selection_criterion max_qed
-
-Selection Criteria:
-------------------
-- mean_qed: Selects HPO trial with highest average QED across generated molecules
-            (more stable, recommended for production)
-- max_qed:  Selects HPO trial with highest peak QED value
-            (more aggressive, may sacrifice average quality for top performers)
-
-Output Structure:
-----------------
-experiment_dir/
-├── config.json                        # Experiment configuration
-├── metrics.json                       # Comprehensive metrics (validity, novelty, diversity, etc.)
-├── guacamol_scores.json              # GuacaMol benchmark scores
-├── top100_molecules.csv              # Top 100 molecules with properties
-├── qed_values.npy                    # All QED values
-├── plots/
-│   ├── optimization_history.pdf      # Loss curves during optimization
-│   ├── qed_distribution.pdf          # QED distribution vs dataset
-│   └── guacamol_components.pdf       # GuacaMol component breakdown
-└── molecules/                        # Molecule drawings (if --draw enabled)
-    ├── mol_001_qed0.9482_novel_ro5pass_L0.svg
-    ├── mol_002_qed0.9475_known_ro5pass_L1.svg
-    └── ... (up to 100 molecules with rank, QED, novelty, Ro5, correction level)
 """
 
 import argparse
@@ -106,6 +25,7 @@ from torch import nn
 from tqdm.auto import tqdm
 
 from src.datasets.qm9_smiles_generation import QM9Smiles
+from src.datasets.utils import get_dataset_props
 from src.datasets.zinc_smiles_generation import ZincSmiles
 from src.encoding.configs_and_constants import DecoderSettings, SupportedDataset
 from src.encoding.graph_encoders import CorrectionLevel
@@ -117,9 +37,12 @@ from src.exp.final_evaluations.models_configs_constants import (
 )
 from src.generation.evaluator import GenerationEvaluator, rdkit_qed
 from src.generation.generation import HDCGenerator
-from src.utils.chem import draw_mol, is_valid_molecule, reconstruct_for_eval_v2
+from src.utils.chem import (  # <--- CHANGED: Added canonical_key import
+    canonical_key,
+    draw_mol,
+)
 from src.utils.registery import retrieve_model
-from src.utils.utils import DataTransformer, pick_device
+from src.utils.utils import pick_device
 
 # Default float32
 DTYPE = torch.float32
@@ -279,6 +202,9 @@ def apply_medicinal_chemistry_filters(mol: Chem.Mol) -> dict:
 
     Returns dictionary with filter results and molecular properties.
     """
+    if mol is None:  # <--- CHANGED: Added safety check
+        return {"ro5_pass": False, "mw": 0, "logp": 0, "hbd": 0, "hba": 0, "rotatable_bonds": 0, "tpsa": 0}
+
     # Lipinski's Rule of Five
     mw = Descriptors.MolWt(mol)
     logp = Crippen.MolLogP(mol)
@@ -303,18 +229,7 @@ def apply_medicinal_chemistry_filters(mol: Chem.Mol) -> dict:
 
 
 def load_best_trial_from_csv(csv_path: pathlib.Path, selection_criterion: str = "mean_qed") -> dict:
-    """
-    Load best trial configuration from HPO CSV.
-
-    Args:
-        csv_path: Path to trials CSV file
-        selection_criterion: Criterion for selecting best trial
-            - "mean_qed": Select trial with highest mean QED (default)
-            - "max_qed": Select trial with highest max QED
-
-    Returns:
-        Dictionary with best trial configuration and metadata
-    """
+    """Load best trial configuration from HPO CSV."""
     if not csv_path.exists():
         raise ValueError(f"CSV file not found: {csv_path}")
 
@@ -342,7 +257,8 @@ def load_best_trial_from_csv(csv_path: pathlib.Path, selection_criterion: str = 
 
     return {
         "lr": best_trial["lr"],
-        "steps": int(best_trial["steps"]),
+        # "steps": int(best_trial["steps"]),
+        "steps": 650,
         "scheduler": best_trial["scheduler"],
         "lambda_lo": best_trial["lambda_lo"],
         "lambda_hi": best_trial["lambda_hi"],
@@ -459,46 +375,34 @@ class QEDMaximizationOptimizer:
         Perform final evaluation with GuacaMol metrics and top 100 analysis.
 
         Returns:
-            (QEDMaximizationResults, qed_list, valid_molecules)
+            (QEDMaximizationResults, qed_list, valid_rdkit_mols)
         """
         if not molecules:
             return self._empty_results(), [], []
 
-        # Filter for chemically valid molecules
-        valid_molecules = []
-        valid_similarities = []
-        valid_correction_levels = []
-        valid_final_flags = []
+        # <--- CHANGED: Removed unnecessary manual pre-filtering loop (reconstruct_for_eval_v2).
+        # The evaluator handles this internally. We pass raw lists directly.
 
-        for i, g in enumerate(molecules):
-            mol = reconstruct_for_eval_v2(g, dataset=self.evaluator.base_dataset)
-            if mol and is_valid_molecule(mol):
-                valid_molecules.append(g)
-                valid_similarities.append(similarities[i])
-                valid_correction_levels.append(correction_levels[i])
-                valid_final_flags.append(final_flags[i])
-
-        if not valid_molecules:
-            return self._empty_results(), [], []
-
-        # Evaluate this final set
-        eval_results_dict, qed_list = self._evaluate_sample_set(
-            valid_molecules,
-            valid_similarities,
-            valid_correction_levels,
-            valid_final_flags,
+        # Evaluate this final set and get the RDKit mols back
+        eval_results_dict, qed_list, valid_rdkit_mols = self._evaluate_sample_set(
+            molecules,
+            similarities,
+            correction_levels,
+            final_flags,
         )
 
         # Calculate GuacaMol score
         guacamol_metrics = calculate_guacamol_score(qed_list)
 
-        # Analyze top 100 molecules
-        top100_metrics = self._analyze_top_molecules(valid_molecules, qed_list, n_top=100)
+        # Analyze top 100 molecules (Pass RDKit mols directly)
+        top100_metrics = self._analyze_top_molecules(
+            valid_rdkit_mols, qed_list, n_top=100
+        )  # <--- CHANGED: Pass RDKit mols
 
         # Combine results into the final data class
         combined_results = self._combine_results(eval_results_dict, guacamol_metrics, top100_metrics)
 
-        return combined_results, qed_list, valid_molecules
+        return combined_results, qed_list, valid_rdkit_mols  # <--- CHANGED: Return RDKit mols
 
     def _evaluate_sample_set(
         self,
@@ -506,10 +410,10 @@ class QEDMaximizationOptimizer:
         similarities: list,
         correction_levels: list,
         final_flags: list,
-    ) -> tuple[dict[str, Any], list[float]]:
+    ) -> tuple[dict[str, Any], list[float], list]:
         """
         Evaluate a set of molecules.
-        Returns (results_dict, qed_list_for_valid_molecules)
+        Returns (results_dict, qed_list_for_valid_molecules, valid_rdkit_mols)
         """
         # Use GenerationEvaluator for standard metrics
         eval_results = self.evaluator.evaluate(
@@ -523,10 +427,13 @@ class QEDMaximizationOptimizer:
         # Get the actual list of QEDs for valid molecules
         prop_fn = PROPERTY_FUNCTIONS["qed"]
 
+        # <--- CHANGED: Retrieve already generated mols from evaluator
         mols, valid_flags, _, _ = self.evaluator.get_mols_valid_flags_sims_and_correction_levels()
-        valid_molecules = [m for m, f in zip(mols, valid_flags, strict=False) if f]
 
-        qed_list = [prop_fn(m) for m in valid_molecules]
+        # <--- CHANGED: Filter for valid RDKit mols only (removes None)
+        valid_rdkit_mols = [m for m, f in zip(mols, valid_flags, strict=False) if f]
+
+        qed_list = [prop_fn(m) for m in valid_rdkit_mols]
 
         # Re-calculate QED stats from the actual list
         qed_mean = np.mean(qed_list) if qed_list else 0
@@ -537,7 +444,7 @@ class QEDMaximizationOptimizer:
         correction_stats = self._analyze_correction_levels(correction_levels)
 
         results_dict = {
-            "n_samples": len(valid_molecules),
+            "n_samples": len(valid_rdkit_mols),
             "validity": eval_results["validity"],
             "uniqueness": eval_results["uniqueness"],
             "novelty": eval_results["novelty"],
@@ -557,18 +464,14 @@ class QEDMaximizationOptimizer:
             "final_flags_pct": eval_results["final_flags"],
         }
 
-        return results_dict, qed_list
+        return results_dict, qed_list, valid_rdkit_mols  # <--- CHANGED: Return RDKit mols
 
     def _analyze_top_molecules(
-        self, valid_molecules: list, qed_list: list[float], n_top: int = 100
+        self, valid_rdkit_mols: list, qed_list: list[float], n_top: int = 100
     ) -> dict[str, float]:
         """
         Analyze top N molecules for GuacaMol metrics.
-
-        Returns dict with:
-        - novelty (% not in training set)
-        - diversity_p1, diversity_p2
-        - compound_quality_pass_rate
+        Returns dict with novelty, diversity, quality.
         """
         if not qed_list or len(qed_list) == 0:
             return {
@@ -583,16 +486,13 @@ class QEDMaximizationOptimizer:
         n_actual = min(n_top, len(sorted_indices))
         top_indices = sorted_indices[:n_actual]
 
-        top_molecules = [valid_molecules[i] for i in top_indices]
+        # <--- CHANGED: Use passed RDKit mols directly
+        top_molecules = [valid_rdkit_mols[i] for i in top_indices]
 
         # Calculate novelty for top molecules
-        from src.utils.chem import canonical_key
-
-        # Convert NetworkX graphs to RDKit Mol objects before canonical_key
         top_keys = []
-        for m in top_molecules:
+        for mol in top_molecules:  # <--- CHANGED: No need for nx_to_mol conversion here
             try:
-                mol, _ = DataTransformer.nx_to_mol(m)  # nx_to_mol returns (mol, mapping)
                 key = canonical_key(mol)
                 if key is not None:
                     top_keys.append(key)
@@ -602,21 +502,12 @@ class QEDMaximizationOptimizer:
         novelty = 100.0 * len(novel_keys) / len(top_keys) if top_keys else 0.0
 
         # Calculate diversity for top molecules
-        # Convert to RDKit mols for Tanimoto calculation
         try:
             from rdkit.Chem import AllChem
             from rdkit.DataStructs import TanimotoSimilarity
 
-            top_mols = []
-            for g in top_molecules:
-                try:
-                    from src.utils.chem import nx_to_mol
-
-                    mol = nx_to_mol(g)
-                    if mol is not None:
-                        top_mols.append(mol)
-                except Exception:
-                    continue
+            # <--- CHANGED: removed redundant loop that converted graph->mol
+            top_mols = top_molecules
 
             if len(top_mols) >= 2:
                 # Calculate internal diversity p1 (radius=2) and p2 (radius=3)
@@ -736,23 +627,35 @@ class QEDMaximizationOptimizer:
 # ===== Plotting Functions =====
 def plot_qed_distribution(
     generated_qed: list[float],
-    dataset_stats: dict,
+    base_dataset: str,
     save_dir: pathlib.Path,
 ):
-    """Plot QED distributions."""
+    """Plot QED distributions (Generated vs Actual Dataset)."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
+    # 1. Plot Generated Data (Histogram)
     if generated_qed:
         ax.hist(
             generated_qed, bins=50, alpha=0.7, label=f"Generated (n={len(generated_qed)})", color="blue", density=True
         )
 
-    # Add dataset reference
-    ref_mean = dataset_stats.get("qed", {}).get("mean", 0.732)
-    ref_std = dataset_stats.get("qed", {}).get("std", 0.107)
-    x = np.linspace(0, 1, 200)
-    y = stats.norm.pdf(x, ref_mean, ref_std)
-    ax.plot(x, y, "r--", label="Dataset", linewidth=2)
+    # 2. Plot Actual Dataset Distribution (KDE)
+    try:
+        # Fetch actual QED list from dataset props
+        dataset_props = get_dataset_props(base_dataset=base_dataset)
+        dataset_qed = dataset_props.qed
+
+        if dataset_qed:
+            # Generate a smooth density line using Gaussian KDE
+            # This replaces the simple mean/std Gaussian approximation
+            density = stats.gaussian_kde(dataset_qed)
+            x = np.linspace(0, 1, 200)
+            y = density(x)
+
+            ax.plot(x, y, "r--", label=f"Dataset ({base_dataset})", linewidth=2)
+
+    except Exception as e:
+        print(f"Warning: Could not plot dataset distribution: {e}")
 
     ax.set_xlabel("QED", fontsize=12)
     ax.set_ylabel("Density", fontsize=12)
@@ -808,7 +711,9 @@ def plot_guacamol_components(guacamol_metrics: dict, save_dir: pathlib.Path):
     plt.close()
 
 
-def save_top_molecules(valid_molecules: list, qed_list: list[float], save_path: pathlib.Path, n_top: int = 100):
+def save_top_molecules(
+    valid_rdkit_mols: list, qed_list: list[float], save_path: pathlib.Path, n_top: int = 100
+):  # <--- CHANGED: Accept RDKit mols
     """Save top N molecules to CSV with properties."""
     if not qed_list:
         return
@@ -820,11 +725,11 @@ def save_top_molecules(valid_molecules: list, qed_list: list[float], save_path: 
 
     rows = []
     for rank, idx in enumerate(top_indices, 1):
-        g = valid_molecules[idx]
+        mol = valid_rdkit_mols[idx]  # <--- CHANGED: use mol directly
         qed = qed_list[idx]
 
         try:
-            mol, _ = DataTransformer.nx_to_mol(g)  # nx_to_mol returns (mol, mapping)
+            # <--- CHANGED: Removed nx_to_mol conversion inside loop
             if mol is not None:
                 smiles = Chem.MolToSmiles(mol)
                 med_chem = apply_medicinal_chemistry_filters(mol)
@@ -853,7 +758,7 @@ def save_top_molecules(valid_molecules: list, qed_list: list[float], save_path: 
 
 
 def draw_molecules_with_metadata(
-    valid_molecules: list,
+    valid_rdkit_mols: list,  # <--- CHANGED: Accept RDKit mols
     qed_list: list[float],
     correction_levels: list[CorrectionLevel],
     training_smiles: set[str],
@@ -861,19 +766,8 @@ def draw_molecules_with_metadata(
     max_draw: int = 100,
     fmt: str = "svg",
 ):
-    """
-    Draw molecules with QED values and metadata in filenames.
-
-    Args:
-        valid_molecules: List of NetworkX graphs
-        qed_list: List of QED values (same length as valid_molecules)
-        correction_levels: List of correction levels (same length as valid_molecules)
-        training_smiles: Set of SMILES from training set for novelty check
-        save_dir: Directory to save molecule images
-        max_draw: Maximum number of molecules to draw
-        fmt: Image format (svg or png)
-    """
-    if not valid_molecules:
+    """Draw molecules with QED values and metadata in filenames."""
+    if not valid_rdkit_mols:
         print("No valid molecules to draw")
         return
 
@@ -890,13 +784,11 @@ def draw_molecules_with_metadata(
 
     drawn_count = 0
     for rank, idx in enumerate(tqdm(top_indices, desc="Drawing molecules"), start=1):
-        g = valid_molecules[idx]
+        mol = valid_rdkit_mols[idx]
         qed = qed_list[idx]
-        correction_level = correction_levels[idx]
+        correction_level: CorrectionLevel = correction_levels[idx]
 
         try:
-            # Convert graph to mol
-            mol, _ = DataTransformer.nx_to_mol(g)
             if mol is None:
                 continue
 
@@ -910,10 +802,7 @@ def draw_molecules_with_metadata(
             ro5 = "ro5pass" if med_chem["ro5_pass"] else "ro5fail"
 
             # Format correction level
-            if correction_level == CorrectionLevel.FAIL:
-                corr_str = "FAIL"
-            else:
-                corr_str = f"L{correction_level.value}"
+            corr_str = correction_level.name
 
             # Create filename with 4 decimal places for QED
             filename = f"mol_{rank:03d}_qed{qed:.4f}_{novelty}_{ro5}_{corr_str}.{fmt}"
@@ -1040,7 +929,7 @@ def run_final_evaluation(
     optimization_time = time.time() - start_time
 
     decode_start = time.time()
-    results, qed_list, valid_molecules = optimizer_obj.evaluate_and_get_results(
+    results, qed_list, valid_rdkit_mols = optimizer_obj.evaluate_and_get_results(  # <--- CHANGED: get valid_rdkit_mols
         molecules=opt_results["molecules"],
         similarities=opt_results["similarities"],
         correction_levels=opt_results["correction_levels"],
@@ -1093,15 +982,17 @@ def run_final_evaluation(
     np.save(experiment_dir / "qed_values.npy", np.array(qed_list))
 
     # Save top 100 molecules
-    save_top_molecules(valid_molecules, qed_list, experiment_dir / "top100_molecules.csv", n_top=100)
+    save_top_molecules(
+        valid_rdkit_mols, qed_list, experiment_dir / "top100_molecules.csv", n_top=100
+    )  # <--- CHANGED: pass mols
 
     # Draw molecules with metadata
     if draw:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Drawing molecules with metadata...")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         draw_molecules_with_metadata(
-            valid_molecules=valid_molecules,
+            valid_rdkit_mols=valid_rdkit_mols,  # <--- CHANGED: pass mols
             qed_list=qed_list,
             correction_levels=optimizer_obj.evaluator.correction_levels,
             training_smiles=optimizer_obj.evaluator.T,
@@ -1113,7 +1004,7 @@ def run_final_evaluation(
     # Generate plots
     print("\nGenerating plots...")
     plot_optimization_history(opt_results["optimization_losses"], plots_dir)
-    plot_qed_distribution(generated_qed=qed_list, dataset_stats=dataset_stats_dict, save_dir=plots_dir)
+    plot_qed_distribution(generated_qed=qed_list, base_dataset=base_dataset, save_dir=plots_dir)
     plot_guacamol_components(guacamol_scores, plots_dir)
 
     # Print summary
@@ -1169,9 +1060,10 @@ def main():
         help="Criterion for selecting best HPO trial: 'mean_qed' (highest average QED) or 'max_qed' (highest peak QED)",
     )
     parser.add_argument("--draw", action="store_true", default=True, help="Draw molecules (enabled by default)")
-    parser.add_argument("--no_draw", action="store_false", dest="draw", help="Disable molecule drawing")
     parser.add_argument("--max_draw", type=int, default=100, help="Maximum number of molecules to draw")
-    parser.add_argument("--draw_format", type=str, default="svg", choices=["svg", "png"], help="Format for molecule drawings")
+    parser.add_argument(
+        "--draw_format", type=str, default="svg", choices=["svg", "png"], help="Format for molecule drawings"
+    )
 
     args = parser.parse_args()
     dataset = SupportedDataset(args.dataset)

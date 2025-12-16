@@ -13,7 +13,7 @@ from src.encoding.the_types import VSAModel
 from src.utils.utils import pick_device_str
 
 IndexRange = tuple[int, int]
-BaseDataset = Literal["qm9", "zinc"]
+BaseDataset = Literal["qm9", "zinc", "zinc_ring_count"]
 
 
 @dataclass
@@ -48,7 +48,7 @@ class DSHDCConfig:
     name: str
     hv_dim: int = 10000
     hv_count: int = 2
-    vsa: VSAModel = field(default_factory=lambda: VSAModel.MAP)
+    vsa: VSAModel = field(default_factory=lambda: VSAModel.HRR)
     node_feature_configs: dict[Features, FeatureConfig] = field(default_factory=OrderedDict)
     edge_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
     graph_feature_configs: dict[Features, FeatureConfig] | None = field(default_factory=OrderedDict)
@@ -143,6 +143,50 @@ ZINC_SMILES_HRR_256_F64_5G1NG4_CONFIG = deepcopy(ZINC_SMILES_HRR_2048_F64_5G1NG4
 ZINC_SMILES_HRR_256_F64_5G1NG4_CONFIG.name = "ZincSmilesHRR256F645G1NG4"
 ZINC_SMILES_HRR_256_F64_5G1NG4_CONFIG.hv_dim = 256
 
+# =====================================================================
+# ZINC Ring Count Configs
+# Uses ring_count (0, 1, 2, 3) instead of is_in_ring (0, 1)
+# bins=[9, 6, 3, 4, 4] -> combinatorial space: 9*6*3*4*4 = 2,592
+# =====================================================================
+
+ZINC_SMILES_RING_COUNT_HRR_256_F64_5G1NG4_CONFIG: DSHDCConfig = DSHDCConfig(
+    seed=42,
+    name="ZincSmilesRingCountHRR256F645G1NG4",
+    base_dataset="zinc_ring_count",
+    vsa=VSAModel.HRR,
+    hv_dim=256,
+    device=pick_device_str(),
+    node_feature_configs=OrderedDict(
+        [
+            (
+                Features.NODE_FEATURES,
+                FeatureConfig(
+                    # Atom types: 9 values ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'P', 'S']
+                    # Degrees: 6 values (after degree-1 transformation)
+                    # Formal Charges: 3 values {0, 1, -1} -> {0, 1, 2}
+                    # Total Hs: 4 values {0, 1, 2, 3}
+                    # Ring Count: 4 values {0, 1, 2, 3}
+                    count=math.prod([9, 6, 3, 4, 4]),
+                    encoder_cls=CombinatoricIntegerEncoder,
+                    index_range=IndexRange((0, 5)),
+                    bins=[9, 6, 3, 4, 4],
+                ),
+            ),
+        ]
+    ),
+    normalize=True,
+    hypernet_depth=4,
+    dtype="float64",
+)
+
+ZINC_SMILES_RING_COUNT_HRR_512_F64_5G1NG4_CONFIG = deepcopy(ZINC_SMILES_RING_COUNT_HRR_256_F64_5G1NG4_CONFIG)
+ZINC_SMILES_RING_COUNT_HRR_512_F64_5G1NG4_CONFIG.name = "ZincSmilesRingCountHRR512F645G1NG4"
+ZINC_SMILES_RING_COUNT_HRR_512_F64_5G1NG4_CONFIG.hv_dim = 512
+
+ZINC_SMILES_RING_COUNT_HRR_1024_F64_5G1NG4_CONFIG = deepcopy(ZINC_SMILES_RING_COUNT_HRR_256_F64_5G1NG4_CONFIG)
+ZINC_SMILES_RING_COUNT_HRR_1024_F64_5G1NG4_CONFIG.name = "ZincSmilesRingCountHRR1024F645G1NG4"
+ZINC_SMILES_RING_COUNT_HRR_1024_F64_5G1NG4_CONFIG.hv_dim = 1024
+
 QM9_SMILES_CONFIG = DSHDCConfig(
     seed=42,
     name="QM9Smiles",
@@ -205,6 +249,20 @@ class SupportedDataset(enum.Enum):
     QM9_SMILES_HRR_256_F64_G1NG3 = ("QM9_SMILES_HRR_256_F64_G1NG3", QM9_SMILES_HRR_256_CONFIG_F64_G1NG3_CONFIG)
     QM9_SMILES_HRR_1600_F64_G1NG3 = ("QM9_SMILES_HRR_1600_F64_G1NG3", QM9_SMILES_HRR_1600_CONFIG_F64_G1NG3_CONFIG)
 
+    # ZINC Ring Count dataset (ring_count feature instead of is_in_ring)
+    ZINC_SMILES_RING_COUNT_HRR_256_F64_5G1NG4 = (
+        "ZINC_SMILES_RING_COUNT_HRR_256_F64_5G1NG4",
+        ZINC_SMILES_RING_COUNT_HRR_256_F64_5G1NG4_CONFIG,
+    )
+    ZINC_SMILES_RING_COUNT_HRR_512_F64_5G1NG4 = (
+        "ZINC_SMILES_RING_COUNT_HRR_512_F64_5G1NG4",
+        ZINC_SMILES_RING_COUNT_HRR_512_F64_5G1NG4_CONFIG,
+    )
+    ZINC_SMILES_RING_COUNT_HRR_1024_F64_5G1NG4 = (
+        "ZINC_SMILES_RING_COUNT_HRR_1024_F64_5G1NG4",
+        ZINC_SMILES_RING_COUNT_HRR_1024_F64_5G1NG4_CONFIG,
+    )
+
     # No longer considered for the final experiments and can be ignored
     ZINC_SMILES = ("ZINC_SMILES", ZINC_SMILES_CONFIG)
     ZINC_SMILES_HRR_7744 = ("ZINC_SMILES_HRR_7744", ZINC_SMILES_HRR_7744_CONFIG)
@@ -229,7 +287,7 @@ class FallbackDecoderSettings:
 
     initial_limit: int = 4096
     limit: int = 4096
-    beam_size: int = 2048
+    beam_size: int = 4096
     pruning_method: str = "cos_sim"
     use_size_aware_pruning: bool = True
     use_one_initial_population: bool = False
@@ -262,9 +320,8 @@ class DecoderSettings:
     max_graphs_per_iter: int = 1024
     _top_k: int = field(default=3, init=False, repr=False)
     sim_eps: float = 0.0001
-    early_stopping: bool = True
+    early_stopping: bool = False
     prefer_smaller_corrective_edits: bool = False
-    only_correction_level_zero: bool = True
     use_correction: bool = True
     _validate_ring_structure: bool = field(default=False, init=False, repr=False)
     fallback_decoder_settings: FallbackDecoderSettings = field(default_factory=FallbackDecoderSettings)
@@ -318,14 +375,14 @@ class DecoderSettings:
 
     @classmethod
     def get_default_for(cls, base_dataset: BaseDataset) -> "DecoderSettings":
-        """Returns default decoder settings for QM9 dataset."""
+        """Returns default decoder settings for a given dataset."""
         if base_dataset == "qm9":
             return cls(
                 iteration_budget=3,
                 max_graphs_per_iter=1024,
                 fallback_decoder_settings=FallbackDecoderSettings(limit=2048, beam_size=2048),
             )
-        # zinc default
+        # zinc and zinc_ring_count use the same decoder settings
         return cls(
             iteration_budget=25,
             max_graphs_per_iter=1024,

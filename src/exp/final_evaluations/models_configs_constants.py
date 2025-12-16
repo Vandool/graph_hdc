@@ -6,10 +6,15 @@ from src.utils.utils import GLOBAL_BEST_MODEL_PATH, find_files
 # Models ordered by generative performance
 GENERATOR_REGISTRY = {
     SupportedDataset.QM9_SMILES_HRR_256_F64_G1NG3: [
+        # NVP V2 DIM
+        # "nvp_comp_QM9SmilesHRR256F64G1NG3_f6_hid1536_lr0.000862736_wd0.00015703_bs192_np1_smf6.5_smi2.2_smw16_an_dim",
+        # "nvp_comp_QM9SmilesHRR256F64G1NG3_f6_hid1536_lr0.001_wd0.000417855_bs192_np1_smf6.5_smi2.2_smw16_an_dim",
+        # NVP V2 Term
+        # "nvp_comp_QM9SmilesHRR256F64G1NG3_f16_hid512_lr0.001_wd1.31526e-6_bs384_np1_smf6.5_smi2.2_smw16_an_dim",
         # NVP V3
         #   One Trial
         # 31%, -1899
-        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f13_lr0.000182766_wd0.000183556_bs160_hid1536_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # "nvp_comp_QM9SmilesHRR256F64G1NG3_f16_hid512_lr0.001_wd1.31526e-6_bs384_np1_smf6.5_smi2.2_smw16_an",
         # 26%, -2013 -> --> WINNER on 1000 sample comparison unconditional
         "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f16_lr0.000190993_wd0.0003491_bs96_hid1792_nhl3_np1_smf6.5_smi2.2_smw16_an"
         # "nvp_comp_QM9SmilesHRR256F64G1NG3_f11_hid512_lr0.000655457_wd1.42677e-6_bs480_np1_smf6.5_smi2.2_smw16_an",
@@ -17,6 +22,8 @@ GENERATOR_REGISTRY = {
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f11_lr0.000172439_wd0.000501115_bs96_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.00018451_wd0.000294167_bs128_hid2048_nhl4_np1_smf6.5_smi2.2_smw16_an",
         # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f12_lr0.000183872_wd0.000202358_bs96_hid1792_nhl4_np1_smf6.5_smi2.2_smw16_an",
+        # NVP V3 DIM
+        # "nvp_v3_comp_QM9SmilesHRR256F64G1NG3_f6_lr0.000557295_wd1.022e-5_bs288_hid2048_nhl2_np0_smf6.5_smi2.2_smw16_an_dim",
         # Spline Flow
         # NLL: -1852
         # "sf_hpo_QM9SmilesHRR256F64G1NG3_num6_num1024_lr0.000108339_wd2.51289e-7_bs128_dro0.2_num12_num6_an",
@@ -26,10 +33,15 @@ GENERATOR_REGISTRY = {
         # "fm_comp_QM9SmilesHRR256F64G1NG3_s42_lr0.00015242_wd1e-6_bs512_hid2048_nhl7_np1_tim32_an",  # Best MSE 0.3
     ],
     SupportedDataset.QM9_SMILES_HRR_1600_F64_G1NG3: [
-        "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
-        "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
+        # NLL 22221
         "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid400_lr0.000345605_wd3e-6_bs160_smf6.5_smi2.2_smw16_an",
-        "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
+        # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_lr0.000525421_wd0.0005_bs256_an",
+        # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f15_hid1600_s42_lr0.0004818_wd0.0005_bs288",
+        # "R1_nvp_QM9SmilesHRR1600F64G1NG3_f16_hid1600_s42_lr0.000221865_wd0.0005_bs32",
+    ],
+    SupportedDataset.QM9_SMILES_HRR_1600_F64_G1G3: [
+        # NLL: -9879
+        "nvp_QM9SmilesHRR1600F64G1G3_f9_hid800_lr0.000167241_wd3e-6_bs128_smf6.5_smi2.2_smw16_an"
     ],
     SupportedDataset.ZINC_SMILES_HRR_256_F64_5G1NG4: [
         # Spline Flow
@@ -45,7 +57,7 @@ GENERATOR_REGISTRY = {
         # NVP V3
         # # EdgeDecode 2.8%, NLL: -1190 --> WINNER on 1000 sample comparison unconditional
         "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.000539046_wd0.001_bs224_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
-        # # ED: 2.7%, NLL: -1200
+        # # ED : 2.7%, NLL: -1200
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f8_lr0.00054266_wd0.000716922_bs192_hid1536_nhl2_np1_smf7_smi2.5_smw17_an",
         # # ED: 1.9%, NLL: -1220
         # "nvp_v3_comp_ZincSmilesHRR256F645G1NG4_f10_lr0.000571578_wd0.000438479_bs320_hid1024_nhl2_np1_smf7_smi2.5_smw17_an",
@@ -57,7 +69,7 @@ GENERATOR_REGISTRY = {
     ],
     SupportedDataset.ZINC_SMILES_HRR_1024_F64_5G1NG4: [
         # # NLL: -7608
-        # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000343816_wd3e-6_bs160_smf7_smi2.5_smw17_an",
+        "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000343816_wd3e-6_bs160_smf7_smi2.5_smw17_an",
         # # NLL: -7180
         # "nvp_ZincSmilesHRR1024F645G1NG4_f11_hid1024_lr0.000313799_wd3e-6_bs96_smf7_smi2.5_smw17_an",
         # # NLL: -7100
@@ -67,9 +79,9 @@ GENERATOR_REGISTRY = {
         # NLL: -17207
         "nvp_ZincSmilesHRR2048F645G1NG4_f14_hid2048_lr6.25028e-5_wd3e-6_bs128_smf7_smi2.5_smw17_an",
         # NLL -17188
-        "nvp_ZincSmilesHRR2048F645G1NG4_f10_hid2048_lr0.000119405_wd0.0005_bs128_smf7_smi2.5_smw17_an",
+        # "nvp_ZincSmilesHRR2048F645G1NG4_f10_hid2048_lr0.000119405_wd0.0005_bs128_smf7_smi2.5_smw17_an",
         # NLL -17039
-        "nvp_ZincSmilesHRR2048F645G1NG4_f11_hid2048_lr6.29685e-5_wd3e-6_bs128_smf7_smi2.5_smw17_an",
+        # "nvp_ZincSmilesHRR2048F645G1NG4_f11_hid2048_lr6.29685e-5_wd3e-6_bs128_smf7_smi2.5_smw17_an",
         # "nvp_ZincSmilesHRR2048F645G1NG4_f6_hid2048_lr0.000112721_wd0.0005_bs224_smf7_smi2.5_smw17_an",
         # "nvp_ZincSmilesHRR2048F645G1NG4_f8_hid1024_lr9.4456e-5_wd0.0003_bs448_smf7_smi2.5_smw17_an",
         # "nvp_ZincSmilesHRR2048F645G1NG4_f10_hid1024_lr6.69953e-5_wd0.0001_bs160_smf7_smi2.5_smw17_an",

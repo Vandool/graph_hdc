@@ -1284,7 +1284,7 @@ def main():
     parser.add_argument(
         "--top_n_best",
         type=int,
-        default=10,
+        default=3,
         help="Number of best molecules to expand with all decoder outputs for evaluation set 4 (default: 10)",
     )
     parser.add_argument(

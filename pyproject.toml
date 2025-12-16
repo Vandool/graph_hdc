@@ -69,6 +69,11 @@ deepchem           = "*"
 
 [tool.pixi.dependencies]
 fcd = ">=1.2.2,<2"
+pyscf = ">=2.11.0,<3"
+ase = ">=3.26.0,<4"
+schnetpack = ">=1.0.1,<2"
+tblite = ">=0.4.0,<0.5"
+tblite-python = ">=0.4.0,<0.5"
 
 # CUDA ONLY for local-gpu env
 [tool.pixi.feature.gpu.dependencies]

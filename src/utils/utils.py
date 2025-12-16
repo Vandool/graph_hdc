@@ -1084,6 +1084,7 @@ class DataTransformer:
         PRESETS = {
             "qm9": ["C", "N", "O", "F"],
             "zinc": ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"],
+            "zinc_ring_count": ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"],  # Same as zinc
         }
         CHARGE_IDX_TO_VAL = {0: 0, 1: +1, 2: -1}
 
@@ -1338,7 +1339,7 @@ class DataTransformer:
     def nx_to_mol_v3(
         G: nx.Graph,
         *,
-        dataset: Literal["qm9", "zinc"] | None = None,
+        dataset: Literal["qm9", "zinc", "zinc_ring_count"] | None = None,
         atom_symbols: Sequence[str] | None = None,
         infer_bonds: bool = False,
         set_atom_map_nums: bool = False,
@@ -1438,6 +1439,7 @@ class DataTransformer:
         PRESETS = {
             "qm9": ["C", "N", "O", "F"],
             "zinc": ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"],
+            "zinc_ring_count": ["Br", "C", "Cl", "F", "I", "N", "O", "P", "S"],  # Same as zinc
         }
         CHARGE_IDX_TO_VAL = {0: 0, 1: +1, 2: -1}
 
